@@ -39,6 +39,207 @@ export interface TaskAttachment {
   created_at: string;
 }
 
+export type LineVisibility = "private" | "public";
+
+export interface LinePostAttachment {
+  id: string;
+  file_name: string;
+  mime_type: string;
+  byte_size: number;
+  created_at: string;
+}
+
+export interface LinePostReaction {
+  emoji: string;
+  count: number;
+  reacted_by_viewer: boolean;
+}
+
+export interface LinePost {
+  id: string;
+  user_id: string;
+  author_name: string;
+  content: string;
+  visibility: LineVisibility;
+  reply_to_post_id: string | null;
+  reply_to_author_name: string | null;
+  reply_to_content: string | null;
+  tags: string[];
+  attachments: LinePostAttachment[];
+  reactions: LinePostReaction[];
+  reply_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type KanbanRole = "admin" | "member" | "guest";
+export type KanbanSection = "boards" | "workspaces" | "invitations";
+export type KanbanLabelColor =
+  | "accent"
+  | "blue"
+  | "amber"
+  | "red"
+  | "violet"
+  | "gray";
+
+export interface KanbanWorkspace {
+  id: string;
+  name: string;
+  description: string;
+  role: KanbanRole;
+  member_count: number;
+  board_count: number;
+  permissions: string[];
+  created_at: string;
+  updated_at: string;
+}
+export interface KanbanInvitation {
+  workspace_id: string;
+  workspace_name: string;
+  role: KanbanRole;
+  invited_by_name: string;
+  created_at: string;
+}
+export interface KanbanOverview {
+  workspaces: KanbanWorkspace[];
+  invitations: KanbanInvitation[];
+}
+export interface KanbanMember {
+  user_id: string;
+  display_name: string;
+  email: string;
+  role: KanbanRole;
+  status: "invited" | "active";
+  created_at: string;
+}
+export interface KanbanDirectoryUser {
+  user_id: string;
+  display_name: string;
+  email: string;
+}
+export interface KanbanRolePermission {
+  role: KanbanRole;
+  permission: string;
+  granted: boolean;
+}
+export interface KanbanMemberPermission {
+  user_id: string;
+  permission: string;
+  granted: boolean;
+}
+export interface KanbanWorkspaceSettings {
+  workspace: KanbanWorkspace;
+  members: KanbanMember[];
+  role_permissions: KanbanRolePermission[];
+  member_overrides: KanbanMemberPermission[];
+}
+export interface KanbanBoardSummary {
+  id: string;
+  workspace_id: string;
+  name: string;
+  description: string;
+  visibility: "private" | "public";
+  archived: boolean;
+  favorite: boolean;
+  position: number;
+  column_count: number;
+  card_count: number;
+  created_at: string;
+  updated_at: string;
+}
+export interface KanbanLabel {
+  id: string;
+  board_id: string;
+  name: string;
+  color: KanbanLabelColor;
+}
+export interface KanbanComment {
+  id: string;
+  card_id: string;
+  user_id: string | null;
+  author_name: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+export interface KanbanChecklistItem {
+  id: string;
+  checklist_id: string;
+  title: string;
+  completed: boolean;
+  position: number;
+}
+export interface KanbanChecklist {
+  id: string;
+  card_id: string;
+  name: string;
+  position: number;
+  items: KanbanChecklistItem[];
+}
+export interface KanbanAttachment {
+  id: string;
+  card_id: string;
+  file_name: string;
+  mime_type: string;
+  byte_size: number;
+  created_at: string;
+}
+export interface KanbanActivity {
+  id: string;
+  card_id: string;
+  actor_name: string;
+  action: string;
+  detail: string;
+  created_at: string;
+}
+export interface KanbanCard {
+  id: string;
+  column_id: string;
+  title: string;
+  description: string;
+  due_date: string | null;
+  position: number;
+  assignees: KanbanMember[];
+  labels: KanbanLabel[];
+  comments: KanbanComment[];
+  checklists: KanbanChecklist[];
+  attachments: KanbanAttachment[];
+  activity: KanbanActivity[];
+  created_at: string;
+  updated_at: string;
+}
+export interface KanbanColumn {
+  id: string;
+  board_id: string;
+  name: string;
+  position: number;
+  cards: KanbanCard[];
+  created_at: string;
+  updated_at: string;
+}
+export interface KanbanBoard {
+  id: string;
+  workspace_id: string;
+  name: string;
+  description: string;
+  visibility: "private" | "public";
+  archived: boolean;
+  favorite: boolean;
+  permissions: string[];
+  members: KanbanMember[];
+  labels: KanbanLabel[];
+  columns: KanbanColumn[];
+  created_at: string;
+  updated_at: string;
+}
+export interface KanbanCardInput {
+  title: string;
+  description?: string;
+  due_date?: string | null;
+  assignee_ids?: string[];
+  label_ids?: string[];
+}
+
 export interface TaskInput {
   title: string;
   description?: string;
@@ -90,6 +291,7 @@ export interface RssReaderItem {
   published_at: string;
   fetched_at: string;
   read_at: string | null;
+  saved_at: string | null;
 }
 
 export interface RssReaderResponse {
@@ -125,6 +327,7 @@ export interface YoutubeVideo {
   title: string;
   published_at: string;
   fetched_at: string;
+  watch_later_at: string | null;
 }
 
 export interface YoutubeGroup {
@@ -140,6 +343,7 @@ export interface YoutubeReaderResponse {
   subscriptions: YoutubeSubscription[];
   groups: YoutubeGroup[];
   videos: YoutubeVideo[];
+  watch_later: YoutubeVideo[];
   display_mode: YoutubeDisplayMode;
 }
 
@@ -453,12 +657,14 @@ export interface UserSettings {
   timezone: string;
   sidebar_timezones: string[];
   temperature_unit: "celsius" | "fahrenheit";
+  lines_default_visibility: LineVisibility;
   updated_at: string;
 }
 
 export type UserContentScope =
   | "contacts"
   | "tasks"
+  | "lines"
   | "calendar"
   | "rss"
   | "journal"
@@ -556,6 +762,19 @@ async function requestJson<T>(
   }
 
   return (await response.json()) as T;
+}
+
+async function requestEmpty(path: string, init?: RequestInit): Promise<void> {
+  const response = await fetch(path, init);
+  if (!response.ok) {
+    const payload = (await response
+      .json()
+      .catch(() => ({}))) as ApiErrorResponse;
+    throw new ApiError(
+      payload.error ?? `Request failed with status ${response.status}`,
+      response.status,
+    );
+  }
 }
 
 export async function fetchHealth(
@@ -738,6 +957,7 @@ export function updateUserSettings(input: {
   timezone: string;
   sidebar_timezones?: string[];
   temperature_unit: UserSettings["temperature_unit"];
+  lines_default_visibility: LineVisibility;
 }): Promise<UserSettings> {
   return requestJson<UserSettings>("/api/settings", {
     method: "PUT",
@@ -1018,6 +1238,84 @@ export function taskAttachmentUrl(
   return `/api/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attachmentId)}`;
 }
 
+export function fetchLinePosts(
+  options: {
+    scope?: "instance" | "mine";
+    q?: string;
+    tag?: string;
+  } = {},
+): Promise<LinePost[]> {
+  const query = new URLSearchParams();
+  query.set("scope", options.scope ?? "instance");
+  if (options.q?.trim()) query.set("q", options.q.trim());
+  if (options.tag?.trim()) query.set("tag", options.tag.trim());
+  return requestJson<LinePost[]>(`/api/lines/posts?${query.toString()}`, {
+    credentials: "same-origin",
+  });
+}
+
+export function createLinePost(input: {
+  content: string;
+  visibility: LineVisibility;
+  reply_to_post_id?: string | null;
+}): Promise<LinePost> {
+  return requestJson<LinePost>("/api/lines/posts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteLinePost(postId: string): Promise<void> {
+  const response = await fetch(
+    `/api/lines/posts/${encodeURIComponent(postId)}`,
+    { method: "DELETE", credentials: "same-origin" },
+  );
+  if (!response.ok) {
+    const payload = (await response
+      .json()
+      .catch(() => ({}))) as ApiErrorResponse;
+    throw new ApiError(
+      payload.error ?? `Request failed with status ${response.status}`,
+      response.status,
+    );
+  }
+}
+
+export function uploadLinePostAttachment(
+  postId: string,
+  file: File,
+): Promise<LinePostAttachment> {
+  return requestJson<LinePostAttachment>(
+    `/api/lines/posts/${encodeURIComponent(postId)}/attachments?file_name=${encodeURIComponent(file.name)}`,
+    {
+      method: "POST",
+      headers: { "content-type": file.type || "application/octet-stream" },
+      credentials: "same-origin",
+      body: file,
+    },
+  );
+}
+
+export function linePostAttachmentUrl(
+  postId: string,
+  attachmentId: string,
+): string {
+  return `/api/lines/posts/${encodeURIComponent(postId)}/attachments/${encodeURIComponent(attachmentId)}`;
+}
+
+export function setLinePostReaction(
+  postId: string,
+  emoji: string,
+  active: boolean,
+): Promise<LinePost> {
+  return requestJson<LinePost>(
+    `/api/lines/posts/${encodeURIComponent(postId)}/reactions/${encodeURIComponent(emoji)}`,
+    { method: active ? "PUT" : "DELETE", credentials: "same-origin" },
+  );
+}
+
 export function clearCompletedTasks(): Promise<{ deleted: number }> {
   return requestJson<{ deleted: number }>("/api/tasks/completed", {
     method: "DELETE",
@@ -1094,6 +1392,21 @@ export function setRssItemRead(
   );
 }
 
+export function setRssItemSaved(
+  id: string,
+  saved: boolean,
+): Promise<RssReaderItem> {
+  return requestJson<RssReaderItem>(
+    `/api/rss/items/${encodeURIComponent(id)}/read-later`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ saved }),
+    },
+  );
+}
+
 export function pruneRssItems(
   days: number,
   mode: RssRetentionMode,
@@ -1147,6 +1460,16 @@ export function refreshYoutubeSubscription(
   return requestJson<YoutubeReaderResponse>(
     `/api/youtube/subscriptions/${encodeURIComponent(channelId)}/refresh`,
     { method: "POST", credentials: "same-origin" },
+  );
+}
+
+export function setYoutubeWatchLater(
+  videoId: string,
+  saved: boolean,
+): Promise<YoutubeReaderResponse> {
+  return requestJson<YoutubeReaderResponse>(
+    `/api/youtube/videos/${encodeURIComponent(videoId)}/watch-later`,
+    { method: saved ? "PUT" : "DELETE", credentials: "same-origin" },
   );
 }
 
@@ -1290,7 +1613,10 @@ export async function deleteContact(id: string): Promise<void> {
   }
 }
 
-export async function updateContactPhoto(id: string, file: File): Promise<void> {
+export async function updateContactPhoto(
+  id: string,
+  file: File,
+): Promise<void> {
   const response = await fetch(
     `/api/contacts/${encodeURIComponent(id)}/photo`,
     {
@@ -1535,4 +1861,413 @@ export async function deleteJournalNode(id: string): Promise<void> {
       response.status,
     );
   }
+}
+
+const kanbanJson = { "content-type": "application/json" };
+const kanbanPath = (value: string) => encodeURIComponent(value);
+
+export function fetchKanbanOverview(): Promise<KanbanOverview> {
+  return requestJson<KanbanOverview>("/api/kanban", {
+    credentials: "same-origin",
+  });
+}
+export function createKanbanWorkspace(input: {
+  name: string;
+  description: string;
+}): Promise<KanbanWorkspace> {
+  return requestJson<KanbanWorkspace>("/api/kanban/workspaces", {
+    method: "POST",
+    headers: kanbanJson,
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+export function updateKanbanWorkspace(
+  id: string,
+  input: { name: string; description: string },
+): Promise<void> {
+  return requestEmpty(`/api/kanban/workspaces/${kanbanPath(id)}`, {
+    method: "PUT",
+    headers: kanbanJson,
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+export function deleteKanbanWorkspace(id: string): Promise<void> {
+  return requestEmpty(`/api/kanban/workspaces/${kanbanPath(id)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+export function fetchKanbanWorkspaceSettings(
+  id: string,
+): Promise<KanbanWorkspaceSettings> {
+  return requestJson<KanbanWorkspaceSettings>(
+    `/api/kanban/workspaces/${kanbanPath(id)}/settings`,
+    { credentials: "same-origin" },
+  );
+}
+export function searchKanbanDirectory(
+  workspaceId: string,
+  query: string,
+): Promise<KanbanDirectoryUser[]> {
+  return requestJson<KanbanDirectoryUser[]>(
+    `/api/kanban/workspaces/${kanbanPath(workspaceId)}/directory?q=${encodeURIComponent(query)}`,
+    { credentials: "same-origin" },
+  );
+}
+export function inviteKanbanMember(
+  workspaceId: string,
+  userId: string,
+  role: KanbanRole,
+): Promise<void> {
+  return requestEmpty(
+    `/api/kanban/workspaces/${kanbanPath(workspaceId)}/members`,
+    {
+      method: "POST",
+      headers: kanbanJson,
+      credentials: "same-origin",
+      body: JSON.stringify({ user_id: userId, role }),
+    },
+  );
+}
+export function respondKanbanInvitation(
+  workspaceId: string,
+  accept: boolean,
+): Promise<void> {
+  return requestEmpty(
+    `/api/kanban/workspaces/${kanbanPath(workspaceId)}/invitations`,
+    {
+      method: "PUT",
+      headers: kanbanJson,
+      credentials: "same-origin",
+      body: JSON.stringify({ accept }),
+    },
+  );
+}
+export function updateKanbanMemberRole(
+  workspaceId: string,
+  userId: string,
+  role: KanbanRole,
+): Promise<void> {
+  return requestEmpty(
+    `/api/kanban/workspaces/${kanbanPath(workspaceId)}/members/${kanbanPath(userId)}`,
+    {
+      method: "PUT",
+      headers: kanbanJson,
+      credentials: "same-origin",
+      body: JSON.stringify({ role }),
+    },
+  );
+}
+export function removeKanbanMember(
+  workspaceId: string,
+  userId: string,
+): Promise<void> {
+  return requestEmpty(
+    `/api/kanban/workspaces/${kanbanPath(workspaceId)}/members/${kanbanPath(userId)}`,
+    { method: "DELETE", credentials: "same-origin" },
+  );
+}
+export function setKanbanRolePermission(
+  workspaceId: string,
+  role: "member" | "guest",
+  permission: string,
+  granted: boolean,
+): Promise<void> {
+  return requestEmpty(
+    `/api/kanban/workspaces/${kanbanPath(workspaceId)}/roles/${role}/permissions/${kanbanPath(permission)}`,
+    {
+      method: "PUT",
+      headers: kanbanJson,
+      credentials: "same-origin",
+      body: JSON.stringify({ granted }),
+    },
+  );
+}
+export function setKanbanMemberPermission(
+  workspaceId: string,
+  userId: string,
+  permission: string,
+  granted: boolean,
+): Promise<void> {
+  return requestEmpty(
+    `/api/kanban/workspaces/${kanbanPath(workspaceId)}/members/${kanbanPath(userId)}/permissions/${kanbanPath(permission)}`,
+    {
+      method: "PUT",
+      headers: kanbanJson,
+      credentials: "same-origin",
+      body: JSON.stringify({ granted }),
+    },
+  );
+}
+export function resetKanbanMemberPermissions(
+  workspaceId: string,
+  userId: string,
+): Promise<void> {
+  return requestEmpty(
+    `/api/kanban/workspaces/${kanbanPath(workspaceId)}/members/${kanbanPath(userId)}/permissions`,
+    { method: "DELETE", credentials: "same-origin" },
+  );
+}
+export function fetchKanbanBoards(
+  workspaceId: string,
+  archived = false,
+): Promise<KanbanBoardSummary[]> {
+  return requestJson<KanbanBoardSummary[]>(
+    `/api/kanban/workspaces/${kanbanPath(workspaceId)}/boards?archived=${archived}`,
+    { credentials: "same-origin" },
+  );
+}
+export function createKanbanBoard(
+  workspaceId: string,
+  input: {
+    name: string;
+    description: string;
+    visibility: "private" | "public";
+  },
+): Promise<KanbanBoard> {
+  return requestJson<KanbanBoard>(
+    `/api/kanban/workspaces/${kanbanPath(workspaceId)}/boards`,
+    {
+      method: "POST",
+      headers: kanbanJson,
+      credentials: "same-origin",
+      body: JSON.stringify(input),
+    },
+  );
+}
+export function fetchKanbanBoard(id: string): Promise<KanbanBoard> {
+  return requestJson<KanbanBoard>(`/api/kanban/boards/${kanbanPath(id)}`, {
+    credentials: "same-origin",
+  });
+}
+export function updateKanbanBoard(
+  id: string,
+  input: {
+    name: string;
+    description: string;
+    visibility: "private" | "public";
+    archived: boolean;
+  },
+): Promise<void> {
+  return requestEmpty(`/api/kanban/boards/${kanbanPath(id)}`, {
+    method: "PUT",
+    headers: kanbanJson,
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+export function deleteKanbanBoard(id: string): Promise<void> {
+  return requestEmpty(`/api/kanban/boards/${kanbanPath(id)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+export function setKanbanBoardFavorite(
+  id: string,
+  favorite: boolean,
+): Promise<void> {
+  return requestEmpty(`/api/kanban/boards/${kanbanPath(id)}/favorite`, {
+    method: "PUT",
+    headers: kanbanJson,
+    credentials: "same-origin",
+    body: JSON.stringify({ favorite }),
+  });
+}
+export function createKanbanColumn(
+  boardId: string,
+  name: string,
+): Promise<{ id: string }> {
+  return requestJson<{ id: string }>(
+    `/api/kanban/boards/${kanbanPath(boardId)}/columns`,
+    {
+      method: "POST",
+      headers: kanbanJson,
+      credentials: "same-origin",
+      body: JSON.stringify({ name }),
+    },
+  );
+}
+export function updateKanbanColumn(
+  id: string,
+  input: { name?: string; position?: number },
+): Promise<void> {
+  return requestEmpty(`/api/kanban/columns/${kanbanPath(id)}`, {
+    method: "PUT",
+    headers: kanbanJson,
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+export function deleteKanbanColumn(id: string): Promise<void> {
+  return requestEmpty(`/api/kanban/columns/${kanbanPath(id)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+export function createKanbanCard(
+  columnId: string,
+  input: KanbanCardInput,
+): Promise<KanbanCard> {
+  return requestJson<KanbanCard>(
+    `/api/kanban/columns/${kanbanPath(columnId)}/cards`,
+    {
+      method: "POST",
+      headers: kanbanJson,
+      credentials: "same-origin",
+      body: JSON.stringify(input),
+    },
+  );
+}
+export function fetchKanbanCard(id: string): Promise<KanbanCard> {
+  return requestJson<KanbanCard>(`/api/kanban/cards/${kanbanPath(id)}`, {
+    credentials: "same-origin",
+  });
+}
+export function updateKanbanCard(
+  id: string,
+  input: KanbanCardInput,
+): Promise<KanbanCard> {
+  return requestJson<KanbanCard>(`/api/kanban/cards/${kanbanPath(id)}`, {
+    method: "PUT",
+    headers: kanbanJson,
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+export function moveKanbanCard(
+  id: string,
+  columnId: string,
+  position: number,
+): Promise<void> {
+  return requestEmpty(`/api/kanban/cards/${kanbanPath(id)}/move`, {
+    method: "PUT",
+    headers: kanbanJson,
+    credentials: "same-origin",
+    body: JSON.stringify({ column_id: columnId, position }),
+  });
+}
+export function archiveKanbanCard(id: string): Promise<void> {
+  return requestEmpty(`/api/kanban/cards/${kanbanPath(id)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+export function createKanbanLabel(
+  boardId: string,
+  name: string,
+  color: KanbanLabelColor,
+): Promise<KanbanLabel> {
+  return requestJson<KanbanLabel>(
+    `/api/kanban/boards/${kanbanPath(boardId)}/labels`,
+    {
+      method: "POST",
+      headers: kanbanJson,
+      credentials: "same-origin",
+      body: JSON.stringify({ name, color }),
+    },
+  );
+}
+export function deleteKanbanLabel(
+  boardId: string,
+  labelId: string,
+): Promise<void> {
+  return requestEmpty(
+    `/api/kanban/boards/${kanbanPath(boardId)}/labels/${kanbanPath(labelId)}`,
+    { method: "DELETE", credentials: "same-origin" },
+  );
+}
+export function createKanbanComment(
+  cardId: string,
+  content: string,
+): Promise<{ id: string }> {
+  return requestJson<{ id: string }>(
+    `/api/kanban/cards/${kanbanPath(cardId)}/comments`,
+    {
+      method: "POST",
+      headers: kanbanJson,
+      credentials: "same-origin",
+      body: JSON.stringify({ content }),
+    },
+  );
+}
+export function deleteKanbanComment(id: string): Promise<void> {
+  return requestEmpty(`/api/kanban/comments/${kanbanPath(id)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+export function createKanbanChecklist(
+  cardId: string,
+  name: string,
+): Promise<{ id: string }> {
+  return requestJson<{ id: string }>(
+    `/api/kanban/cards/${kanbanPath(cardId)}/checklists`,
+    {
+      method: "POST",
+      headers: kanbanJson,
+      credentials: "same-origin",
+      body: JSON.stringify({ name }),
+    },
+  );
+}
+export function deleteKanbanChecklist(id: string): Promise<void> {
+  return requestEmpty(`/api/kanban/checklists/${kanbanPath(id)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+export function createKanbanChecklistItem(
+  checklistId: string,
+  title: string,
+): Promise<{ id: string }> {
+  return requestJson<{ id: string }>(
+    `/api/kanban/checklists/${kanbanPath(checklistId)}/items`,
+    {
+      method: "POST",
+      headers: kanbanJson,
+      credentials: "same-origin",
+      body: JSON.stringify({ title, completed: false }),
+    },
+  );
+}
+export function updateKanbanChecklistItem(
+  checklistId: string,
+  itemId: string,
+  title: string,
+  completed: boolean,
+): Promise<void> {
+  return requestEmpty(
+    `/api/kanban/checklists/${kanbanPath(checklistId)}/items/${kanbanPath(itemId)}`,
+    {
+      method: "PUT",
+      headers: kanbanJson,
+      credentials: "same-origin",
+      body: JSON.stringify({ title, completed }),
+    },
+  );
+}
+export function uploadKanbanAttachment(
+  cardId: string,
+  file: File,
+): Promise<KanbanAttachment> {
+  return requestJson<KanbanAttachment>(
+    `/api/kanban/cards/${kanbanPath(cardId)}/attachments?file_name=${encodeURIComponent(file.name)}`,
+    {
+      method: "POST",
+      headers: { "content-type": file.type || "application/octet-stream" },
+      credentials: "same-origin",
+      body: file,
+    },
+  );
+}
+export function kanbanAttachmentUrl(id: string): string {
+  return `/api/kanban/attachments/${kanbanPath(id)}`;
+}
+export function deleteKanbanAttachment(id: string): Promise<void> {
+  return requestEmpty(`/api/kanban/attachments/${kanbanPath(id)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
 }

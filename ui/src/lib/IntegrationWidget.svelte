@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Check from "lucide-svelte/icons/check";
   import X from "lucide-svelte/icons/x";
   import { onMount } from "svelte";
   import {
@@ -697,10 +698,10 @@
           id={`playlists-${widget.id}`}
           bind:value={listSecondary}
           rows="3"></textarea>
-        <label class="switch-row">
-          <input type="checkbox" bind:checked={toggleValue} />
-          Include Shorts when channel feeds support them
-        </label>
+        <button class="ui-toggle-button switch-row" type="button" aria-pressed={toggleValue} onclick={() => (toggleValue = !toggleValue)}>
+          <span class="ui-toggle-indicator" aria-hidden="true">{#if toggleValue}<Check size={13} />{/if}</span>
+          <span>Include Shorts when channel feeds support them</span>
+        </button>
       {:else if widget.kind === "rss"}
         <label for={`feeds-${widget.id}`}>Feed URLs</label>
         <textarea
@@ -830,10 +831,10 @@
             credential storage.
           </p>
         {:else if widget.has_secret}
-          <label class="switch-row">
-            <input type="checkbox" bind:checked={clearSecret} />
-            Remove the stored credential
-          </label>
+          <button class="ui-toggle-button switch-row" type="button" aria-pressed={clearSecret} onclick={() => (clearSecret = !clearSecret)}>
+            <span class="ui-toggle-indicator" aria-hidden="true">{#if clearSecret}<Check size={13} />{/if}</span>
+            <span>Remove the stored credential</span>
+          </button>
         {/if}
       {/if}
 

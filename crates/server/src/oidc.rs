@@ -38,6 +38,7 @@ pub struct VerifiedIdentity {
     pub subject: String,
     pub email: String,
     pub display_name: String,
+    pub picture_url: Option<String>,
 }
 
 #[derive(Debug)]
@@ -189,12 +190,22 @@ impl OidcProvider {
             .filter(|name| !name.is_empty())
             .or_else(|| email.split('@').next().map(str::to_owned))
             .ok_or_else(|| OidcError("OIDC provider omitted a usable name".to_owned()))?;
+        let picture_url = claims
+            .picture()
+            .and_then(|pictures| {
+                pictures
+                    .get(None)
+                    .or_else(|| pictures.iter().next().map(|(_, picture)| picture))
+            })
+            .map(|picture| picture.as_str().trim().to_owned())
+            .filter(|picture| !picture.is_empty());
 
         Ok(VerifiedIdentity {
             issuer: self.issuer.clone(),
             subject: claims.subject().as_str().to_owned(),
             email,
             display_name,
+            picture_url,
         })
     }
 }

@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
+mod kanban;
+pub use kanban::*;
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
 pub struct AppMetadata {
     pub key: String,
@@ -68,6 +71,48 @@ pub struct TaskSubtaskDraft {
     pub completed: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LinePost {
+    pub id: String,
+    pub user_id: String,
+    pub author_name: String,
+    pub content: String,
+    pub visibility: String,
+    pub reply_to_post_id: Option<String>,
+    pub reply_to_author_name: Option<String>,
+    pub reply_to_content: Option<String>,
+    pub tags: Vec<String>,
+    pub attachments: Vec<LinePostAttachment>,
+    pub reactions: Vec<LinePostReaction>,
+    pub reply_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct LinePostAttachment {
+    pub id: String,
+    pub file_name: String,
+    pub mime_type: String,
+    pub byte_size: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct LinePostReaction {
+    pub emoji: String,
+    pub count: i64,
+    pub reacted_by_viewer: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinePostDraft {
+    pub content: String,
+    pub visibility: String,
+    pub reply_to_post_id: Option<String>,
+    pub tags: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
 pub struct User {
     pub id: String,
@@ -110,6 +155,7 @@ pub struct UserSettings {
     pub timezone: String,
     pub sidebar_timezones: Vec<String>,
     pub temperature_unit: String,
+    pub lines_default_visibility: String,
     pub updated_at: String,
 }
 
@@ -162,6 +208,7 @@ pub struct SessionAccount {
     pub timezone: String,
     pub sidebar_timezones_json: String,
     pub temperature_unit: String,
+    pub lines_default_visibility: String,
     pub settings_updated_at: String,
 }
 
@@ -213,6 +260,7 @@ pub struct RssItem {
     pub published_at: String,
     pub fetched_at: String,
     pub read_at: Option<String>,
+    pub saved_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -282,6 +330,7 @@ pub struct YoutubeVideo {
     pub title: String,
     pub published_at: String,
     pub fetched_at: String,
+    pub watch_later_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]

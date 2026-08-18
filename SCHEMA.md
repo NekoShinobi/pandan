@@ -80,6 +80,7 @@ One preference record per user.
 | `timezone`                | TEXT | Required, trimmed length 1–80                       |
 | `sidebar_timezones_json`  | TEXT | Valid JSON array containing 1–5 timezone names      |
 | `temperature_unit`        | TEXT | `celsius` or `fahrenheit`                           |
+| `lines_default_visibility`| TEXT | `private` or `public`; defaults to `private`        |
 | `updated_at`              | TEXT | Required, RFC 3339 timestamp                        |
 
 ## `user_backgrounds`
@@ -117,7 +118,8 @@ itself is publicly retrievable from the application origin for the pre-authentic
 ## `user_avatars`
 
 Optional private profile images. Avatar bytes are available only through the authenticated user's
-settings endpoint and are deleted automatically with the owning account.
+settings endpoint and are deleted automatically with the owning account. A supported public HTTPS
+image from an OIDC `picture` claim may initialize this record, but never replaces an existing avatar.
 
 | Column       | Type | Constraints                                         |
 | ------------ | ---- | --------------------------------------------------- |
@@ -242,6 +244,64 @@ only from the authenticated attachment endpoint after parent-task ownership is v
 | `file_data`  | BLOB    | Required                                         |
 | `created_at` | TEXT    | Required, RFC 3339 timestamp                     |
 
+## `line_posts`
+
+Markdown source posts for the Lines timeline. A public post is readable by authenticated users on
+the instance; a private post is readable only by its owner, including when the viewer is an
+administrator. Replies are posts linked through `reply_to_post_id`. Replies to private posts are
+forced private by the API. Deleting an account cascades through its posts, while replies owned by
+other accounts retain their content and clear a deleted parent reference.
+
+| Column             | Type | Constraints                                                   |
+| ------------------ | ---- | ------------------------------------------------------------- |
+| `id`               | TEXT | Primary key                                                   |
+| `user_id`          | TEXT | Required, references `users` with cascade delete              |
+| `content`          | TEXT | Required, trimmed length 1–2,000                              |
+| `visibility`       | TEXT | `private` or `public`; defaults to `private`                   |
+| `reply_to_post_id` | TEXT | Optional self-reference; set to null when the parent is deleted |
+| `created_at`       | TEXT | Required, RFC 3339 timestamp                                  |
+| `updated_at`       | TEXT | Required, RFC 3339 timestamp                                  |
+
+## `line_post_tags`
+
+Case-insensitive, normalized hashtags extracted by the server when a post is created. The
+`(post_id, tag)` pair is the primary key. Tag filters and counts are evaluated only across posts
+visible to the authenticated viewer.
+
+| Column    | Type | Constraints                                      |
+| --------- | ---- | ------------------------------------------------ |
+| `post_id` | TEXT | References `line_posts` with cascade delete      |
+| `tag`     | TEXT | Required, case-insensitive length 1–64           |
+
+## `line_post_reactions`
+
+One reaction of a given emoji per user and post. The composite primary key is
+`(post_id, user_id, emoji)`. Reactions can be created only when the parent post is readable.
+
+| Column       | Type | Constraints                                      |
+| ------------ | ---- | ------------------------------------------------ |
+| `post_id`    | TEXT | References `line_posts` with cascade delete      |
+| `user_id`    | TEXT | References `users` with cascade delete           |
+| `emoji`      | TEXT | Required, 1–32 characters                        |
+| `created_at` | TEXT | Required, RFC 3339 timestamp                     |
+
+## `line_post_attachments`
+
+Lines files stored in SQLite. Owners may upload or delete files. Reads verify the parent post on
+every request: private attachment bytes are owner-only, while public attachment bytes require any
+authenticated account. Only JPEG, PNG, WebP, and AVIF files are displayed inline; other types are
+served as downloads with content sniffing disabled.
+
+| Column       | Type    | Constraints                                           |
+| ------------ | ------- | ----------------------------------------------------- |
+| `id`         | TEXT    | Primary key                                           |
+| `post_id`    | TEXT    | References `line_posts` with cascade delete           |
+| `file_name`  | TEXT    | Required, trimmed length 1–255                        |
+| `mime_type`  | TEXT    | Required, trimmed length 1–120                        |
+| `byte_size`  | INTEGER | Required, 1 byte to 10 MB                             |
+| `file_data`  | BLOB    | Required                                              |
+| `created_at` | TEXT    | Required, RFC 3339 timestamp                          |
+
 ## `feed_items`
 
 Curated feed entries shown in the dashboard's Feeds workspace.
@@ -258,9 +318,10 @@ Curated feed entries shown in the dashboard's Feeds workspace.
 
 ## `rss_subscriptions`
 
-User-owned RSS or Atom sources for the dedicated reader. URLs are unique per user. Fetching is
-restricted to public HTTPS destinations by the server; a normalized origin is stored separately
-to make base-URL filtering predictable.
+User-owned RSS, Atom, or generated Reddit listing sources for the dedicated reader. URLs are unique
+per user. Reddit helpers store a public `reddit.com/r/{subreddit}/{sort}.json` listing URL and the
+server maps its posts into the same item model. Fetching is restricted to public HTTPS destinations;
+a normalized origin is stored separately to make base-URL filtering predictable.
 
 | Column             | Type    | Constraints                            |
 | ------------------ | ------- | -------------------------------------- |
@@ -282,6 +343,7 @@ to make base-URL filtering predictable.
 Fetched reader entries owned through their subscription. Refresh upserts by the source's stable
 identifier and preserves `read_at`. Automatic retention runs when the reader loads or a source
 refreshes; manual pruning can remove old read-only or all entries across one user's subscriptions.
+Entries saved in `rss_read_later` are excluded from both automatic retention and manual pruning.
 
 | Column            | Type | Constraints                                         |
 | ----------------- | ---- | --------------------------------------------------- |
@@ -294,6 +356,18 @@ refreshes; manual pruning can remove old read-only or all entries across one use
 | `published_at`    | TEXT | RFC 3339; fetch time is used when the feed omits it |
 | `fetched_at`      | TEXT | Required, RFC 3339 timestamp                        |
 | `read_at`         | TEXT | Optional RFC 3339 timestamp                         |
+
+## `rss_read_later`
+
+Account-owned RSS Read Later membership. The API verifies that the referenced item belongs to the
+same account before creating a row. Deleting the source subscription cascades through the item and
+removes its saved membership.
+
+| Column     | Type | Constraints                                                   |
+| ---------- | ---- | ------------------------------------------------------------- |
+| `user_id`  | TEXT | Composite primary key, references `users` with cascade delete |
+| `item_id`  | TEXT | Composite primary key, references `rss_items` with cascade delete |
+| `saved_at` | TEXT | Required, RFC 3339 timestamp                                  |
 
 ## `youtube_channels`
 
@@ -379,6 +453,19 @@ One optional preference row per user. Missing rows default to the thumbnail disp
 | `user_id`      | TEXT | Primary key, references `users` with cascade delete |
 | `display_mode` | TEXT | `thumbnails` or `compact`                           |
 | `updated_at`   | TEXT | Required, RFC 3339 timestamp                        |
+
+## `youtube_watch_later`
+
+Private account-to-video Watch Later membership. A video may be saved only while its channel is
+subscribed by that account. The saved row remains available after unsubscribing because video
+metadata is shared at the instance level; it is removed when the account, video, or YouTube content
+area is deleted.
+
+| Column     | Type | Constraints                                                   |
+| ---------- | ---- | ------------------------------------------------------------- |
+| `user_id`  | TEXT | Composite primary key, references `users` with cascade delete |
+| `video_id` | TEXT | Composite primary key, references `youtube_videos` with cascade delete |
+| `saved_at` | TEXT | Required, RFC 3339 timestamp                                  |
 
 ## `journal_nodes`
 
@@ -587,3 +674,91 @@ from `dashboard_widgets` so credentials cannot be serialized into dashboard resp
 | `user_id`    | TEXT | Required, references `users` with cascade delete                |
 | `ciphertext` | TEXT | XChaCha20-Poly1305 nonce and ciphertext, base64 encoded         |
 | `updated_at` | TEXT | Required, RFC 3339 timestamp                                    |
+
+## Kanban collaboration
+
+Kanban uses its own `kanban_*` collaboration aggregate and does not reuse the legacy
+`user_workspaces` dashboard partition. Access begins with an active workspace membership, then the
+server resolves role grants plus per-member overrides. The permission vocabulary is the kan.bn
+split: `view`, `create`, `edit`, and `delete` for boards, lists, cards, and comments; `view`,
+`invite`, `edit`, and `remove` for members; and `view`, `edit`, `delete`, and `manage` for the
+workspace. Admin grants are immutable. Member and Guest grants can be customized except that
+workspace `manage` and `delete` remain admin-only. The final active workspace admin cannot be
+removed or demoted.
+
+### `kanban_workspaces`
+
+| Column               | Type | Constraints                                      |
+| -------------------- | ---- | ------------------------------------------------ |
+| `id`                 | TEXT | Primary key                                      |
+| `name`               | TEXT | Required, trimmed length 1–80                    |
+| `description`        | TEXT | Required, up to 1,000 characters                 |
+| `created_by_user_id` | TEXT | Optional user reference with null-on-delete      |
+| `created_at`         | TEXT | Required, RFC 3339 timestamp                     |
+| `updated_at`         | TEXT | Required, RFC 3339 timestamp                     |
+
+### `kanban_workspace_members`
+
+In-app invitations are rows with `status = invited`; targets must already exist in `users`.
+
+| Column                 | Type | Constraints                                                   |
+| ---------------------- | ---- | ------------------------------------------------------------- |
+| `workspace_id`         | TEXT | Composite primary key, workspace reference with cascade delete |
+| `user_id`              | TEXT | Composite primary key, user reference with cascade delete     |
+| `role`                 | TEXT | `admin`, `member`, or `guest`                                 |
+| `status`               | TEXT | `invited` or `active`                                         |
+| `invited_by_user_id`   | TEXT | Optional inviter reference with null-on-delete                |
+| `created_at`           | TEXT | Required, RFC 3339 timestamp                                  |
+| `updated_at`           | TEXT | Required, RFC 3339 timestamp                                  |
+
+### `kanban_role_permissions` and `kanban_member_permissions`
+
+| Table                       | Key                                      | Purpose                                                  |
+| --------------------------- | ---------------------------------------- | -------------------------------------------------------- |
+| `kanban_role_permissions`   | workspace, role, permission              | Required boolean grant for each role and all 24 permissions |
+| `kanban_member_permissions` | workspace, user, permission              | Optional boolean override, cascades with membership      |
+
+### `kanban_boards`
+
+New boards receive three ordered columns: `Todo`, `In Progress`, and `Finished`.
+
+| Column               | Type    | Constraints                                      |
+| -------------------- | ------- | ------------------------------------------------ |
+| `id`                 | TEXT    | Primary key                                      |
+| `workspace_id`       | TEXT    | Workspace reference with cascade delete          |
+| `name`               | TEXT    | Required, trimmed length 1–120                   |
+| `description`        | TEXT    | Required, up to 2,000 characters                 |
+| `visibility`         | TEXT    | `private` or `public`; both require membership   |
+| `archived`           | INTEGER | Required boolean                                 |
+| `position`           | INTEGER | Non-negative workspace order                     |
+| `created_by_user_id` | TEXT    | Optional user reference with null-on-delete      |
+| `created_at`         | TEXT    | Required, RFC 3339 timestamp                     |
+| `updated_at`         | TEXT    | Required, RFC 3339 timestamp                     |
+
+`kanban_board_favorites` has a composite `(board_id, user_id)` primary key and stores each user's
+favorite boards independently.
+
+### `kanban_columns` and `kanban_cards`
+
+| Table             | Important columns | Constraints and behavior                                                    |
+| ----------------- | ----------------- | --------------------------------------------------------------------------- |
+| `kanban_columns`  | board, name, position | Name length 1–80; ordered within one board; deletion requires no active cards |
+| `kanban_cards`    | column, title, description, due date, position | Title length 1–240; Markdown source up to 100,000 characters; optional ISO date; archive timestamp preserves history |
+
+Card moves rewrite source and destination positions in one transaction and may not cross boards.
+`kanban_card_assignees` links cards to active workspace members. `kanban_labels` stores unique
+board-scoped names with one of `accent`, `blue`, `amber`, `red`, `violet`, or `gray`;
+`kanban_card_labels` is the card-to-label join table.
+
+### Card collaboration tables
+
+| Table                     | Purpose and constraints                                                        |
+| ------------------------- | ------------------------------------------------------------------------------ |
+| `kanban_comments`         | User-attributed card comments, trimmed length 1–10,000; user deletion preserves content |
+| `kanban_checklists`       | Ordered named checklists, name length 1–120                                    |
+| `kanban_checklist_items`  | Ordered checklist rows with a required title and completion boolean            |
+| `kanban_attachments`      | SQLite file bytes, safe name and MIME metadata, 1 byte through 10 MiB           |
+| `kanban_card_activity`    | Append-only actor, action, detail, and timestamp history for significant card changes |
+
+All collaboration rows cascade from their parent card. Attachment reads and mutations resolve the
+parent card's workspace and effective permission before bytes are returned or changed.

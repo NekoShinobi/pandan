@@ -12,7 +12,7 @@
 
 </div>
 
-Pandan brings planning, reading, contacts, calendars, notes, subscriptions, and software activity into one private web application. Each account gets an isolated dashboard canvas, personal settings and uploads, and a responsive interface built around a restrained terminal aesthetic.
+Pandan brings planning, reading, contacts, calendars, notes, lightweight instance posts, subscriptions, and software activity into one private web application. Each account gets an isolated dashboard canvas, personal settings and uploads, and a responsive interface built around a restrained terminal aesthetic.
 
 > [!IMPORTANT]
 > Pandan is under active development. Back up the database before upgrading and review the deployment and security settings before exposing an installation to the internet.
@@ -37,16 +37,18 @@ Pandan brings planning, reading, contacts, calendars, notes, subscriptions, and 
 | --- | --- |
 | **Dashboard** | One GridStack canvas per account with movable and resizable widgets; layout changes are enabled only in Edit mode. |
 | **Tasks** | Priorities, descriptions, labels, subtasks, attachments, due dates, recurring schedules, completion, archiving, and completed-task cleanup. |
+| **Kanban** | Shared workspaces with multiple boards, Todo / In Progress / Finished defaults, drag-and-drop cards, sanitized Markdown descriptions, assignees, live labels, due dates, comments, checklists, attachments, favorites, archives, in-app invitations, and configurable Admin / Member / Guest permissions. |
 | **Contacts** | Search, tags, favorites, archives, portraits, yearless birthdays, important dates, Pandan/Monica JSON import, Pandan JSON export, and CardDAV synchronization. |
 | **Calendar** | Multiple public HTTPS ICS feeds, recurring events, custom source colors, contact birthdays, a month grid, and a selected-day agenda. |
-| **RSS** | RSS and Atom subscriptions, categories, source filters, article details, read state, manual refresh, and age-based retention for read or all items. |
+| **RSS** | RSS and Atom subscriptions plus Reddit subreddit helpers, categories, source filters, article details, read state, a pruning-safe Read Later queue, manual refresh, and age-based retention. |
 | **Journal** | Nested documents that can contain Markdown content and child documents; rendered Markdown is sanitized before display. |
-| **YouTube** | Channel subscriptions, groups, thumbnail or compact layouts, manual refresh, and server-side shared metadata caching. |
+| **Lines** | A Markdown timeline with public or private posts, replies, hashtag discovery, search, file attachments, reactions, and administrator moderation of public posts. |
+| **YouTube** | Channel subscriptions, groups, a private Watch Later queue, thumbnail or compact layouts, manual refresh, and server-side shared metadata caching. |
 | **Coding** | Releases from GitHub, GitLab, Codeberg, Gitea, and Forgejo; connected accounts can also show owned repositories, open pull requests, and GitLab pipelines. |
 | **Subscriptions** | Recurring service costs, first-payment dates, filtering, and separate daily, weekly, monthly, and yearly totals for each currency. |
 | **Trading** | A navigation placeholder for a future market workspace; watchlists and trade planning are not implemented yet. |
 
-Accounts also have a private avatar, one to five sidebar monitor timezones, temperature and location preferences, background adjustments, a Welcome wallpaper used behind authenticated pages, and a separate Loading wallpaper. Administrators manage accounts, authentication policy, and the public Login wallpaper. Each user can permanently clear one content area at a time from Settings after explicit confirmation.
+Accounts also have a private avatar, one to five sidebar monitor timezones, temperature and location preferences, a default Lines visibility, background adjustments, a Welcome wallpaper used behind authenticated pages, and a separate Loading wallpaper. Administrators manage accounts, authentication policy, public Lines moderation, and the public Login wallpaper. Each user can permanently clear one content area at a time from Settings after explicit confirmation.
 
 ## Dashboard widgets
 
@@ -185,11 +187,11 @@ A path prefix is preserved: `https://example.com/pandan/` becomes `https://examp
 
 `OIDC_ISSUER` is not normalized in the same way. Copy the issuer exactly from the provider's OpenID discovery document, including any realm, tenant, or path and its trailing-slash convention.
 
-OIDC can sign in an existing linked identity or link a verified email to an existing account. Whether a previously unseen identity may create an account is controlled separately by the administrator's OIDC registration setting.
+OIDC can sign in an existing linked identity or link a verified email to an existing account. Whether a previously unseen identity may create an account is controlled separately by the administrator's OIDC registration setting. When the provider supplies a `picture` claim and the account has no avatar, Pandan imports the supported public HTTPS image without replacing an avatar the user already chose.
 
 ## Data, backups, and upgrades
 
-All account records, cached remote content, avatars, wallpapers, contact photos, task attachments, and encrypted provider credentials live in SQLite. Pending migrations are embedded in the server and applied automatically at startup. SQLite uses WAL mode, a five-second busy timeout, and an eight-connection pool.
+All account records, cached remote content, avatars, wallpapers, contact photos, task and Kanban attachments, and encrypted provider credentials live in SQLite. Pending migrations are embedded in the server and applied automatically at startup. SQLite uses WAL mode, a five-second busy timeout, and an eight-connection pool.
 
 | Run mode | Database location |
 | --- | --- |
@@ -228,6 +230,7 @@ The `just db-reset` recipe permanently deletes the host and container-developmen
 | Wallpapers | JPEG, PNG, WebP, AVIF | 30 MB |
 | Avatars and contact photos | JPEG, PNG, WebP, AVIF | 10 MB |
 | Task attachments | Any content type accepted by the task attachment endpoint | 10 MB |
+| Kanban card attachments | Any content type accepted by the Kanban attachment endpoint | 10 MB |
 | Contact JSON import | Pandan or Monica JSON | 64 MB and at most 10,000 records |
 
 ## Remote content behavior
@@ -240,6 +243,7 @@ The `just db-reset` recipe permanently deletes the host and container-developmen
 ## Security model
 
 - Private records and uploads are scoped to the authenticated account by both handlers and database queries.
+- Kanban resources are scoped through active workspace membership and the server-enforced Admin, Member, and Guest permission matrix. Invitations can target only existing Pandan accounts, and the final workspace administrator cannot be removed or demoted.
 - Passwords are hashed with Argon2id outside Actix async workers.
 - Sessions use random server-side tokens in HTTP-only, SameSite Strict cookies and expire after 30 days. Set `COOKIE_SECURE=true` for HTTPS.
 - Administrator authorization is enforced by the server, including the invariant that at least one administrator remains.

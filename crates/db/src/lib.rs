@@ -125,14 +125,24 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "032_authentication_settings",
         include_str!("../migrations/032_authentication_settings.sql"),
     ),
+    ("033_lines", include_str!("../migrations/033_lines.sql")),
+    ("034_kanban", include_str!("../migrations/034_kanban.sql")),
+    (
+        "035_read_later",
+        include_str!("../migrations/035_read_later.sql"),
+    ),
 ];
 
 /// Maps migration names used by earlier development builds to their canonical names.
 ///
 /// The wallpaper migration originally shipped as `021_wallpaper_slots` before the avatar
-/// migration was inserted ahead of it. Existing databases may therefore contain the wallpaper
-/// table and the legacy ledger entry while current builds expect `022_wallpaper_slots`.
-const MIGRATION_ALIASES: &[(&str, &str)] = &[("022_wallpaper_slots", "021_wallpaper_slots")];
+/// migration was inserted ahead of it. The Read Later migration was briefly numbered `034`
+/// before the Kanban migration claimed that number. Existing development databases may contain
+/// either legacy ledger entry and must not reapply the corresponding schema.
+const MIGRATION_ALIASES: &[(&str, &str)] = &[
+    ("022_wallpaper_slots", "021_wallpaper_slots"),
+    ("035_read_later", "034_read_later"),
+];
 
 /// Opens the configured `SQLite` pool and applies all pending migrations.
 ///
@@ -271,7 +281,10 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("migration count loads");
-        assert_eq!(count, 32);
+        assert_eq!(
+            usize::try_from(count).expect("migration count fits usize"),
+            MIGRATIONS.len()
+        );
     }
 
     #[tokio::test]
@@ -563,6 +576,206 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_read_later_migration_name_is_reconciled() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("database connects");
+        sqlx::raw_sql("CREATE TABLE _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .expect("migration ledger creates");
+
+        for (name, migration_sql) in MIGRATIONS.iter().take(MIGRATIONS.len() - 1) {
+            let mut transaction = pool.begin().await.expect("migration starts");
+            sqlx::raw_sql(*migration_sql)
+                .execute(&mut *transaction)
+                .await
+                .expect("migration applies");
+            sqlx::query("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)")
+                .bind(*name)
+                .bind(chrono::Utc::now().to_rfc3339())
+                .execute(&mut *transaction)
+                .await
+                .expect("migration records");
+            transaction.commit().await.expect("migration commits");
+        }
+
+        sqlx::raw_sql(MIGRATIONS.last().expect("Read Later migration exists").1)
+            .execute(&pool)
+            .await
+            .expect("legacy Read Later migration applies");
+        sqlx::query("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)")
+            .bind("034_read_later")
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(&pool)
+            .await
+            .expect("legacy Read Later migration records");
+
+        run_migrations(&pool)
+            .await
+            .expect("renamed Read Later migration reconciles");
+
+        let canonical_recorded: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM _migrations WHERE name = ?)")
+                .bind("035_read_later")
+                .fetch_one(&pool)
+                .await
+                .expect("canonical migration record loads");
+        assert!(canonical_recorded);
+        let tables: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' \
+             AND name IN ('rss_read_later', 'youtube_watch_later')",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("Read Later tables remain");
+        assert_eq!(tables, 2);
+    }
+
+    #[tokio::test]
+    async fn imported_avatar_never_replaces_an_existing_avatar() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (user, _) = queries::create_account(
+            &pool,
+            "avatar-import@example.com",
+            "$argon2id$avatar-import",
+            "Avatar Import",
+        )
+        .await
+        .expect("account creates");
+
+        assert!(!queries::has_user_avatar(&pool, &user.id).await.unwrap());
+        assert!(
+            queries::insert_user_avatar_if_absent(
+                &pool,
+                &user.id,
+                "image/png",
+                b"provider-avatar",
+            )
+            .await
+            .expect("provider avatar stores")
+        );
+        assert!(queries::has_user_avatar(&pool, &user.id).await.unwrap());
+        assert!(
+            !queries::insert_user_avatar_if_absent(
+                &pool,
+                &user.id,
+                "image/jpeg",
+                b"replacement-avatar",
+            )
+            .await
+            .expect("duplicate provider avatar is ignored")
+        );
+
+        let avatar = queries::find_user_avatar(&pool, &user.id)
+            .await
+            .expect("avatar loads")
+            .expect("avatar exists");
+        assert_eq!(avatar.mime_type, "image/png");
+        assert_eq!(avatar.image_data, b"provider-avatar");
+    }
+
+    #[tokio::test]
+    async fn lines_visibility_replies_reactions_and_attachments_are_scoped() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (alice, alice_settings) = queries::create_account(
+            &pool,
+            "alice-lines@example.com",
+            "$argon2id$alice-lines",
+            "Alice Lines",
+        )
+        .await
+        .expect("Alice account creates");
+        let (bob, _) = queries::create_account(
+            &pool,
+            "bob-lines@example.com",
+            "$argon2id$bob-lines",
+            "Bob Lines",
+        )
+        .await
+        .expect("Bob account creates");
+        assert_eq!(alice_settings.lines_default_visibility, "private");
+
+        let public = queries::create_line_post(
+            &pool,
+            &alice.id,
+            &entities::LinePostDraft {
+                content: "Public note #rust".to_owned(),
+                visibility: "public".to_owned(),
+                reply_to_post_id: None,
+                tags: vec!["rust".to_owned()],
+            },
+        )
+        .await
+        .expect("public post creates");
+        let private = queries::create_line_post(
+            &pool,
+            &alice.id,
+            &entities::LinePostDraft {
+                content: "Private note #secret".to_owned(),
+                visibility: "private".to_owned(),
+                reply_to_post_id: None,
+                tags: vec!["secret".to_owned()],
+            },
+        )
+        .await
+        .expect("private post creates");
+
+        let bob_feed = queries::list_line_posts(&pool, &bob.id, "instance", "", "")
+            .await
+            .expect("Bob feed loads");
+        assert_eq!(bob_feed.len(), 1);
+        assert_eq!(bob_feed[0].id, public.id);
+        assert!(
+            queries::get_line_post(&pool, &bob.id, &private.id)
+                .await
+                .expect("private lookup completes")
+                .is_none()
+        );
+
+        assert!(
+            queries::add_line_post_reaction(&pool, &bob.id, &public.id, "👍")
+                .await
+                .expect("reaction stores")
+        );
+        assert!(
+            !queries::add_line_post_reaction(&pool, &bob.id, &private.id, "👍")
+                .await
+                .expect("private reaction is rejected")
+        );
+        let attachment = queries::create_line_post_attachment(
+            &pool,
+            &alice.id,
+            &private.id,
+            "secret.txt",
+            "text/plain",
+            b"private bytes",
+        )
+        .await
+        .expect("attachment stores")
+        .expect("Alice owns post");
+        assert!(
+            queries::get_line_post_attachment(&pool, &bob.id, &private.id, &attachment.id)
+                .await
+                .expect("private attachment lookup completes")
+                .is_none()
+        );
+
+        assert!(
+            queries::delete_line_post(&pool, &bob.id, &public.id, true)
+                .await
+                .expect("administrator public delete completes")
+        );
+        assert!(
+            !queries::delete_line_post(&pool, &bob.id, &private.id, true)
+                .await
+                .expect("administrator private delete is rejected")
+        );
+    }
+
+    #[tokio::test]
     async fn custom_color_migration_maps_existing_presets() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -697,6 +910,30 @@ mod tests {
         );
         assert!(
             queries::set_rss_item_read(&pool, &owner.id, &item.id, true)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            queries::set_rss_item_saved(&pool, &other.id, &item.id, true)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            queries::set_rss_item_saved(&pool, &owner.id, &item.id, true)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            queries::prune_rss_items(&pool, &owner.id, 30, "read")
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(
+            queries::set_rss_item_saved(&pool, &owner.id, &item.id, false)
                 .await
                 .unwrap()
                 .is_some()
@@ -1355,5 +1592,95 @@ mod tests {
             .await
             .expect("user count loads");
         assert_eq!(user_count, 1);
+    }
+
+    #[tokio::test]
+    async fn kanban_defaults_permissions_and_final_admin_are_preserved() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (owner, _) = queries::create_account(
+            &pool,
+            "kanban-owner@example.com",
+            "$argon2id$owner",
+            "Kanban Owner",
+        )
+        .await
+        .expect("owner creates");
+        let (guest, _) = queries::create_account(
+            &pool,
+            "kanban-guest@example.com",
+            "$argon2id$guest",
+            "Kanban Guest",
+        )
+        .await
+        .expect("guest creates");
+
+        let workspace =
+            queries::create_kanban_workspace(&pool, &owner.id, "Product", "Shared delivery work")
+                .await
+                .expect("workspace creates");
+        assert_eq!(workspace.role, "admin");
+        assert_eq!(workspace.permissions.len(), 24);
+        assert_eq!(
+            queries::update_kanban_member_role(&pool, &workspace.id, &owner.id, "member")
+                .await
+                .expect("demotion is checked"),
+            Some(false)
+        );
+        assert_eq!(
+            queries::remove_kanban_member(&pool, &workspace.id, &owner.id)
+                .await
+                .expect("removal is checked"),
+            Some(false)
+        );
+
+        assert!(
+            queries::invite_kanban_member(&pool, &workspace.id, &guest.id, "guest", &owner.id,)
+                .await
+                .expect("guest is invited")
+        );
+        assert!(
+            queries::respond_to_kanban_invitation(&pool, &workspace.id, &guest.id, true)
+                .await
+                .expect("guest accepts")
+        );
+        let guest_permissions =
+            queries::kanban_effective_permissions(&pool, &workspace.id, &guest.id)
+                .await
+                .expect("guest permissions load");
+        assert_eq!(guest_permissions.len(), 6);
+        assert!(!guest_permissions.contains(&"board:create".to_owned()));
+        assert!(
+            queries::set_kanban_member_permission(
+                &pool,
+                &workspace.id,
+                &guest.id,
+                "board:create",
+                true,
+            )
+            .await
+            .expect("override saves")
+        );
+        assert!(
+            queries::kanban_has_permission(&pool, &workspace.id, &guest.id, "board:create")
+                .await
+                .expect("override resolves")
+        );
+
+        let board_id =
+            queries::create_kanban_board(&pool, &workspace.id, &owner.id, "Launch", "", "private")
+                .await
+                .expect("board creates");
+        let board = queries::get_kanban_board(&pool, &board_id, &owner.id)
+            .await
+            .expect("board loads")
+            .expect("board exists");
+        assert_eq!(
+            board
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Todo", "In Progress", "Finished"]
+        );
     }
 }

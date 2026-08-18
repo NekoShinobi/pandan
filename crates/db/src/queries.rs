@@ -1,9 +1,14 @@
 use crate::entities::{
     AppMetadata, AuthenticationSettings, CalendarEvent, CalendarEventDraft, CalendarSubscription,
-    CodingCredential, CodingProject, DashboardWidget, FeedItem, JournalNode, ManagedUser,
-    OidcAuthorization, PaymentSubscription, RssItem, RssItemDraft, RssSubscription,
-    RssSubscriptionDraft, SessionAccount, Task, TaskAttachment, TaskDraft, TaskSubtask, User,
-    UserAppearance, UserAvatar, UserBackground, UserCredentials, UserSettings, Workspace,
+    CodingCredential, CodingProject, DashboardWidget, FeedItem, JournalNode, KanbanActivity,
+    KanbanAttachment, KanbanBoard, KanbanBoardSummary, KanbanCard, KanbanCardDraft,
+    KanbanChecklist, KanbanChecklistItem, KanbanColumn, KanbanComment, KanbanDirectoryUser,
+    KanbanInvitation, KanbanLabel, KanbanMember, KanbanMemberPermission, KanbanOverview,
+    KanbanRolePermission, KanbanWorkspace, KanbanWorkspaceSettings, LinePost, LinePostAttachment,
+    LinePostDraft, LinePostReaction, ManagedUser, OidcAuthorization, PaymentSubscription, RssItem,
+    RssItemDraft, RssSubscription, RssSubscriptionDraft, SessionAccount, Task, TaskAttachment,
+    TaskDraft, TaskSubtask, User, UserAppearance, UserAvatar, UserBackground, UserCredentials,
+    UserSettings, Workspace,
 };
 pub use crate::youtube_queries::*;
 use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
@@ -53,6 +58,28 @@ struct TaskRecord {
 }
 
 #[derive(Debug, Clone, FromRow)]
+struct LinePostRecord {
+    id: String,
+    user_id: String,
+    author_name: String,
+    content: String,
+    visibility: String,
+    reply_to_post_id: Option<String>,
+    reply_to_author_name: Option<String>,
+    reply_to_content: Option<String>,
+    reply_count: i64,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct LinePostReactionRecord {
+    emoji: String,
+    count: i64,
+    reacted_by_viewer: bool,
+}
+
+#[derive(Debug, Clone, FromRow)]
 struct UserSettingsRecord {
     user_id: String,
     display_name: String,
@@ -60,6 +87,7 @@ struct UserSettingsRecord {
     timezone: String,
     sidebar_timezones_json: String,
     temperature_unit: String,
+    lines_default_visibility: String,
     updated_at: String,
 }
 
@@ -77,6 +105,7 @@ impl UserSettingsRecord {
             timezone: self.timezone,
             sidebar_timezones,
             temperature_unit: self.temperature_unit,
+            lines_default_visibility: self.lines_default_visibility,
             updated_at: self.updated_at,
         }
     }
@@ -768,6 +797,359 @@ pub async fn clear_completed_tasks(pool: &SqlitePool, user_id: &str) -> Result<u
     .rows_affected())
 }
 
+async fn hydrate_line_post(
+    pool: &SqlitePool,
+    viewer_id: &str,
+    record: LinePostRecord,
+) -> Result<LinePost, sqlx::Error> {
+    let tags = sqlx::query_scalar::<_, String>(
+        "SELECT tag FROM line_post_tags WHERE post_id = ? ORDER BY tag COLLATE NOCASE ASC",
+    )
+    .bind(&record.id)
+    .fetch_all(pool)
+    .await?;
+    let attachments = sqlx::query_as::<_, LinePostAttachment>(
+        "SELECT id, file_name, mime_type, byte_size, created_at \
+         FROM line_post_attachments WHERE post_id = ? ORDER BY created_at ASC, id ASC",
+    )
+    .bind(&record.id)
+    .fetch_all(pool)
+    .await?;
+    let reactions = sqlx::query_as::<_, LinePostReactionRecord>(
+        "SELECT emoji, COUNT(*) AS count, \
+                CAST(MAX(CASE WHEN user_id = ? THEN 1 ELSE 0 END) AS BOOLEAN) \
+                    AS reacted_by_viewer \
+         FROM line_post_reactions WHERE post_id = ? \
+         GROUP BY emoji ORDER BY MIN(created_at) ASC, emoji ASC",
+    )
+    .bind(viewer_id)
+    .bind(&record.id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|reaction| LinePostReaction {
+        emoji: reaction.emoji,
+        count: reaction.count,
+        reacted_by_viewer: reaction.reacted_by_viewer,
+    })
+    .collect();
+
+    Ok(LinePost {
+        id: record.id,
+        user_id: record.user_id,
+        author_name: record.author_name,
+        content: record.content,
+        visibility: record.visibility,
+        reply_to_post_id: record.reply_to_post_id,
+        reply_to_author_name: record.reply_to_author_name,
+        reply_to_content: record.reply_to_content,
+        tags,
+        attachments,
+        reactions,
+        reply_count: record.reply_count,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    })
+}
+
+/// Lists Lines posts visible to an authenticated viewer.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the feed cannot be loaded.
+pub async fn list_line_posts(
+    pool: &SqlitePool,
+    viewer_id: &str,
+    scope: &str,
+    query: &str,
+    tag: &str,
+) -> Result<Vec<LinePost>, sqlx::Error> {
+    let search_pattern = format!("%{}%", query.to_lowercase());
+    let records = sqlx::query_as::<_, LinePostRecord>(
+        "SELECT p.id, p.user_id, author.display_name AS author_name, p.content, p.visibility, \
+                p.reply_to_post_id, reply_author.display_name AS reply_to_author_name, \
+                parent.content AS reply_to_content, \
+                (SELECT COUNT(*) FROM line_posts replies \
+                 WHERE replies.reply_to_post_id = p.id \
+                   AND (replies.visibility = 'public' OR replies.user_id = ?)) AS reply_count, \
+                p.created_at, p.updated_at \
+         FROM line_posts p \
+         JOIN user_settings author ON author.user_id = p.user_id \
+         LEFT JOIN line_posts parent ON parent.id = p.reply_to_post_id \
+         LEFT JOIN user_settings reply_author ON reply_author.user_id = parent.user_id \
+         WHERE (p.visibility = 'public' OR p.user_id = ?) \
+           AND (? = 'instance' OR p.user_id = ?) \
+           AND (? = '' OR LOWER(p.content) LIKE ?) \
+           AND (? = '' OR EXISTS( \
+               SELECT 1 FROM line_post_tags filter_tags \
+               WHERE filter_tags.post_id = p.id AND filter_tags.tag = ? COLLATE NOCASE \
+           )) \
+         ORDER BY p.created_at DESC, p.id DESC LIMIT 100",
+    )
+    .bind(viewer_id)
+    .bind(viewer_id)
+    .bind(scope)
+    .bind(viewer_id)
+    .bind(query)
+    .bind(&search_pattern)
+    .bind(tag)
+    .bind(tag)
+    .fetch_all(pool)
+    .await?;
+
+    let mut posts = Vec::with_capacity(records.len());
+    for record in records {
+        posts.push(hydrate_line_post(pool, viewer_id, record).await?);
+    }
+    Ok(posts)
+}
+
+/// Loads one Lines post only when it is visible to the authenticated viewer.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the post cannot be queried.
+pub async fn get_line_post(
+    pool: &SqlitePool,
+    viewer_id: &str,
+    post_id: &str,
+) -> Result<Option<LinePost>, sqlx::Error> {
+    let record = sqlx::query_as::<_, LinePostRecord>(
+        "SELECT p.id, p.user_id, author.display_name AS author_name, p.content, p.visibility, \
+                p.reply_to_post_id, reply_author.display_name AS reply_to_author_name, \
+                parent.content AS reply_to_content, \
+                (SELECT COUNT(*) FROM line_posts replies \
+                 WHERE replies.reply_to_post_id = p.id \
+                   AND (replies.visibility = 'public' OR replies.user_id = ?)) AS reply_count, \
+                p.created_at, p.updated_at \
+         FROM line_posts p \
+         JOIN user_settings author ON author.user_id = p.user_id \
+         LEFT JOIN line_posts parent ON parent.id = p.reply_to_post_id \
+         LEFT JOIN user_settings reply_author ON reply_author.user_id = parent.user_id \
+         WHERE p.id = ? AND (p.visibility = 'public' OR p.user_id = ?)",
+    )
+    .bind(viewer_id)
+    .bind(post_id)
+    .bind(viewer_id)
+    .fetch_optional(pool)
+    .await?;
+
+    match record {
+        Some(record) => Ok(Some(hydrate_line_post(pool, viewer_id, record).await?)),
+        None => Ok(None),
+    }
+}
+
+/// Creates one Lines post and its normalized hashtag index atomically.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the post cannot be stored.
+pub async fn create_line_post(
+    pool: &SqlitePool,
+    user_id: &str,
+    draft: &LinePostDraft,
+) -> Result<LinePost, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut transaction = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO line_posts \
+         (id, user_id, content, visibility, reply_to_post_id, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(user_id)
+    .bind(&draft.content)
+    .bind(&draft.visibility)
+    .bind(&draft.reply_to_post_id)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *transaction)
+    .await?;
+    for tag in &draft.tags {
+        sqlx::query("INSERT INTO line_post_tags (post_id, tag) VALUES (?, ?)")
+            .bind(&id)
+            .bind(tag)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    transaction.commit().await?;
+    get_line_post(pool, user_id, &id)
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)
+}
+
+/// Deletes a post owned by the actor, or a public post when the actor is an administrator.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the delete cannot be completed.
+pub async fn delete_line_post(
+    pool: &SqlitePool,
+    actor_id: &str,
+    post_id: &str,
+    administrator: bool,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "DELETE FROM line_posts WHERE id = ? \
+         AND (user_id = ? OR (? AND visibility = 'public'))",
+    )
+    .bind(post_id)
+    .bind(actor_id)
+    .bind(administrator)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
+/// Stores an attachment on a post owned by the authenticated user.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when ownership cannot be checked or storage fails.
+pub async fn create_line_post_attachment(
+    pool: &SqlitePool,
+    user_id: &str,
+    post_id: &str,
+    file_name: &str,
+    mime_type: &str,
+    data: &[u8],
+) -> Result<Option<LinePostAttachment>, sqlx::Error> {
+    let owns_post: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM line_posts WHERE id = ? AND user_id = ?)")
+            .bind(post_id)
+            .bind(user_id)
+            .fetch_one(pool)
+            .await?;
+    if !owns_post {
+        return Ok(None);
+    }
+    let attachment = LinePostAttachment {
+        id: uuid::Uuid::new_v4().to_string(),
+        file_name: file_name.to_owned(),
+        mime_type: mime_type.to_owned(),
+        byte_size: i64::try_from(data.len()).unwrap_or(i64::MAX),
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    sqlx::query(
+        "INSERT INTO line_post_attachments \
+         (id, post_id, file_name, mime_type, byte_size, file_data, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&attachment.id)
+    .bind(post_id)
+    .bind(&attachment.file_name)
+    .bind(&attachment.mime_type)
+    .bind(attachment.byte_size)
+    .bind(data)
+    .bind(&attachment.created_at)
+    .execute(pool)
+    .await?;
+    Ok(Some(attachment))
+}
+
+/// Loads attachment bytes only when the parent post is visible to the viewer.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the attachment cannot be queried.
+pub async fn get_line_post_attachment(
+    pool: &SqlitePool,
+    viewer_id: &str,
+    post_id: &str,
+    attachment_id: &str,
+) -> Result<Option<(String, String, Vec<u8>)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT a.file_name, a.mime_type, a.file_data \
+         FROM line_post_attachments a \
+         JOIN line_posts p ON p.id = a.post_id \
+         WHERE a.id = ? AND a.post_id = ? \
+           AND (p.visibility = 'public' OR p.user_id = ?)",
+    )
+    .bind(attachment_id)
+    .bind(post_id)
+    .bind(viewer_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Deletes an attachment from a post owned by the authenticated user.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the delete cannot be completed.
+pub async fn delete_line_post_attachment(
+    pool: &SqlitePool,
+    user_id: &str,
+    post_id: &str,
+    attachment_id: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "DELETE FROM line_post_attachments WHERE id = ? AND post_id = ? \
+         AND EXISTS(SELECT 1 FROM line_posts WHERE id = ? AND user_id = ?)",
+    )
+    .bind(attachment_id)
+    .bind(post_id)
+    .bind(post_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
+/// Adds one reaction when the target post is visible to the authenticated user.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the reaction cannot be stored.
+pub async fn add_line_post_reaction(
+    pool: &SqlitePool,
+    user_id: &str,
+    post_id: &str,
+    emoji: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "INSERT OR IGNORE INTO line_post_reactions (post_id, user_id, emoji, created_at) \
+         SELECT id, ?, ?, ? FROM line_posts \
+         WHERE id = ? AND (visibility = 'public' OR user_id = ?)",
+    )
+    .bind(user_id)
+    .bind(emoji)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(post_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
+/// Removes one reaction created by the authenticated user.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the reaction cannot be removed.
+pub async fn remove_line_post_reaction(
+    pool: &SqlitePool,
+    user_id: &str,
+    post_id: &str,
+    emoji: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "DELETE FROM line_post_reactions WHERE post_id = ? AND user_id = ? AND emoji = ?",
+    )
+    .bind(post_id)
+    .bind(user_id)
+    .bind(emoji)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
 /// Deletes one complete category of content owned by an authenticated account.
 ///
 /// Shared YouTube channel and video metadata is retained because other accounts may use it.
@@ -800,6 +1182,11 @@ pub async fn delete_user_content(
             .execute(&mut *transaction)
             .await?
             .rows_affected(),
+        "lines" => sqlx::query("DELETE FROM line_posts WHERE user_id = ?")
+            .bind(user_id)
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected(),
         "calendar" => sqlx::query("DELETE FROM calendar_subscriptions WHERE user_id = ?")
             .bind(user_id)
             .execute(&mut *transaction)
@@ -816,6 +1203,11 @@ pub async fn delete_user_content(
             .await?
             .rows_affected(),
         "youtube" => {
+            let watch_later = sqlx::query("DELETE FROM youtube_watch_later WHERE user_id = ?")
+                .bind(user_id)
+                .execute(&mut *transaction)
+                .await?
+                .rows_affected();
             let groups = sqlx::query("DELETE FROM youtube_groups WHERE user_id = ?")
                 .bind(user_id)
                 .execute(&mut *transaction)
@@ -831,7 +1223,7 @@ pub async fn delete_user_content(
                 .execute(&mut *transaction)
                 .await?
                 .rows_affected();
-            groups + subscriptions + settings
+            watch_later + groups + subscriptions + settings
         }
         "coding" => {
             let projects = sqlx::query("DELETE FROM coding_projects WHERE user_id = ?")
@@ -1317,10 +1709,12 @@ pub async fn list_rss_subscriptions(
 pub async fn list_rss_items(pool: &SqlitePool, user_id: &str) -> Result<Vec<RssItem>, sqlx::Error> {
     sqlx::query_as::<_, RssItem>(
         "SELECT i.id, i.subscription_id, s.title AS source, s.category, s.base_url, i.url, \
-         i.title, i.summary, i.published_at, i.fetched_at, i.read_at \
+         i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at \
          FROM rss_items i JOIN rss_subscriptions s ON s.id = i.subscription_id \
+         LEFT JOIN rss_read_later rl ON rl.item_id = i.id AND rl.user_id = ? \
          WHERE s.user_id = ? ORDER BY datetime(i.published_at) DESC, i.fetched_at DESC",
     )
+    .bind(user_id)
     .bind(user_id)
     .fetch_all(pool)
     .await
@@ -1551,10 +1945,65 @@ pub async fn set_rss_item_read(
     }
     sqlx::query_as::<_, RssItem>(
         "SELECT i.id, i.subscription_id, s.title AS source, s.category, s.base_url, i.url, \
-         i.title, i.summary, i.published_at, i.fetched_at, i.read_at \
+         i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at \
          FROM rss_items i JOIN rss_subscriptions s ON s.id = i.subscription_id \
+         LEFT JOIN rss_read_later rl ON rl.item_id = i.id AND rl.user_id = ? \
          WHERE i.id = ? AND s.user_id = ?",
     )
+    .bind(user_id)
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Saves or removes one user-owned RSS entry from Read Later.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when ownership cannot be checked or the row cannot be stored.
+pub async fn set_rss_item_saved(
+    pool: &SqlitePool,
+    user_id: &str,
+    id: &str,
+    saved: bool,
+) -> Result<Option<RssItem>, sqlx::Error> {
+    let owned: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM rss_items i JOIN rss_subscriptions s \
+         ON s.id = i.subscription_id WHERE i.id = ? AND s.user_id = ?)",
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    if owned == 0 {
+        return Ok(None);
+    }
+    if saved {
+        sqlx::query(
+            "INSERT INTO rss_read_later (user_id, item_id, saved_at) VALUES (?, ?, ?) \
+             ON CONFLICT(user_id, item_id) DO UPDATE SET saved_at = excluded.saved_at",
+        )
+        .bind(user_id)
+        .bind(id)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(pool)
+        .await?;
+    } else {
+        sqlx::query("DELETE FROM rss_read_later WHERE user_id = ? AND item_id = ?")
+            .bind(user_id)
+            .bind(id)
+            .execute(pool)
+            .await?;
+    }
+    sqlx::query_as::<_, RssItem>(
+        "SELECT i.id, i.subscription_id, s.title AS source, s.category, s.base_url, i.url, \
+         i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at \
+         FROM rss_items i JOIN rss_subscriptions s ON s.id = i.subscription_id \
+         LEFT JOIN rss_read_later rl ON rl.item_id = i.id AND rl.user_id = ? \
+         WHERE i.id = ? AND s.user_id = ?",
+    )
+    .bind(user_id)
     .bind(id)
     .bind(user_id)
     .fetch_optional(pool)
@@ -1568,12 +2017,15 @@ pub async fn set_rss_item_read(
 /// Returns the underlying `SQLx` error when expired entries cannot be removed.
 pub async fn apply_rss_retention(pool: &SqlitePool, user_id: &str) -> Result<u64, sqlx::Error> {
     Ok(sqlx::query(
-        "DELETE FROM rss_items WHERE EXISTS (\
+        "DELETE FROM rss_items WHERE NOT EXISTS (\
+         SELECT 1 FROM rss_read_later rl WHERE rl.item_id = rss_items.id AND rl.user_id = ?) \
+         AND EXISTS (\
          SELECT 1 FROM rss_subscriptions s WHERE s.id = rss_items.subscription_id \
          AND s.user_id = ? AND s.auto_delete_days IS NOT NULL \
          AND datetime(rss_items.published_at) < datetime('now', '-' || s.auto_delete_days || ' days') \
          AND (s.auto_delete_mode = 'all' OR rss_items.read_at IS NOT NULL))",
     )
+    .bind(user_id)
     .bind(user_id)
     .execute(pool)
     .await?
@@ -1592,11 +2044,14 @@ pub async fn prune_rss_items(
     mode: &str,
 ) -> Result<u64, sqlx::Error> {
     Ok(sqlx::query(
-        "DELETE FROM rss_items WHERE EXISTS (\
+        "DELETE FROM rss_items WHERE NOT EXISTS (\
+         SELECT 1 FROM rss_read_later rl WHERE rl.item_id = rss_items.id AND rl.user_id = ?) \
+         AND EXISTS (\
          SELECT 1 FROM rss_subscriptions s WHERE s.id = rss_items.subscription_id AND s.user_id = ?) \
          AND datetime(published_at) < datetime('now', '-' || ? || ' days') \
          AND (? = 'all' OR read_at IS NOT NULL)",
     )
+    .bind(user_id)
     .bind(user_id)
     .bind(days)
     .bind(mode)
@@ -2313,6 +2768,7 @@ pub async fn create_account(
             timezone: "UTC".to_owned(),
             sidebar_timezones: vec!["UTC".to_owned()],
             temperature_unit: "celsius".to_owned(),
+            lines_default_visibility: "private".to_owned(),
             updated_at: now,
         },
     ))
@@ -2373,6 +2829,7 @@ pub async fn find_session_account(
         "SELECT users.id, users.email, users.role, users.created_at, \
                 user_settings.display_name, user_settings.location, user_settings.timezone, \
                 user_settings.sidebar_timezones_json, user_settings.temperature_unit, \
+                user_settings.lines_default_visibility, \
                 user_settings.updated_at AS settings_updated_at \
          FROM sessions \
          JOIN users ON users.id = sessions.user_id \
@@ -2411,17 +2868,20 @@ pub async fn update_user_settings(
     timezone: &str,
     sidebar_timezones_json: &str,
     temperature_unit: &str,
+    lines_default_visibility: &str,
 ) -> Result<UserSettings, sqlx::Error> {
     let updated_at = chrono::Utc::now().to_rfc3339();
     sqlx::query(
         "UPDATE user_settings SET display_name = ?, location = ?, timezone = ?, \
-         sidebar_timezones_json = ?, temperature_unit = ?, updated_at = ? WHERE user_id = ?",
+         sidebar_timezones_json = ?, temperature_unit = ?, lines_default_visibility = ?, \
+         updated_at = ? WHERE user_id = ?",
     )
     .bind(display_name)
     .bind(location)
     .bind(timezone)
     .bind(sidebar_timezones_json)
     .bind(temperature_unit)
+    .bind(lines_default_visibility)
     .bind(&updated_at)
     .bind(user_id)
     .execute(pool)
@@ -2429,7 +2889,7 @@ pub async fn update_user_settings(
 
     sqlx::query_as::<_, UserSettingsRecord>(
         "SELECT user_id, display_name, location, timezone, sidebar_timezones_json, \
-                temperature_unit, updated_at \
+                temperature_unit, lines_default_visibility, updated_at \
          FROM user_settings WHERE user_id = ?",
     )
     .bind(user_id)
@@ -2666,6 +3126,43 @@ pub async fn upsert_user_avatar(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Reports whether the authenticated user already has an avatar image.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the lookup cannot be completed.
+pub async fn has_user_avatar(pool: &SqlitePool, user_id: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM user_avatars WHERE user_id = ?)")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+}
+
+/// Stores an imported avatar only when the user does not already have one.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the insert cannot be completed.
+pub async fn insert_user_avatar_if_absent(
+    pool: &SqlitePool,
+    user_id: &str,
+    mime_type: &str,
+    image_data: &[u8],
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "INSERT INTO user_avatars (user_id, mime_type, image_data, updated_at) \
+         VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO NOTHING",
+    )
+    .bind(user_id)
+    .bind(mime_type)
+    .bind(image_data)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(pool)
+    .await?
+    .rows_affected()
+        > 0)
 }
 
 /// Loads the authenticated user's avatar image.
@@ -3231,7 +3728,1727 @@ async fn insert_initial_administrator(
             timezone: "UTC".to_owned(),
             sidebar_timezones: vec!["UTC".to_owned()],
             temperature_unit: "celsius".to_owned(),
+            lines_default_visibility: "private".to_owned(),
             updated_at: now,
         },
     )))
+}
+
+const KANBAN_PERMISSIONS: &[&str] = &[
+    "workspace:view",
+    "workspace:edit",
+    "workspace:delete",
+    "workspace:manage",
+    "board:view",
+    "board:create",
+    "board:edit",
+    "board:delete",
+    "list:view",
+    "list:create",
+    "list:edit",
+    "list:delete",
+    "card:view",
+    "card:create",
+    "card:edit",
+    "card:delete",
+    "comment:view",
+    "comment:create",
+    "comment:edit",
+    "comment:delete",
+    "member:view",
+    "member:invite",
+    "member:edit",
+    "member:remove",
+];
+
+fn kanban_default_permission(role: &str, permission: &str) -> bool {
+    match role {
+        "admin" => true,
+        "member" => matches!(
+            permission,
+            "workspace:view"
+                | "board:view"
+                | "board:create"
+                | "list:view"
+                | "list:create"
+                | "list:edit"
+                | "list:delete"
+                | "card:view"
+                | "card:create"
+                | "card:edit"
+                | "card:delete"
+                | "comment:view"
+                | "comment:create"
+                | "comment:edit"
+                | "comment:delete"
+                | "member:view"
+        ),
+        "guest" => matches!(
+            permission,
+            "workspace:view"
+                | "board:view"
+                | "list:view"
+                | "card:view"
+                | "comment:view"
+                | "member:view"
+        ),
+        _ => false,
+    }
+}
+
+async fn seed_kanban_role_permissions(
+    transaction: &mut Transaction<'_, Sqlite>,
+    workspace_id: &str,
+) -> Result<(), sqlx::Error> {
+    for role in ["admin", "member", "guest"] {
+        for permission in KANBAN_PERMISSIONS {
+            sqlx::query(
+                "INSERT INTO kanban_role_permissions \
+                 (workspace_id, role, permission, granted) VALUES (?, ?, ?, ?)",
+            )
+            .bind(workspace_id)
+            .bind(role)
+            .bind(*permission)
+            .bind(kanban_default_permission(role, permission))
+            .execute(&mut **transaction)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Returns the active workspace role for a Pandan account.
+pub async fn kanban_workspace_role(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    user_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT role FROM kanban_workspace_members \
+         WHERE workspace_id = ? AND user_id = ? AND status = 'active'",
+    )
+    .bind(workspace_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Resolves role permissions plus per-member overrides.
+pub async fn kanban_effective_permissions(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    user_id: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    let Some(role) = kanban_workspace_role(pool, workspace_id, user_id).await? else {
+        return Ok(Vec::new());
+    };
+    let role_permissions = sqlx::query_scalar::<_, String>(
+        "SELECT permission FROM kanban_role_permissions \
+         WHERE workspace_id = ? AND role = ? AND granted = 1",
+    )
+    .bind(workspace_id)
+    .bind(&role)
+    .fetch_all(pool)
+    .await?;
+    let overrides = sqlx::query_as::<_, KanbanMemberPermission>(
+        "SELECT user_id, permission, granted FROM kanban_member_permissions \
+         WHERE workspace_id = ? AND user_id = ?",
+    )
+    .bind(workspace_id)
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    let mut effective = role_permissions
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+    for permission_override in overrides {
+        if permission_override.granted {
+            effective.insert(permission_override.permission);
+        } else {
+            effective.remove(&permission_override.permission);
+        }
+    }
+    let mut permissions = effective.into_iter().collect::<Vec<_>>();
+    permissions.sort();
+    Ok(permissions)
+}
+
+/// Checks one effective workspace permission.
+pub async fn kanban_has_permission(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    user_id: &str,
+    permission: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(kanban_effective_permissions(pool, workspace_id, user_id)
+        .await?
+        .iter()
+        .any(|candidate| candidate == permission))
+}
+
+#[derive(Debug, FromRow)]
+struct KanbanWorkspaceRow {
+    id: String,
+    name: String,
+    description: String,
+    role: String,
+    member_count: i64,
+    board_count: i64,
+    created_at: String,
+    updated_at: String,
+}
+
+async fn hydrate_kanban_workspace(
+    pool: &SqlitePool,
+    user_id: &str,
+    row: KanbanWorkspaceRow,
+) -> Result<KanbanWorkspace, sqlx::Error> {
+    let permissions = kanban_effective_permissions(pool, &row.id, user_id).await?;
+    Ok(KanbanWorkspace {
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        role: row.role,
+        member_count: row.member_count,
+        board_count: row.board_count,
+        permissions,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
+}
+
+async fn get_kanban_workspace_row(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    user_id: &str,
+) -> Result<Option<KanbanWorkspaceRow>, sqlx::Error> {
+    sqlx::query_as::<_, KanbanWorkspaceRow>(
+        "SELECT w.id, w.name, w.description, m.role, \
+         (SELECT COUNT(*) FROM kanban_workspace_members active_member \
+          WHERE active_member.workspace_id = w.id AND active_member.status = 'active') AS member_count, \
+         (SELECT COUNT(*) FROM kanban_boards b WHERE b.workspace_id = w.id) AS board_count, \
+         w.created_at, w.updated_at \
+         FROM kanban_workspaces w \
+         JOIN kanban_workspace_members m ON m.workspace_id = w.id \
+         WHERE w.id = ? AND m.user_id = ? AND m.status = 'active'",
+    )
+    .bind(workspace_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Lists active workspaces and pending in-app invitations for one account.
+pub async fn kanban_overview(
+    pool: &SqlitePool,
+    user_id: &str,
+) -> Result<KanbanOverview, sqlx::Error> {
+    let rows = sqlx::query_as::<_, KanbanWorkspaceRow>(
+        "SELECT w.id, w.name, w.description, m.role, \
+         (SELECT COUNT(*) FROM kanban_workspace_members active_member \
+          WHERE active_member.workspace_id = w.id AND active_member.status = 'active') AS member_count, \
+         (SELECT COUNT(*) FROM kanban_boards b WHERE b.workspace_id = w.id) AS board_count, \
+         w.created_at, w.updated_at \
+         FROM kanban_workspaces w \
+         JOIN kanban_workspace_members m ON m.workspace_id = w.id \
+         WHERE m.user_id = ? AND m.status = 'active' \
+         ORDER BY w.updated_at DESC, w.name COLLATE NOCASE",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    let mut workspaces = Vec::with_capacity(rows.len());
+    for row in rows {
+        workspaces.push(hydrate_kanban_workspace(pool, user_id, row).await?);
+    }
+    let invitations = sqlx::query_as::<_, KanbanInvitation>(
+        "SELECT w.id AS workspace_id, w.name AS workspace_name, m.role, \
+         COALESCE(inviter_settings.display_name, 'Pandan member') AS invited_by_name, \
+         m.created_at \
+         FROM kanban_workspace_members m \
+         JOIN kanban_workspaces w ON w.id = m.workspace_id \
+         LEFT JOIN user_settings inviter_settings ON inviter_settings.user_id = m.invited_by_user_id \
+         WHERE m.user_id = ? AND m.status = 'invited' \
+         ORDER BY m.created_at DESC",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(KanbanOverview {
+        workspaces,
+        invitations,
+    })
+}
+
+/// Creates a workspace, its immutable admin membership, and the exact Kan role templates.
+pub async fn create_kanban_workspace(
+    pool: &SqlitePool,
+    user_id: &str,
+    name: &str,
+    description: &str,
+) -> Result<KanbanWorkspace, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut transaction = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO kanban_workspaces \
+         (id, name, description, created_by_user_id, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(name)
+    .bind(description)
+    .bind(user_id)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO kanban_workspace_members \
+         (workspace_id, user_id, role, status, invited_by_user_id, created_at, updated_at) \
+         VALUES (?, ?, 'admin', 'active', ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(user_id)
+    .bind(user_id)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *transaction)
+    .await?;
+    seed_kanban_role_permissions(&mut transaction, &id).await?;
+    transaction.commit().await?;
+    let row = get_kanban_workspace_row(pool, &id, user_id)
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)?;
+    hydrate_kanban_workspace(pool, user_id, row).await
+}
+
+/// Updates workspace identity fields after authorization by the server.
+pub async fn update_kanban_workspace(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    name: &str,
+    description: &str,
+) -> Result<bool, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    Ok(sqlx::query(
+        "UPDATE kanban_workspaces SET name = ?, description = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(name)
+    .bind(description)
+    .bind(now)
+    .bind(workspace_id)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
+/// Deletes a workspace after authorization by the server.
+pub async fn delete_kanban_workspace(
+    pool: &SqlitePool,
+    workspace_id: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query("DELETE FROM kanban_workspaces WHERE id = ?")
+        .bind(workspace_id)
+        .execute(pool)
+        .await?
+        .rows_affected()
+        > 0)
+}
+
+/// Loads member and permission settings for an active workspace member.
+pub async fn get_kanban_workspace_settings(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    user_id: &str,
+) -> Result<Option<KanbanWorkspaceSettings>, sqlx::Error> {
+    let Some(row) = get_kanban_workspace_row(pool, workspace_id, user_id).await? else {
+        return Ok(None);
+    };
+    let workspace = hydrate_kanban_workspace(pool, user_id, row).await?;
+    let members = sqlx::query_as::<_, KanbanMember>(
+        "SELECT m.user_id, settings.display_name, users.email, m.role, m.status, m.created_at \
+         FROM kanban_workspace_members m \
+         JOIN users ON users.id = m.user_id \
+         JOIN user_settings settings ON settings.user_id = m.user_id \
+         WHERE m.workspace_id = ? \
+         ORDER BY m.status = 'active' DESC, m.role = 'admin' DESC, settings.display_name COLLATE NOCASE",
+    )
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await?;
+    let role_permissions = sqlx::query_as::<_, KanbanRolePermission>(
+        "SELECT role, permission, granted FROM kanban_role_permissions \
+         WHERE workspace_id = ? ORDER BY role, permission",
+    )
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await?;
+    let member_overrides = sqlx::query_as::<_, KanbanMemberPermission>(
+        "SELECT user_id, permission, granted FROM kanban_member_permissions \
+         WHERE workspace_id = ? ORDER BY user_id, permission",
+    )
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(Some(KanbanWorkspaceSettings {
+        workspace,
+        members,
+        role_permissions,
+        member_overrides,
+    }))
+}
+
+/// Reports whether an account belongs to a Kanban workspace in any membership state.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the membership lookup cannot be completed.
+pub async fn is_kanban_workspace_member(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM kanban_workspace_members \
+         WHERE workspace_id = ? AND user_id = ?)",
+    )
+    .bind(workspace_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+}
+
+/// Searches existing Pandan accounts that are not already workspace members.
+pub async fn search_kanban_directory(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    query: &str,
+) -> Result<Vec<KanbanDirectoryUser>, sqlx::Error> {
+    let pattern = format!("%{}%", query.replace('%', "\\%").replace('_', "\\_"));
+    sqlx::query_as::<_, KanbanDirectoryUser>(
+        "SELECT users.id AS user_id, settings.display_name, users.email \
+         FROM users JOIN user_settings settings ON settings.user_id = users.id \
+         WHERE (settings.display_name LIKE ? ESCAPE '\\' OR users.email LIKE ? ESCAPE '\\') \
+           AND NOT EXISTS (SELECT 1 FROM kanban_workspace_members member \
+                           WHERE member.workspace_id = ? AND member.user_id = users.id) \
+         ORDER BY settings.display_name COLLATE NOCASE LIMIT 20",
+    )
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Invites one existing Pandan account into a workspace.
+pub async fn invite_kanban_member(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    target_user_id: &str,
+    role: &str,
+    inviter_user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    Ok(sqlx::query(
+        "INSERT INTO kanban_workspace_members \
+         (workspace_id, user_id, role, status, invited_by_user_id, created_at, updated_at) \
+         SELECT ?, users.id, ?, 'invited', ?, ?, ? FROM users WHERE users.id = ? \
+         ON CONFLICT(workspace_id, user_id) DO NOTHING",
+    )
+    .bind(workspace_id)
+    .bind(role)
+    .bind(inviter_user_id)
+    .bind(&now)
+    .bind(&now)
+    .bind(target_user_id)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
+/// Accepts or declines the current user's pending invitation.
+pub async fn respond_to_kanban_invitation(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    user_id: &str,
+    accept: bool,
+) -> Result<bool, sqlx::Error> {
+    if accept {
+        let now = chrono::Utc::now().to_rfc3339();
+        Ok(sqlx::query(
+            "UPDATE kanban_workspace_members SET status = 'active', updated_at = ? \
+             WHERE workspace_id = ? AND user_id = ? AND status = 'invited'",
+        )
+        .bind(now)
+        .bind(workspace_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?
+        .rows_affected()
+            > 0)
+    } else {
+        Ok(sqlx::query(
+            "DELETE FROM kanban_workspace_members \
+             WHERE workspace_id = ? AND user_id = ? AND status = 'invited'",
+        )
+        .bind(workspace_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?
+        .rows_affected()
+            > 0)
+    }
+}
+
+async fn kanban_active_admin_count(
+    pool: &SqlitePool,
+    workspace_id: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM kanban_workspace_members \
+         WHERE workspace_id = ? AND role = 'admin' AND status = 'active'",
+    )
+    .bind(workspace_id)
+    .fetch_one(pool)
+    .await
+}
+
+/// Changes a member role, returning `Some(false)` when it would remove the final admin.
+pub async fn update_kanban_member_role(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    user_id: &str,
+    role: &str,
+) -> Result<Option<bool>, sqlx::Error> {
+    let current: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM kanban_workspace_members \
+         WHERE workspace_id = ? AND user_id = ? AND status = 'active'",
+    )
+    .bind(workspace_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some(current) = current else {
+        return Ok(None);
+    };
+    if current == "admin"
+        && role != "admin"
+        && kanban_active_admin_count(pool, workspace_id).await? <= 1
+    {
+        return Ok(Some(false));
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE kanban_workspace_members SET role = ?, updated_at = ? \
+         WHERE workspace_id = ? AND user_id = ? AND status = 'active'",
+    )
+    .bind(role)
+    .bind(now)
+    .bind(workspace_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(Some(true))
+}
+
+/// Removes a workspace member while preserving the final administrator.
+pub async fn remove_kanban_member(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    user_id: &str,
+) -> Result<Option<bool>, sqlx::Error> {
+    let current: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM kanban_workspace_members WHERE workspace_id = ? AND user_id = ?",
+    )
+    .bind(workspace_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some(current) = current else {
+        return Ok(None);
+    };
+    if current == "admin" && kanban_active_admin_count(pool, workspace_id).await? <= 1 {
+        return Ok(Some(false));
+    }
+    sqlx::query("DELETE FROM kanban_workspace_members WHERE workspace_id = ? AND user_id = ?")
+        .bind(workspace_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(Some(true))
+}
+
+/// Changes a Member or Guest role permission. Admin grants stay immutable.
+pub async fn set_kanban_role_permission(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    role: &str,
+    permission: &str,
+    granted: bool,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE kanban_role_permissions SET granted = ? \
+         WHERE workspace_id = ? AND role = ? AND permission = ? AND role != 'admin'",
+    )
+    .bind(granted)
+    .bind(workspace_id)
+    .bind(role)
+    .bind(permission)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
+/// Upserts a per-member permission override.
+pub async fn set_kanban_member_permission(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    user_id: &str,
+    permission: &str,
+    granted: bool,
+) -> Result<bool, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    Ok(sqlx::query(
+        "INSERT INTO kanban_member_permissions \
+         (workspace_id, user_id, permission, granted, updated_at) VALUES (?, ?, ?, ?, ?) \
+         ON CONFLICT(workspace_id, user_id, permission) DO UPDATE SET \
+         granted = excluded.granted, updated_at = excluded.updated_at",
+    )
+    .bind(workspace_id)
+    .bind(user_id)
+    .bind(permission)
+    .bind(granted)
+    .bind(now)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
+/// Clears all overrides for one workspace member.
+pub async fn reset_kanban_member_permissions(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    user_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM kanban_member_permissions WHERE workspace_id = ? AND user_id = ?")
+        .bind(workspace_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Resolves a board to its workspace without exposing the board first.
+pub async fn kanban_board_workspace_id(
+    pool: &SqlitePool,
+    board_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT workspace_id FROM kanban_boards WHERE id = ?")
+        .bind(board_id)
+        .fetch_optional(pool)
+        .await
+}
+
+/// Resolves a column to its workspace.
+pub async fn kanban_column_workspace_id(
+    pool: &SqlitePool,
+    column_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT board.workspace_id FROM kanban_columns column_record \
+         JOIN kanban_boards board ON board.id = column_record.board_id \
+         WHERE column_record.id = ?",
+    )
+    .bind(column_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Resolves a card to its workspace.
+pub async fn kanban_card_workspace_id(
+    pool: &SqlitePool,
+    card_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT board.workspace_id FROM kanban_cards card \
+         JOIN kanban_columns column_record ON column_record.id = card.column_id \
+         JOIN kanban_boards board ON board.id = column_record.board_id WHERE card.id = ?",
+    )
+    .bind(card_id)
+    .fetch_optional(pool)
+    .await
+}
+
+#[derive(Debug, FromRow)]
+struct KanbanBoardRecord {
+    id: String,
+    workspace_id: String,
+    name: String,
+    description: String,
+    visibility: String,
+    archived: bool,
+    favorite: bool,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, FromRow)]
+struct KanbanColumnRecord {
+    id: String,
+    board_id: String,
+    name: String,
+    position: i64,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, FromRow)]
+struct KanbanCardRecord {
+    id: String,
+    column_id: String,
+    title: String,
+    description: String,
+    due_date: Option<String>,
+    position: i64,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct KanbanChecklistRecord {
+    id: String,
+    card_id: String,
+    name: String,
+    position: i64,
+}
+
+/// Lists active or archived boards available through one workspace membership.
+pub async fn list_kanban_boards(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    user_id: &str,
+    archived: bool,
+) -> Result<Vec<KanbanBoardSummary>, sqlx::Error> {
+    sqlx::query_as::<_, KanbanBoardSummary>(
+        "SELECT board.id, board.workspace_id, board.name, board.description, board.visibility, \
+         board.archived, EXISTS(SELECT 1 FROM kanban_board_favorites favorite \
+                               WHERE favorite.board_id = board.id AND favorite.user_id = ?) AS favorite, \
+         board.position, \
+         (SELECT COUNT(*) FROM kanban_columns column_record WHERE column_record.board_id = board.id) AS column_count, \
+         (SELECT COUNT(*) FROM kanban_cards card JOIN kanban_columns column_record ON column_record.id = card.column_id \
+          WHERE column_record.board_id = board.id AND card.archived_at IS NULL) AS card_count, \
+         board.created_at, board.updated_at \
+         FROM kanban_boards board \
+         WHERE board.workspace_id = ? AND board.archived = ? \
+           AND EXISTS(SELECT 1 FROM kanban_workspace_members member \
+                      WHERE member.workspace_id = board.workspace_id AND member.user_id = ? AND member.status = 'active') \
+         ORDER BY favorite DESC, board.position ASC, board.created_at ASC",
+    )
+    .bind(user_id)
+    .bind(workspace_id)
+    .bind(archived)
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Creates a board with the default Todo, In Progress, and Finished columns.
+pub async fn create_kanban_board(
+    pool: &SqlitePool,
+    workspace_id: &str,
+    user_id: &str,
+    name: &str,
+    description: &str,
+    visibility: &str,
+) -> Result<String, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut transaction = pool.begin().await?;
+    let position: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(position) + 1, 0) FROM kanban_boards WHERE workspace_id = ?",
+    )
+    .bind(workspace_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO kanban_boards \
+         (id, workspace_id, name, description, visibility, position, created_by_user_id, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(workspace_id)
+    .bind(name)
+    .bind(description)
+    .bind(visibility)
+    .bind(position)
+    .bind(user_id)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *transaction)
+    .await?;
+    for (column_position, column_name) in ["Todo", "In Progress", "Finished"].iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO kanban_columns (id, board_id, name, position, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&id)
+        .bind(column_name)
+        .bind(i64::try_from(column_position).unwrap_or(i64::MAX))
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    Ok(id)
+}
+
+/// Updates board metadata and archive state.
+pub async fn update_kanban_board(
+    pool: &SqlitePool,
+    board_id: &str,
+    name: &str,
+    description: &str,
+    visibility: &str,
+    archived: bool,
+) -> Result<bool, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    Ok(sqlx::query(
+        "UPDATE kanban_boards SET name = ?, description = ?, visibility = ?, archived = ?, updated_at = ? \
+         WHERE id = ?",
+    )
+    .bind(name)
+    .bind(description)
+    .bind(visibility)
+    .bind(archived)
+    .bind(now)
+    .bind(board_id)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
+/// Sets a per-user board favorite.
+pub async fn set_kanban_board_favorite(
+    pool: &SqlitePool,
+    board_id: &str,
+    user_id: &str,
+    favorite: bool,
+) -> Result<(), sqlx::Error> {
+    if favorite {
+        sqlx::query(
+            "INSERT OR IGNORE INTO kanban_board_favorites (board_id, user_id, created_at) VALUES (?, ?, ?)",
+        )
+        .bind(board_id)
+        .bind(user_id)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(pool)
+        .await?;
+    } else {
+        sqlx::query("DELETE FROM kanban_board_favorites WHERE board_id = ? AND user_id = ?")
+            .bind(board_id)
+            .bind(user_id)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
+/// Permanently deletes one authorized board and cascading children.
+pub async fn delete_kanban_board(pool: &SqlitePool, board_id: &str) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query("DELETE FROM kanban_boards WHERE id = ?")
+        .bind(board_id)
+        .execute(pool)
+        .await?
+        .rows_affected()
+        > 0)
+}
+
+async fn hydrate_kanban_card(
+    pool: &SqlitePool,
+    record: KanbanCardRecord,
+) -> Result<KanbanCard, sqlx::Error> {
+    let assignees = sqlx::query_as::<_, KanbanMember>(
+        "SELECT member.user_id, settings.display_name, users.email, member.role, member.status, member.created_at \
+         FROM kanban_card_assignees assignee \
+         JOIN kanban_workspace_members member ON member.workspace_id = assignee.workspace_id AND member.user_id = assignee.user_id \
+         JOIN users ON users.id = member.user_id \
+         JOIN user_settings settings ON settings.user_id = member.user_id \
+         WHERE assignee.card_id = ? AND member.status = 'active' \
+         ORDER BY settings.display_name COLLATE NOCASE",
+    )
+    .bind(&record.id)
+    .fetch_all(pool)
+    .await?;
+    let labels = sqlx::query_as::<_, KanbanLabel>(
+        "SELECT label.id, label.board_id, label.name, label.color \
+         FROM kanban_card_labels relation JOIN kanban_labels label ON label.id = relation.label_id \
+         WHERE relation.card_id = ? ORDER BY label.name COLLATE NOCASE",
+    )
+    .bind(&record.id)
+    .fetch_all(pool)
+    .await?;
+    let comments = sqlx::query_as::<_, KanbanComment>(
+        "SELECT comment.id, comment.card_id, comment.user_id, \
+         COALESCE(settings.display_name, 'Former member') AS author_name, comment.content, \
+         comment.created_at, comment.updated_at \
+         FROM kanban_comments comment \
+         LEFT JOIN user_settings settings ON settings.user_id = comment.user_id \
+         WHERE comment.card_id = ? ORDER BY comment.created_at ASC",
+    )
+    .bind(&record.id)
+    .fetch_all(pool)
+    .await?;
+    let checklist_rows = sqlx::query_as::<_, KanbanChecklistRecord>(
+        "SELECT id, card_id, name, position \
+         FROM kanban_checklists WHERE card_id = ? ORDER BY position ASC",
+    )
+    .bind(&record.id)
+    .fetch_all(pool)
+    .await?;
+    let mut checklists = Vec::with_capacity(checklist_rows.len());
+    for checklist in checklist_rows {
+        let items = sqlx::query_as::<_, KanbanChecklistItem>(
+            "SELECT id, checklist_id, title, completed, position \
+             FROM kanban_checklist_items WHERE checklist_id = ? ORDER BY position ASC",
+        )
+        .bind(&checklist.id)
+        .fetch_all(pool)
+        .await?;
+        checklists.push(KanbanChecklist {
+            id: checklist.id,
+            card_id: checklist.card_id,
+            name: checklist.name,
+            position: checklist.position,
+            items,
+        });
+    }
+    let attachments = sqlx::query_as::<_, KanbanAttachment>(
+        "SELECT id, card_id, file_name, mime_type, byte_size, created_at \
+         FROM kanban_attachments WHERE card_id = ? ORDER BY created_at ASC",
+    )
+    .bind(&record.id)
+    .fetch_all(pool)
+    .await?;
+    let activity = sqlx::query_as::<_, KanbanActivity>(
+        "SELECT activity.id, activity.card_id, \
+         COALESCE(settings.display_name, 'Former member') AS actor_name, activity.action, activity.detail, activity.created_at \
+         FROM kanban_card_activity activity \
+         LEFT JOIN user_settings settings ON settings.user_id = activity.user_id \
+         WHERE activity.card_id = ? ORDER BY activity.created_at DESC LIMIT 100",
+    )
+    .bind(&record.id)
+    .fetch_all(pool)
+    .await?;
+    Ok(KanbanCard {
+        id: record.id,
+        column_id: record.column_id,
+        title: record.title,
+        description: record.description,
+        due_date: record.due_date,
+        position: record.position,
+        assignees,
+        labels,
+        comments,
+        checklists,
+        attachments,
+        activity,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    })
+}
+
+/// Loads a fully hydrated card.
+pub async fn get_kanban_card(
+    pool: &SqlitePool,
+    card_id: &str,
+) -> Result<Option<KanbanCard>, sqlx::Error> {
+    let record = sqlx::query_as::<_, KanbanCardRecord>(
+        "SELECT id, column_id, title, description, due_date, position, created_at, updated_at \
+         FROM kanban_cards WHERE id = ? AND archived_at IS NULL",
+    )
+    .bind(card_id)
+    .fetch_optional(pool)
+    .await?;
+    match record {
+        Some(record) => Ok(Some(hydrate_kanban_card(pool, record).await?)),
+        None => Ok(None),
+    }
+}
+
+/// Loads a board, its columns, cards, labels, members, and effective permissions.
+pub async fn get_kanban_board(
+    pool: &SqlitePool,
+    board_id: &str,
+    user_id: &str,
+) -> Result<Option<KanbanBoard>, sqlx::Error> {
+    let record = sqlx::query_as::<_, KanbanBoardRecord>(
+        "SELECT board.id, board.workspace_id, board.name, board.description, board.visibility, \
+         board.archived, EXISTS(SELECT 1 FROM kanban_board_favorites favorite \
+                               WHERE favorite.board_id = board.id AND favorite.user_id = ?) AS favorite, \
+         board.created_at, board.updated_at \
+         FROM kanban_boards board WHERE board.id = ?",
+    )
+    .bind(user_id)
+    .bind(board_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some(record) = record else {
+        return Ok(None);
+    };
+    let permissions = kanban_effective_permissions(pool, &record.workspace_id, user_id).await?;
+    if !permissions
+        .iter()
+        .any(|permission| permission == "board:view")
+    {
+        return Ok(None);
+    }
+    let members = sqlx::query_as::<_, KanbanMember>(
+        "SELECT member.user_id, settings.display_name, users.email, member.role, member.status, member.created_at \
+         FROM kanban_workspace_members member \
+         JOIN users ON users.id = member.user_id JOIN user_settings settings ON settings.user_id = member.user_id \
+         WHERE member.workspace_id = ? AND member.status = 'active' \
+         ORDER BY member.role = 'admin' DESC, settings.display_name COLLATE NOCASE",
+    )
+    .bind(&record.workspace_id)
+    .fetch_all(pool)
+    .await?;
+    let labels = sqlx::query_as::<_, KanbanLabel>(
+        "SELECT id, board_id, name, color FROM kanban_labels WHERE board_id = ? ORDER BY name COLLATE NOCASE",
+    )
+    .bind(board_id)
+    .fetch_all(pool)
+    .await?;
+    let column_records = sqlx::query_as::<_, KanbanColumnRecord>(
+        "SELECT id, board_id, name, position, created_at, updated_at \
+         FROM kanban_columns WHERE board_id = ? ORDER BY position ASC, created_at ASC",
+    )
+    .bind(board_id)
+    .fetch_all(pool)
+    .await?;
+    let mut columns = Vec::with_capacity(column_records.len());
+    for column_record in column_records {
+        let card_records = sqlx::query_as::<_, KanbanCardRecord>(
+            "SELECT id, column_id, title, description, due_date, position, created_at, updated_at \
+             FROM kanban_cards WHERE column_id = ? AND archived_at IS NULL ORDER BY position ASC, created_at ASC",
+        )
+        .bind(&column_record.id)
+        .fetch_all(pool)
+        .await?;
+        let mut cards = Vec::with_capacity(card_records.len());
+        for card_record in card_records {
+            cards.push(hydrate_kanban_card(pool, card_record).await?);
+        }
+        columns.push(KanbanColumn {
+            id: column_record.id,
+            board_id: column_record.board_id,
+            name: column_record.name,
+            position: column_record.position,
+            cards,
+            created_at: column_record.created_at,
+            updated_at: column_record.updated_at,
+        });
+    }
+    Ok(Some(KanbanBoard {
+        id: record.id,
+        workspace_id: record.workspace_id,
+        name: record.name,
+        description: record.description,
+        visibility: record.visibility,
+        archived: record.archived,
+        favorite: record.favorite,
+        permissions,
+        members,
+        labels,
+        columns,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    }))
+}
+
+/// Creates a column at the end of a board.
+pub async fn create_kanban_column(
+    pool: &SqlitePool,
+    board_id: &str,
+    name: &str,
+) -> Result<String, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let position: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(position) + 1, 0) FROM kanban_columns WHERE board_id = ?",
+    )
+    .bind(board_id)
+    .fetch_one(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO kanban_columns (id, board_id, name, position, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(board_id)
+    .bind(name)
+    .bind(position)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(id)
+}
+
+/// Renames a column.
+pub async fn rename_kanban_column(
+    pool: &SqlitePool,
+    column_id: &str,
+    name: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(
+        sqlx::query("UPDATE kanban_columns SET name = ?, updated_at = ? WHERE id = ?")
+            .bind(name)
+            .bind(chrono::Utc::now().to_rfc3339())
+            .bind(column_id)
+            .execute(pool)
+            .await?
+            .rows_affected()
+            > 0,
+    )
+}
+
+/// Reorders a column within its board.
+pub async fn reorder_kanban_column(
+    pool: &SqlitePool,
+    column_id: &str,
+    target_position: i64,
+) -> Result<bool, sqlx::Error> {
+    let board_id: Option<String> =
+        sqlx::query_scalar("SELECT board_id FROM kanban_columns WHERE id = ?")
+            .bind(column_id)
+            .fetch_optional(pool)
+            .await?;
+    let Some(board_id) = board_id else {
+        return Ok(false);
+    };
+    let mut identifiers = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM kanban_columns WHERE board_id = ? ORDER BY position ASC, created_at ASC",
+    )
+    .bind(board_id)
+    .fetch_all(pool)
+    .await?;
+    let Some(current) = identifiers.iter().position(|id| id == column_id) else {
+        return Ok(false);
+    };
+    let moved = identifiers.remove(current);
+    let target = usize::try_from(target_position.max(0))
+        .unwrap_or(usize::MAX)
+        .min(identifiers.len());
+    identifiers.insert(target, moved);
+    let mut transaction = pool.begin().await?;
+    let now = chrono::Utc::now().to_rfc3339();
+    for (position, id) in identifiers.iter().enumerate() {
+        sqlx::query("UPDATE kanban_columns SET position = ?, updated_at = ? WHERE id = ?")
+            .bind(i64::try_from(position).unwrap_or(i64::MAX))
+            .bind(&now)
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    transaction.commit().await?;
+    Ok(true)
+}
+
+/// Deletes an empty column; cards must be moved first.
+pub async fn delete_kanban_column(pool: &SqlitePool, column_id: &str) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "DELETE FROM kanban_columns WHERE id = ? \
+         AND NOT EXISTS(SELECT 1 FROM kanban_cards WHERE column_id = ? AND archived_at IS NULL)",
+    )
+    .bind(column_id)
+    .bind(column_id)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
+async fn record_kanban_activity(
+    transaction: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+    user_id: &str,
+    action: &str,
+    detail: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO kanban_card_activity (id, card_id, user_id, action, detail, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(card_id)
+    .bind(user_id)
+    .bind(action)
+    .bind(detail)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+async fn replace_kanban_card_relations(
+    transaction: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+    draft: &KanbanCardDraft,
+) -> Result<(), sqlx::Error> {
+    let context: (String, String) = sqlx::query_as(
+        "SELECT board.workspace_id, board.id FROM kanban_cards card \
+         JOIN kanban_columns column_record ON column_record.id = card.column_id \
+         JOIN kanban_boards board ON board.id = column_record.board_id WHERE card.id = ?",
+    )
+    .bind(card_id)
+    .fetch_one(&mut **transaction)
+    .await?;
+    sqlx::query("DELETE FROM kanban_card_assignees WHERE card_id = ?")
+        .bind(card_id)
+        .execute(&mut **transaction)
+        .await?;
+    for assignee_id in &draft.assignee_ids {
+        sqlx::query(
+            "INSERT INTO kanban_card_assignees (card_id, workspace_id, user_id, created_at) \
+             SELECT ?, ?, member.user_id, ? FROM kanban_workspace_members member \
+             WHERE member.workspace_id = ? AND member.user_id = ? AND member.status = 'active'",
+        )
+        .bind(card_id)
+        .bind(&context.0)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(&context.0)
+        .bind(assignee_id)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    sqlx::query("DELETE FROM kanban_card_labels WHERE card_id = ?")
+        .bind(card_id)
+        .execute(&mut **transaction)
+        .await?;
+    for label_id in &draft.label_ids {
+        sqlx::query(
+            "INSERT INTO kanban_card_labels (card_id, label_id) \
+             SELECT ?, label.id FROM kanban_labels label WHERE label.id = ? AND label.board_id = ?",
+        )
+        .bind(card_id)
+        .bind(label_id)
+        .bind(&context.1)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Creates a card at the bottom of a column.
+pub async fn create_kanban_card(
+    pool: &SqlitePool,
+    column_id: &str,
+    user_id: &str,
+    draft: &KanbanCardDraft,
+) -> Result<KanbanCard, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut transaction = pool.begin().await?;
+    let position: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(position) + 1, 0) FROM kanban_cards \
+         WHERE column_id = ? AND archived_at IS NULL",
+    )
+    .bind(column_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO kanban_cards \
+         (id, column_id, title, description, due_date, position, created_by_user_id, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(column_id)
+    .bind(&draft.title)
+    .bind(&draft.description)
+    .bind(&draft.due_date)
+    .bind(position)
+    .bind(user_id)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *transaction)
+    .await?;
+    replace_kanban_card_relations(&mut transaction, &id, draft).await?;
+    record_kanban_activity(&mut transaction, &id, user_id, "card.created", "").await?;
+    transaction.commit().await?;
+    get_kanban_card(pool, &id)
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)
+}
+
+/// Updates card content, due date, labels, and assignees atomically.
+pub async fn update_kanban_card(
+    pool: &SqlitePool,
+    card_id: &str,
+    user_id: &str,
+    draft: &KanbanCardDraft,
+) -> Result<Option<KanbanCard>, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut transaction = pool.begin().await?;
+    let result = sqlx::query(
+        "UPDATE kanban_cards SET title = ?, description = ?, due_date = ?, updated_at = ? \
+         WHERE id = ? AND archived_at IS NULL",
+    )
+    .bind(&draft.title)
+    .bind(&draft.description)
+    .bind(&draft.due_date)
+    .bind(&now)
+    .bind(card_id)
+    .execute(&mut *transaction)
+    .await?;
+    if result.rows_affected() == 0 {
+        transaction.rollback().await?;
+        return Ok(None);
+    }
+    replace_kanban_card_relations(&mut transaction, card_id, draft).await?;
+    record_kanban_activity(&mut transaction, card_id, user_id, "card.updated", "").await?;
+    transaction.commit().await?;
+    get_kanban_card(pool, card_id).await
+}
+
+async fn rewrite_kanban_card_positions(
+    transaction: &mut Transaction<'_, Sqlite>,
+    column_id: &str,
+    card_ids: &[String],
+    updated_at: &str,
+) -> Result<(), sqlx::Error> {
+    for (position, card_id) in card_ids.iter().enumerate() {
+        sqlx::query(
+            "UPDATE kanban_cards SET column_id = ?, position = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(column_id)
+        .bind(i64::try_from(position).unwrap_or(i64::MAX))
+        .bind(updated_at)
+        .bind(card_id)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Moves and reorders a card within one board in a single transaction.
+pub async fn move_kanban_card(
+    pool: &SqlitePool,
+    card_id: &str,
+    target_column_id: &str,
+    target_position: i64,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let context: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT card.column_id, source.board_id, target.board_id \
+         FROM kanban_cards card \
+         JOIN kanban_columns source ON source.id = card.column_id \
+         JOIN kanban_columns target ON target.id = ? \
+         WHERE card.id = ? AND card.archived_at IS NULL",
+    )
+    .bind(target_column_id)
+    .bind(card_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((source_column_id, source_board_id, target_board_id)) = context else {
+        return Ok(false);
+    };
+    if source_board_id != target_board_id {
+        return Ok(false);
+    }
+    let mut source_ids = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM kanban_cards WHERE column_id = ? AND archived_at IS NULL \
+         ORDER BY position ASC, created_at ASC",
+    )
+    .bind(&source_column_id)
+    .fetch_all(pool)
+    .await?;
+    source_ids.retain(|id| id != card_id);
+    let mut target_ids = if source_column_id == target_column_id {
+        source_ids.clone()
+    } else {
+        sqlx::query_scalar::<_, String>(
+            "SELECT id FROM kanban_cards WHERE column_id = ? AND archived_at IS NULL \
+             ORDER BY position ASC, created_at ASC",
+        )
+        .bind(target_column_id)
+        .fetch_all(pool)
+        .await?
+    };
+    let target = usize::try_from(target_position.max(0))
+        .unwrap_or(usize::MAX)
+        .min(target_ids.len());
+    target_ids.insert(target, card_id.to_owned());
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut transaction = pool.begin().await?;
+    if source_column_id != target_column_id {
+        rewrite_kanban_card_positions(&mut transaction, &source_column_id, &source_ids, &now)
+            .await?;
+    }
+    rewrite_kanban_card_positions(&mut transaction, target_column_id, &target_ids, &now).await?;
+    record_kanban_activity(
+        &mut transaction,
+        card_id,
+        user_id,
+        "card.moved",
+        target_column_id,
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(true)
+}
+
+/// Archives a card while preserving its collaboration history.
+pub async fn archive_kanban_card(
+    pool: &SqlitePool,
+    card_id: &str,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut transaction = pool.begin().await?;
+    let result = sqlx::query(
+        "UPDATE kanban_cards SET archived_at = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL",
+    )
+    .bind(&now)
+    .bind(&now)
+    .bind(card_id)
+    .execute(&mut *transaction)
+    .await?;
+    if result.rows_affected() > 0 {
+        record_kanban_activity(&mut transaction, card_id, user_id, "card.archived", "").await?;
+    }
+    transaction.commit().await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Creates a board-scoped label.
+pub async fn create_kanban_label(
+    pool: &SqlitePool,
+    board_id: &str,
+    name: &str,
+    color: &str,
+) -> Result<KanbanLabel, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO kanban_labels (id, board_id, name, color, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(board_id)
+    .bind(name)
+    .bind(color)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(KanbanLabel {
+        id,
+        board_id: board_id.to_owned(),
+        name: name.to_owned(),
+        color: color.to_owned(),
+    })
+}
+
+/// Deletes a board-scoped label and its card relationships.
+pub async fn delete_kanban_label(
+    pool: &SqlitePool,
+    board_id: &str,
+    label_id: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(
+        sqlx::query("DELETE FROM kanban_labels WHERE id = ? AND board_id = ?")
+            .bind(label_id)
+            .bind(board_id)
+            .execute(pool)
+            .await?
+            .rows_affected()
+            > 0,
+    )
+}
+
+/// Resolves a comment to its workspace and author.
+pub async fn kanban_comment_context(
+    pool: &SqlitePool,
+    comment_id: &str,
+) -> Result<Option<(String, Option<String>)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT board.workspace_id, comment.user_id FROM kanban_comments comment \
+         JOIN kanban_cards card ON card.id = comment.card_id \
+         JOIN kanban_columns column_record ON column_record.id = card.column_id \
+         JOIN kanban_boards board ON board.id = column_record.board_id WHERE comment.id = ?",
+    )
+    .bind(comment_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Adds a comment and activity entry.
+pub async fn create_kanban_comment(
+    pool: &SqlitePool,
+    card_id: &str,
+    user_id: &str,
+    content: &str,
+) -> Result<String, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut transaction = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO kanban_comments (id, card_id, user_id, content, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(card_id)
+    .bind(user_id)
+    .bind(content)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *transaction)
+    .await?;
+    record_kanban_activity(
+        &mut transaction,
+        card_id,
+        user_id,
+        "comment.created",
+        content,
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(id)
+}
+
+/// Updates a comment after author or permission checks by the server.
+pub async fn update_kanban_comment(
+    pool: &SqlitePool,
+    comment_id: &str,
+    content: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(
+        sqlx::query("UPDATE kanban_comments SET content = ?, updated_at = ? WHERE id = ?")
+            .bind(content)
+            .bind(chrono::Utc::now().to_rfc3339())
+            .bind(comment_id)
+            .execute(pool)
+            .await?
+            .rows_affected()
+            > 0,
+    )
+}
+
+/// Deletes a comment after author or permission checks by the server.
+pub async fn delete_kanban_comment(
+    pool: &SqlitePool,
+    comment_id: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query("DELETE FROM kanban_comments WHERE id = ?")
+        .bind(comment_id)
+        .execute(pool)
+        .await?
+        .rows_affected()
+        > 0)
+}
+
+/// Adds a checklist to a card.
+pub async fn create_kanban_checklist(
+    pool: &SqlitePool,
+    card_id: &str,
+    name: &str,
+    user_id: &str,
+) -> Result<String, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut transaction = pool.begin().await?;
+    let position: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(position) + 1, 0) FROM kanban_checklists WHERE card_id = ?",
+    )
+    .bind(card_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO kanban_checklists (id, card_id, name, position, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(card_id)
+    .bind(name)
+    .bind(position)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *transaction)
+    .await?;
+    record_kanban_activity(
+        &mut transaction,
+        card_id,
+        user_id,
+        "checklist.created",
+        name,
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(id)
+}
+
+/// Resolves a checklist to its workspace and card.
+pub async fn kanban_checklist_context(
+    pool: &SqlitePool,
+    checklist_id: &str,
+) -> Result<Option<(String, String)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT board.workspace_id, checklist.card_id FROM kanban_checklists checklist \
+         JOIN kanban_cards card ON card.id = checklist.card_id \
+         JOIN kanban_columns column_record ON column_record.id = card.column_id \
+         JOIN kanban_boards board ON board.id = column_record.board_id WHERE checklist.id = ?",
+    )
+    .bind(checklist_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Adds an item to a checklist.
+pub async fn create_kanban_checklist_item(
+    pool: &SqlitePool,
+    checklist_id: &str,
+    title: &str,
+) -> Result<String, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let position: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(position) + 1, 0) FROM kanban_checklist_items WHERE checklist_id = ?",
+    )
+    .bind(checklist_id)
+    .fetch_one(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO kanban_checklist_items \
+         (id, checklist_id, title, completed, position, created_at, updated_at) \
+         VALUES (?, ?, ?, 0, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(checklist_id)
+    .bind(title)
+    .bind(position)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(id)
+}
+
+/// Updates a checklist item title and completion state.
+pub async fn update_kanban_checklist_item(
+    pool: &SqlitePool,
+    checklist_id: &str,
+    item_id: &str,
+    title: &str,
+    completed: bool,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE kanban_checklist_items SET title = ?, completed = ?, updated_at = ? \
+         WHERE id = ? AND checklist_id = ?",
+    )
+    .bind(title)
+    .bind(completed)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(item_id)
+    .bind(checklist_id)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
+/// Deletes a checklist and all of its items.
+pub async fn delete_kanban_checklist(
+    pool: &SqlitePool,
+    checklist_id: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query("DELETE FROM kanban_checklists WHERE id = ?")
+        .bind(checklist_id)
+        .execute(pool)
+        .await?
+        .rows_affected()
+        > 0)
+}
+
+/// Stores one workspace-authorized card attachment in SQLite.
+pub async fn create_kanban_attachment(
+    pool: &SqlitePool,
+    card_id: &str,
+    user_id: &str,
+    file_name: &str,
+    mime_type: &str,
+    data: &[u8],
+) -> Result<KanbanAttachment, sqlx::Error> {
+    let attachment = KanbanAttachment {
+        id: uuid::Uuid::new_v4().to_string(),
+        card_id: card_id.to_owned(),
+        file_name: file_name.to_owned(),
+        mime_type: mime_type.to_owned(),
+        byte_size: i64::try_from(data.len()).unwrap_or(i64::MAX),
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    let mut transaction = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO kanban_attachments \
+         (id, card_id, user_id, file_name, mime_type, byte_size, file_data, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&attachment.id)
+    .bind(card_id)
+    .bind(user_id)
+    .bind(file_name)
+    .bind(mime_type)
+    .bind(attachment.byte_size)
+    .bind(data)
+    .bind(&attachment.created_at)
+    .execute(&mut *transaction)
+    .await?;
+    record_kanban_activity(
+        &mut transaction,
+        card_id,
+        user_id,
+        "attachment.created",
+        file_name,
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(attachment)
+}
+
+/// Loads attachment bytes through the parent card workspace.
+pub async fn get_kanban_attachment(
+    pool: &SqlitePool,
+    attachment_id: &str,
+) -> Result<Option<(String, String, String, Vec<u8>)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT board.workspace_id, attachment.file_name, attachment.mime_type, attachment.file_data \
+         FROM kanban_attachments attachment \
+         JOIN kanban_cards card ON card.id = attachment.card_id \
+         JOIN kanban_columns column_record ON column_record.id = card.column_id \
+         JOIN kanban_boards board ON board.id = column_record.board_id \
+         WHERE attachment.id = ?",
+    )
+    .bind(attachment_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Deletes an attachment after authorization through its workspace.
+pub async fn delete_kanban_attachment(
+    pool: &SqlitePool,
+    attachment_id: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query("DELETE FROM kanban_attachments WHERE id = ?")
+        .bind(attachment_id)
+        .execute(pool)
+        .await?
+        .rows_affected()
+        > 0)
 }

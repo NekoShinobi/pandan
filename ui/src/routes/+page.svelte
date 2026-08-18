@@ -7,15 +7,18 @@
   import BookOpen from "lucide-svelte/icons/book-open";
   import CalendarDays from "lucide-svelte/icons/calendar-days";
   import ChartCandlestick from "lucide-svelte/icons/chart-candlestick";
+  import Check from "lucide-svelte/icons/check";
   import CheckSquare2 from "lucide-svelte/icons/square-check-big";
   import ChevronDown from "lucide-svelte/icons/chevron-down";
   import ChevronLeft from "lucide-svelte/icons/chevron-left";
   import Code2 from "lucide-svelte/icons/code-xml";
+  import Columns3 from "lucide-svelte/icons/columns-3";
   import ContactRound from "lucide-svelte/icons/contact-round";
   import Ellipsis from "lucide-svelte/icons/ellipsis";
   import Home from "lucide-svelte/icons/house";
   import ImageIcon from "lucide-svelte/icons/image";
   import Menu from "lucide-svelte/icons/menu";
+  import MessageSquareText from "lucide-svelte/icons/message-square-text";
   import Paperclip from "lucide-svelte/icons/paperclip";
   import Pause from "lucide-svelte/icons/pause";
   import Pencil from "lucide-svelte/icons/pencil";
@@ -42,6 +45,8 @@
   import ContactsPage from "$lib/ContactsPage.svelte";
   import DashboardWidgetCard from "$lib/DashboardWidgetCard.svelte";
   import JournalPage from "$lib/JournalPage.svelte";
+  import KanbanPage from "$lib/KanbanPage.svelte";
+  import LinesPage from "$lib/LinesPage.svelte";
   import RssReaderPage from "$lib/RssReaderPage.svelte";
   import SidebarUtilities from "$lib/SidebarUtilities.svelte";
   import SubscriptionsPage from "$lib/SubscriptionsPage.svelte";
@@ -82,6 +87,7 @@
     type DashboardWidget,
     type FeedItem,
     type ManagedUser,
+    type KanbanSection,
     type Task,
     type TaskAttachment,
     type TaskInput,
@@ -102,10 +108,12 @@
   type ProductPage =
     | "dashboard"
     | "tasks"
+    | "kanban"
     | "contacts"
     | "calendar"
     | "rss"
     | "journal"
+    | "lines"
     | "youtube"
     | "coding"
     | "subscriptions"
@@ -198,6 +206,12 @@
       scope: "journal",
       title: "All journal entries",
       description: "Every journal document and nested entry.",
+    },
+    {
+      scope: "lines",
+      title: "All Lines posts",
+      description:
+        "Your public and private posts, replies, reactions, and attachments.",
     },
     {
       scope: "youtube",
@@ -343,23 +357,30 @@
   const clockMarks = Array.from({ length: 12 }, (_, index) => index);
   const dashboardCalendarWeekdays = ["M", "T", "W", "T", "F", "S", "S"];
   const focusDurations = [15, 25, 45] as const;
+  const kanbanSubmenuItems: Array<{ id: KanbanSection; label: string }> = [
+    { id: "boards", label: "Boards" },
+    { id: "workspaces", label: "Workspaces" },
+    { id: "invitations", label: "Invitations" },
+  ];
 
   const productPages = [
     { id: "dashboard", label: "Dashboard", code: "01", icon: Home },
     { id: "tasks", label: "Tasks", code: "02", icon: CheckSquare2 },
-    { id: "contacts", label: "Contacts", code: "03", icon: ContactRound },
-    { id: "calendar", label: "Calendar", code: "04", icon: CalendarDays },
-    { id: "rss", label: "RSS", code: "05", icon: Rss },
-    { id: "journal", label: "Journal", code: "06", icon: BookOpen },
-    { id: "youtube", label: "YouTube", code: "07", icon: Youtube },
-    { id: "coding", label: "Coding", code: "08", icon: Code2 },
+    { id: "kanban", label: "Kanban", code: "03", icon: Columns3 },
+    { id: "contacts", label: "Contacts", code: "04", icon: ContactRound },
+    { id: "calendar", label: "Calendar", code: "05", icon: CalendarDays },
+    { id: "rss", label: "RSS", code: "06", icon: Rss },
+    { id: "journal", label: "Journal", code: "07", icon: BookOpen },
+    { id: "lines", label: "Lines", code: "08", icon: MessageSquareText },
+    { id: "youtube", label: "YouTube", code: "09", icon: Youtube },
+    { id: "coding", label: "Coding", code: "10", icon: Code2 },
     {
       id: "subscriptions",
       label: "Subscriptions",
-      code: "09",
+      code: "11",
       icon: ReceiptText,
     },
-    { id: "trading", label: "Trading", code: "10", icon: ChartCandlestick },
+    { id: "trading", label: "Trading", code: "12", icon: ChartCandlestick },
   ] as const;
 
   const placeholderPages = {
@@ -374,6 +395,8 @@
   } as const;
 
   let activeSection = $state<ProductPage>("dashboard");
+  let kanbanSection = $state<KanbanSection>("boards");
+  let kanbanMenuOpen = $state(false);
   let sidebarOpen = $state(false);
   let sidebarCollapsed = $state(false);
   let welcomeVisible = $state(false);
@@ -421,6 +444,8 @@
   let settingsTimezone = $state("");
   let settingsTemperatureUnit =
     $state<UserSettings["temperature_unit"]>("celsius");
+  let settingsLinesDefaultVisibility =
+    $state<UserSettings["lines_default_visibility"]>("private");
   let avatarRevision = $state(Date.now());
   let avatarAvailable = $state(true);
   let avatarFile = $state<File | null>(null);
@@ -643,6 +668,7 @@
     const savedSection = localStorage.getItem("pandan-active-section");
     if (productPages.some((item) => item.id === savedSection)) {
       activeSection = savedSection as ProductPage;
+      kanbanMenuOpen = activeSection === "kanban";
     }
     clockTimer = setInterval(() => (currentTime = new Date()), 1_000);
     const savedFocusDuration = Number(
@@ -1072,6 +1098,12 @@
     localStorage.setItem("pandan-active-section", page);
   }
 
+  function openKanbanSection(nextSection: KanbanSection) {
+    kanbanSection = nextSection;
+    kanbanMenuOpen = true;
+    openProductPage("kanban");
+  }
+
   function toggleSidebar() {
     if (mobileNavigation.current) {
       sidebarOpen = !sidebarOpen;
@@ -1452,9 +1484,10 @@
     widgetLibraryDialog?.showModal();
   }
 
-  function toggleLayoutEditing() {
+  async function toggleLayoutEditing() {
     if (draggedWidgetId || savingLayout) return;
     layoutEditing = !layoutEditing;
+    if (layoutEditing) await tick();
     for (const grid of gridInstances.values()) {
       grid.enableMove(layoutEditing);
       grid.enableResize(layoutEditing);
@@ -1548,6 +1581,8 @@
           h: widget.grid_h,
         });
       }
+      grid.enableMove(layoutEditing);
+      grid.enableResize(layoutEditing);
     }
   }
 
@@ -1834,6 +1869,8 @@
     settingsLocation = dashboard.settings.location;
     settingsTimezone = dashboard.settings.timezone;
     settingsTemperatureUnit = dashboard.settings.temperature_unit;
+    settingsLinesDefaultVisibility =
+      dashboard.settings.lines_default_visibility;
     settingsError = "";
     settingsDialog?.showModal();
   }
@@ -2171,6 +2208,7 @@
         location: settingsLocation,
         timezone: settingsTimezone,
         temperature_unit: settingsTemperatureUnit,
+        lines_default_visibility: settingsLinesDefaultVisibility,
       });
       dashboard = { ...dashboard, settings, appearance };
       clearUserSettingsDrafts();
@@ -2848,18 +2886,51 @@
       <nav class="sidebar-nav" aria-label="Primary navigation">
         {#each productPages as item (item.id)}
           {@const PageIcon = item.icon}
-          <button
-            class="sidebar-link"
-            type="button"
-            aria-current={activeSection === item.id ? "page" : undefined}
-            onclick={() => openProductPage(item.id)}
-            title={item.label}
-            data-od-id={`nav-${item.id}`}
-          >
-            <span class="sidebar-index">{item.code}</span>
-            <PageIcon size={19} strokeWidth={1.7} aria-hidden="true" />
-            <span>{item.label}</span>
-          </button>
+          {#if item.id === "kanban"}
+            <div class="sidebar-nav-group" data-od-id="nav-kanban-group">
+              <button
+                class="sidebar-link"
+                type="button"
+                aria-current={activeSection === "kanban" ? "page" : undefined}
+                aria-expanded={kanbanMenuOpen}
+                onclick={() => {
+                  kanbanMenuOpen = !kanbanMenuOpen;
+                  if (activeSection !== "kanban") openKanbanSection("boards");
+                }}
+                title="Kanban"
+                data-od-id="nav-kanban"
+              >
+                <span class="sidebar-index">{item.code}</span>
+                <PageIcon size={19} strokeWidth={1.7} aria-hidden="true" />
+                <span>Kanban</span>
+                <ChevronDown class={kanbanMenuOpen ? "is-open" : undefined} size={15} strokeWidth={1.7} aria-hidden="true" />
+              </button>
+              {#if kanbanMenuOpen && !sidebarCollapsed}
+                <div class="sidebar-submenu" aria-label="Kanban navigation">
+                  {#each kanbanSubmenuItems as submenuItem (submenuItem.id)}
+                    <button
+                      type="button"
+                      class:active={activeSection === "kanban" && kanbanSection === submenuItem.id}
+                      onclick={() => openKanbanSection(submenuItem.id)}
+                    >{submenuItem.label}</button>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {:else}
+            <button
+              class="sidebar-link"
+              type="button"
+              aria-current={activeSection === item.id ? "page" : undefined}
+              onclick={() => openProductPage(item.id)}
+              title={item.label}
+              data-od-id={`nav-${item.id}`}
+            >
+              <span class="sidebar-index">{item.code}</span>
+              <PageIcon size={19} strokeWidth={1.7} aria-hidden="true" />
+              <span>{item.label}</span>
+            </button>
+          {/if}
         {/each}
       </nav>
 
@@ -2880,7 +2951,7 @@
           title="Settings"
           data-od-id="open-user-settings"
         >
-          <span class="sidebar-index">11</span>
+          <span class="sidebar-index">13</span>
           <Settings size={19} strokeWidth={1.7} aria-hidden="true" />
           <span>Settings</span>
         </button>
@@ -3147,8 +3218,9 @@
                       data-od-id="dashboard-calendar-month"
                     >
                       {#each dashboardCalendarWeekdays as weekday, index (`${weekday}-${index}`)}
-                        <span class="utility-calendar-weekday" aria-hidden="true"
-                          >{weekday}</span
+                        <span
+                          class="utility-calendar-weekday"
+                          aria-hidden="true">{weekday}</span
                         >
                       {/each}
                       {#each dashboardCalendarDays as day (day.key)}
@@ -3498,32 +3570,31 @@
                               </div>
                               <div class="task-subtask-list">
                                 {#each task.subtasks as subtask (subtask.id)}
-                                  <label
+                                  <button
+                                    type="button"
                                     class={[
+                                      "ui-toggle-button",
                                       "task-subtask-row",
                                       subtask.completed && "is-complete",
                                     ]}
+                                    aria-pressed={subtask.completed}
+                                    disabled={archived ||
+                                      subtaskActionId ===
+                                        `${task.id}:${subtask.id}`}
+                                    aria-label={subtask.completed
+                                      ? `Mark ${subtask.title} incomplete`
+                                      : `Complete ${subtask.title}`}
+                                    onclick={() =>
+                                      !archived && toggleSubtask(task, subtask.id)}
                                   >
-                                    <input
-                                      type="checkbox"
-                                      checked={subtask.completed}
-                                      disabled={archived ||
-                                        subtaskActionId ===
-                                          `${task.id}:${subtask.id}`}
-                                      aria-label={subtask.completed
-                                        ? `Mark ${subtask.title} incomplete`
-                                        : `Complete ${subtask.title}`}
-                                      onchange={() =>
-                                        !archived &&
-                                        toggleSubtask(task, subtask.id)}
-                                    />
+                                    <span class="ui-toggle-indicator" aria-hidden="true">{#if subtask.completed}<Check size={13} />{/if}</span>
                                     <span>{subtask.title}</span>
                                     <small
                                       >{subtask.completed
                                         ? "Done"
                                         : "Open"}</small
                                     >
-                                  </label>
+                                  </button>
                                 {/each}
                               </div>
                             </div>
@@ -3790,6 +3861,8 @@
                 {/if}
               </div>
             </section>
+          {:else if activeSection === "kanban"}
+            <KanbanPage section={kanbanSection} viewerId={dashboard.user.id} />
           {:else if activeSection === "calendar"}
             <CalendarPage />
           {:else if activeSection === "contacts"}
@@ -3798,6 +3871,12 @@
             <RssReaderPage />
           {:else if activeSection === "journal"}
             <JournalPage />
+          {:else if activeSection === "lines"}
+            <LinesPage
+              viewerId={dashboard.user.id}
+              viewerRole={dashboard.user.role}
+              defaultVisibility={dashboard.settings.lines_default_visibility}
+            />
           {:else if activeSection === "youtube"}
             <YoutubePage />
           {:else if activeSection === "coding"}
@@ -3979,11 +4058,10 @@
           />
         </label>
 
-        <label class="focus-burst-pause">
+        <button class="ui-toggle-button focus-burst-pause" type="button" aria-pressed={burstPaused} onclick={() => (burstPaused = !burstPaused)}>
+          <span class="ui-toggle-indicator" aria-hidden="true">{#if burstPaused}<Check size={13} />{/if}</span>
           <span>Paused</span>
-          <input type="checkbox" bind:checked={burstPaused} />
-          <i aria-hidden="true"></i>
-        </label>
+        </button>
       </section>
 
       <footer class="focus-session-footer">
@@ -4231,11 +4309,15 @@
           <div class="subtask-editor-list">
             {#each taskSubtasks as subtask, index (subtask.id ?? index)}
               <div class="subtask-editor-row">
-                <input
-                  type="checkbox"
-                  bind:checked={subtask.completed}
-                  aria-label={`Mark subtask ${index + 1} complete`}
-                />
+                <button
+                  class="ui-toggle-button subtask-editor-toggle"
+                  type="button"
+                  aria-pressed={subtask.completed}
+                  aria-label={subtask.completed
+                    ? `Mark subtask ${index + 1} incomplete`
+                    : `Mark subtask ${index + 1} complete`}
+                  onclick={() => (subtask.completed = !subtask.completed)}
+                ><span class="ui-toggle-indicator" aria-hidden="true">{#if subtask.completed}<Check size={13} />{/if}</span></button>
                 <input
                   class="text-input"
                   bind:value={subtask.title}
@@ -4557,6 +4639,17 @@
         >
           <option value="celsius">Celsius</option>
           <option value="fahrenheit">Fahrenheit</option>
+        </select>
+
+        <label for="settings-lines-visibility">Lines default visibility</label>
+        <select
+          id="settings-lines-visibility"
+          class="select-input"
+          bind:value={settingsLinesDefaultVisibility}
+          data-od-id="settings-lines-default-visibility"
+        >
+          <option value="private">Private — only me</option>
+          <option value="public">Instance — all signed-in users</option>
         </select>
 
         {#if settingsError}
@@ -4914,51 +5007,89 @@
           >
         </div>
 
-        <label class="authentication-policy-row">
+        <div class="authentication-policy-row">
           <span>
-            <strong>Password login</strong>
-            <small
+            <strong id="password-login-label">Password login</strong>
+            <small id="password-login-description"
               >Allow existing accounts to sign in with email and password.</small
             >
           </span>
-          <input
-            type="checkbox"
-            bind:checked={passwordLoginEnabled}
+          <button
+            class={[
+              "authentication-policy-toggle",
+              passwordLoginEnabled && "enabled",
+            ]}
+            type="button"
+            role="switch"
+            aria-checked={passwordLoginEnabled}
+            aria-labelledby="password-login-label"
+            aria-describedby="password-login-description"
             disabled={loadingUsers ||
               !authConfig.oidc_enabled ||
               savingAuthenticationSettings}
+            onclick={() => (passwordLoginEnabled = !passwordLoginEnabled)}
             data-od-id="password-login-enabled"
-          />
-        </label>
-        <label class="authentication-policy-row">
+          >
+            <span class="authentication-policy-toggle-track" aria-hidden="true"
+            ></span>
+          </button>
+        </div>
+        <div class="authentication-policy-row">
           <span>
-            <strong>Password registration</strong>
-            <small>Allow visitors to create password-based accounts.</small>
+            <strong id="password-registration-label"
+              >Password registration</strong
+            >
+            <small id="password-registration-description"
+              >Allow visitors to create password-based accounts.</small
+            >
           </span>
-          <input
-            type="checkbox"
-            bind:checked={passwordRegistrationEnabled}
+          <button
+            class={[
+              "authentication-policy-toggle",
+              passwordRegistrationEnabled && "enabled",
+            ]}
+            type="button"
+            role="switch"
+            aria-checked={passwordRegistrationEnabled}
+            aria-labelledby="password-registration-label"
+            aria-describedby="password-registration-description"
             disabled={loadingUsers || savingAuthenticationSettings}
+            onclick={() =>
+              (passwordRegistrationEnabled = !passwordRegistrationEnabled)}
             data-od-id="password-registration-enabled"
-          />
-        </label>
-        <label class="authentication-policy-row">
+          >
+            <span class="authentication-policy-toggle-track" aria-hidden="true"
+            ></span>
+          </button>
+        </div>
+        <div class="authentication-policy-row">
           <span>
-            <strong>OIDC registration</strong>
-            <small
+            <strong id="oidc-registration-label">OIDC registration</strong>
+            <small id="oidc-registration-description"
               >Allow verified OIDC identities to create new accounts. Existing
               users can still sign in.</small
             >
           </span>
-          <input
-            type="checkbox"
-            bind:checked={oidcRegistrationEnabled}
+          <button
+            class={[
+              "authentication-policy-toggle",
+              oidcRegistrationEnabled && "enabled",
+            ]}
+            type="button"
+            role="switch"
+            aria-checked={oidcRegistrationEnabled}
+            aria-labelledby="oidc-registration-label"
+            aria-describedby="oidc-registration-description"
             disabled={loadingUsers ||
               !authConfig.oidc_enabled ||
               savingAuthenticationSettings}
+            onclick={() => (oidcRegistrationEnabled = !oidcRegistrationEnabled)}
             data-od-id="oidc-registration-enabled"
-          />
-        </label>
+          >
+            <span class="authentication-policy-toggle-track" aria-hidden="true"
+            ></span>
+          </button>
+        </div>
         {#if !authConfig.oidc_enabled}
           <p class="authentication-policy-help">
             Configure OIDC before disabling password login or changing OIDC

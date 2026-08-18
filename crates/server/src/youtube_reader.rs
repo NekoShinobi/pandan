@@ -27,6 +27,7 @@ pub struct YoutubeReaderResponse {
     subscriptions: Vec<YoutubeSubscription>,
     groups: Vec<YoutubeGroup>,
     videos: Vec<YoutubeVideo>,
+    watch_later: Vec<YoutubeVideo>,
     display_mode: String,
 }
 
@@ -86,6 +87,14 @@ pub(crate) fn configure(config: &mut web::ServiceConfig) {
         .route(
             "/youtube/display-mode",
             web::patch().to(update_display_mode),
+        )
+        .route(
+            "/youtube/videos/{video_id}/watch-later",
+            web::put().to(save_watch_later),
+        )
+        .route(
+            "/youtube/videos/{video_id}/watch-later",
+            web::delete().to(remove_watch_later),
         );
 }
 
@@ -277,12 +286,42 @@ async fn update_display_mode(
     Ok(web::Json(load_reader(&state, &account.id).await?))
 }
 
+async fn save_watch_later(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    video_id: web::Path<String>,
+) -> Result<web::Json<YoutubeReaderResponse>, ApiError> {
+    set_watch_later(&state, &request, &video_id, true).await
+}
+
+async fn remove_watch_later(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    video_id: web::Path<String>,
+) -> Result<web::Json<YoutubeReaderResponse>, ApiError> {
+    set_watch_later(&state, &request, &video_id, false).await
+}
+
+async fn set_watch_later(
+    state: &AppState,
+    request: &HttpRequest,
+    video_id: &str,
+    saved: bool,
+) -> Result<web::Json<YoutubeReaderResponse>, ApiError> {
+    let account = authenticated_account(state, request).await?;
+    if !db::queries::set_youtube_watch_later(&state.pool, &account.id, video_id, saved).await? {
+        return Err(ApiError::NotFound("YouTube video not found"));
+    }
+    Ok(web::Json(load_reader(state, &account.id).await?))
+}
+
 async fn load_reader(state: &AppState, user_id: &str) -> Result<YoutubeReaderResponse, ApiError> {
-    let (subscriptions, group_records, memberships, videos, display_mode) = tokio::try_join!(
+    let (subscriptions, group_records, memberships, videos, watch_later, display_mode) = tokio::try_join!(
         db::queries::list_youtube_subscriptions(&state.pool, user_id),
         db::queries::list_youtube_groups(&state.pool, user_id),
         db::queries::list_youtube_group_channels(&state.pool, user_id),
         db::queries::list_youtube_videos(&state.pool, user_id),
+        db::queries::list_youtube_watch_later(&state.pool, user_id),
         db::queries::get_youtube_display_mode(&state.pool, user_id),
     )?;
     let groups = group_records
@@ -293,6 +332,7 @@ async fn load_reader(state: &AppState, user_id: &str) -> Result<YoutubeReaderRes
         subscriptions,
         groups,
         videos,
+        watch_later,
         display_mode,
     })
 }

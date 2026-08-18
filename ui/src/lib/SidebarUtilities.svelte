@@ -121,6 +121,7 @@
       timezone: settings.timezone,
       sidebar_timezones: preferences.timezones,
       temperature_unit: preferences.unit,
+      lines_default_visibility: settings.lines_default_visibility,
     });
   }
 
@@ -179,7 +180,9 @@
       void loadDesignatedWeather();
     } catch (reason: unknown) {
       formError =
-        reason instanceof Error ? reason.message : "Unable to save sidebar monitor";
+        reason instanceof Error
+          ? reason.message
+          : "Unable to save sidebar monitor";
     } finally {
       saving = false;
     }

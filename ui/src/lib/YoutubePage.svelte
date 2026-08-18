@@ -1,5 +1,7 @@
 <script lang="ts">
   import CirclePlay from "lucide-svelte/icons/circle-play";
+  import Bookmark from "lucide-svelte/icons/bookmark";
+  import Check from "lucide-svelte/icons/check";
   import ExternalLink from "lucide-svelte/icons/external-link";
   import Image from "lucide-svelte/icons/image";
   import Layers3 from "lucide-svelte/icons/layers-3";
@@ -18,25 +20,32 @@
     deleteYoutubeSubscription,
     fetchYoutubeReader,
     refreshYoutubeSubscription,
+    setYoutubeWatchLater,
     updateYoutubeDisplayMode,
     updateYoutubeGroup,
     type YoutubeDisplayMode,
     type YoutubeGroup,
     type YoutubeReaderResponse,
     type YoutubeSubscription,
+    type YoutubeVideo,
   } from "$lib/api";
+
+  type YoutubeView = "latest" | "watch-later";
 
   let reader = $state.raw<YoutubeReaderResponse>({
     subscriptions: [],
     groups: [],
     videos: [],
+    watch_later: [],
     display_mode: "thumbnails",
   });
   let loading = $state(true);
   let pageError = $state("");
   let query = $state("");
+  let activeView = $state<YoutubeView>("latest");
   let activeGroupId = $state("all");
   let busyChannelId = $state("");
+  let busyVideoId = $state("");
   let pendingChannelDelete = $state("");
 
   let subscriptionDialog = $state<HTMLDialogElement>();
@@ -71,8 +80,13 @@
   });
   let filteredVideos = $derived.by(() => {
     const needle = query.trim().toLowerCase();
-    return reader.videos.filter((video) => {
-      if (activeChannelIds && !activeChannelIds.has(video.channel_id))
+    const videos = activeView === "watch-later" ? reader.watch_later : reader.videos;
+    return videos.filter((video) => {
+      if (
+        activeView === "latest" &&
+        activeChannelIds &&
+        !activeChannelIds.has(video.channel_id)
+      )
         return false;
       if (!needle) return true;
       return [video.title, video.channel_title].some((value) =>
@@ -185,6 +199,27 @@
     } catch (reason: unknown) {
       reader = previous;
       pageError = message(reason, "Unable to save the display mode");
+    }
+  }
+
+  function selectView(view: YoutubeView) {
+    activeView = view;
+    if (view === "watch-later") activeGroupId = "all";
+  }
+
+  async function toggleWatchLater(video: YoutubeVideo) {
+    if (busyVideoId) return;
+    busyVideoId = video.id;
+    pageError = "";
+    try {
+      reader = await setYoutubeWatchLater(
+        video.id,
+        video.watch_later_at === null,
+      );
+    } catch (reason: unknown) {
+      pageError = message(reason, "Unable to update Watch Later");
+    } finally {
+      busyVideoId = "";
     }
   }
 
@@ -305,10 +340,11 @@
 <section class="youtube-page product-page" data-od-id="youtube-page">
   <header class="youtube-header page-header" data-od-id="youtube-heading">
     <div>
-      <h2>$ youtube --latest</h2>
+      <h2>$ youtube --{activeView}</h2>
       <p>
-        {reader.subscriptions.length} channels · {reader.videos.length} stored uploads
-        · refreshes every 2 hours
+        {activeView === "latest"
+          ? `${reader.subscriptions.length} channels · ${reader.videos.length} stored uploads · refreshes every 2 hours`
+          : `${reader.watch_later.length} saved ${reader.watch_later.length === 1 ? "video" : "videos"}`}
       </p>
     </div>
     <button
@@ -322,30 +358,56 @@
     </button>
   </header>
 
+  <nav class="youtube-view-tabs" aria-label="YouTube reader views" data-od-id="youtube-reader-views">
+    <button
+      class={activeView === "latest" ? "active" : undefined}
+      type="button"
+      aria-pressed={activeView === "latest"}
+      onclick={() => selectView("latest")}
+      data-od-id="youtube-latest-view"
+    >
+      Latest <span>{reader.videos.length}</span>
+    </button>
+    <button
+      class={activeView === "watch-later" ? "active" : undefined}
+      type="button"
+      aria-pressed={activeView === "watch-later"}
+      onclick={() => selectView("watch-later")}
+      data-od-id="youtube-watch-later-view"
+    >
+      <Bookmark size={15} strokeWidth={1.8} aria-hidden="true" />
+      Watch later <span>{reader.watch_later.length}</span>
+    </button>
+  </nav>
+
   <div class="youtube-toolbar" data-od-id="youtube-view-controls">
-    <nav aria-label="YouTube groups">
-      <button
-        class:active={activeGroupId === "all"}
-        type="button"
-        onclick={() => (activeGroupId = "all")}>All channels</button
-      >
-      {#each reader.groups as group (group.id)}
+    {#if activeView === "latest"}
+      <nav aria-label="YouTube groups">
         <button
-          class:active={activeGroupId === group.id}
+          class:active={activeGroupId === "all"}
           type="button"
-          onclick={() => (activeGroupId = group.id)}
-          data-od-id={`youtube-group-${group.id}`}>{group.name}</button
+          onclick={() => (activeGroupId = "all")}>All channels</button
         >
-      {/each}
-      <button
-        class="group-add"
-        type="button"
-        onclick={openNewGroup}
-        aria-label="Create channel group"
-      >
-        <Plus size={15} strokeWidth={1.9} aria-hidden="true" /> Group
-      </button>
-    </nav>
+        {#each reader.groups as group (group.id)}
+          <button
+            class:active={activeGroupId === group.id}
+            type="button"
+            onclick={() => (activeGroupId = group.id)}
+            data-od-id={`youtube-group-${group.id}`}>{group.name}</button
+          >
+        {/each}
+        <button
+          class="group-add"
+          type="button"
+          onclick={openNewGroup}
+          aria-label="Create channel group"
+        >
+          <Plus size={15} strokeWidth={1.9} aria-hidden="true" /> Group
+        </button>
+      </nav>
+    {:else}
+      <p class="youtube-watch-later-note">Saved videos stay here after you unsubscribe.</p>
+    {/if}
     <div class="youtube-toolbar-right">
       {#if activeGroup}
         <button
@@ -396,8 +458,8 @@
   <div class="youtube-layout">
     <main
       class={["youtube-feed", reader.display_mode]}
-      aria-label="YouTube uploads"
-      data-od-id="youtube-video-feed"
+      aria-label={activeView === "latest" ? "YouTube uploads" : "YouTube Watch Later"}
+      data-od-id={activeView === "latest" ? "youtube-video-feed" : "youtube-watch-later-feed"}
     >
       {#if loading}
         <div class="youtube-empty" role="status">
@@ -448,6 +510,27 @@
                     aria-hidden="true"
                   /></a
                 >
+                <button
+                  class={[
+                    "youtube-watch-later-button",
+                    video.watch_later_at !== null && "active",
+                  ]}
+                  type="button"
+                  disabled={busyVideoId !== ""}
+                  aria-label={video.watch_later_at
+                    ? `Remove ${video.title} from Watch Later`
+                    : `Save ${video.title} to Watch Later`}
+                  title={video.watch_later_at ? "Remove from Watch Later" : "Save to Watch Later"}
+                  onclick={() => toggleWatchLater(video)}
+                  data-od-id={`youtube-save-later-${video.id}`}
+                >
+                  <Bookmark
+                    size={16}
+                    strokeWidth={1.8}
+                    fill={video.watch_later_at ? "currentColor" : "none"}
+                    aria-hidden="true"
+                  />
+                </button>
               </div>
               <div class="youtube-video-meta">
                 <a
@@ -480,14 +563,18 @@
           <div class="youtube-empty">
             <CirclePlay size={32} strokeWidth={1.4} aria-hidden="true" />
             <strong
-              >{reader.subscriptions.length
-                ? "No uploads match this view"
-                : "Your channel feed is empty"}</strong
+              >{activeView === "watch-later"
+                ? "Nothing in Watch Later"
+                : reader.subscriptions.length
+                  ? "No uploads match this view"
+                  : "Your channel feed is empty"}</strong
             >
             <p>
-              {reader.subscriptions.length
-                ? "Try another group or clear the text filter."
-                : "Add a Channel ID to start building a quieter YouTube feed."}
+              {activeView === "watch-later"
+                ? "Use the bookmark control on any upload to build a private viewing queue."
+                : reader.subscriptions.length
+                  ? "Try another group or clear the text filter."
+                  : "Add a Channel ID to start building a quieter YouTube feed."}
             </p>
           </div>
         {/each}
@@ -654,16 +741,13 @@
       <fieldset>
         <legend>Channels in this group</legend>
         {#each reader.subscriptions as subscription (subscription.channel_id)}
-          <label
-            ><input
-              type="checkbox"
-              checked={groupChannelIds.includes(subscription.channel_id)}
-              onchange={() => toggleGroupChannel(subscription.channel_id)}
-            /><span
+          {@const selected = groupChannelIds.includes(subscription.channel_id)}
+          <button class="ui-toggle-button youtube-channel-toggle" type="button" aria-pressed={selected} onclick={() => toggleGroupChannel(subscription.channel_id)}
+            ><span class="ui-toggle-indicator" aria-hidden="true">{#if selected}<Check size={13} />{/if}</span><span
               ><strong>{subscription.title}</strong><small
                 >{subscription.channel_id}</small
               ></span
-            ></label
+            ></button
           >
         {:else}<p>Subscribe to a channel before adding it to a group.</p>{/each}
       </fieldset>
@@ -785,6 +869,39 @@
     justify-content: space-between;
     gap: 12px;
     min-width: 0;
+  }
+  .youtube-view-tabs {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+  }
+  .youtube-view-tabs button {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 13px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+  .youtube-view-tabs button:hover,
+  .youtube-view-tabs button.active {
+    border-color: var(--fg);
+    background: var(--fg);
+    color: var(--surface);
+  }
+  .youtube-view-tabs span {
+    color: inherit;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.7;
+  }
+  .youtube-watch-later-note {
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
   }
   .youtube-toolbar nav {
     display: flex;
@@ -959,6 +1076,27 @@
     display: grid;
     gap: 9px;
     padding: 15px;
+  }
+  .youtube-video-title {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 6px;
+  }
+  .youtube-watch-later-button {
+    width: 44px;
+    min-height: 44px;
+    display: grid;
+    place-items: center;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    color: var(--muted);
+  }
+  .youtube-watch-later-button:hover,
+  .youtube-watch-later-button.active {
+    border-color: var(--fg);
+    background: var(--fg);
+    color: var(--surface);
   }
   .youtube-video-title > a {
     min-height: 44px;
@@ -1299,37 +1437,35 @@
     margin: 0 10px;
     padding: 0 5px;
   }
-  .youtube-dialog fieldset label {
+  .youtube-channel-toggle {
+    width: 100%;
     display: flex;
     align-items: center;
     gap: 10px;
     min-height: 52px;
     padding: 8px 12px;
+    border: 0;
     border-bottom: 1px solid var(--border);
+    border-radius: 0;
   }
-  .youtube-dialog fieldset label:last-child {
+  .youtube-channel-toggle:last-child {
     border-bottom: 0;
   }
-  .youtube-dialog fieldset input {
-    width: 17px;
-    height: 17px;
-    accent-color: var(--fg);
-  }
-  .youtube-dialog fieldset label span {
+  .youtube-channel-toggle > span:last-child {
     min-width: 0;
     display: grid;
   }
-  .youtube-dialog fieldset label strong,
-  .youtube-dialog fieldset label small {
+  .youtube-channel-toggle strong,
+  .youtube-channel-toggle small {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .youtube-dialog fieldset label strong {
+  .youtube-channel-toggle strong {
     font-size: 12px;
     font-weight: 560;
   }
-  .youtube-dialog fieldset label small,
+  .youtube-channel-toggle small,
   .youtube-dialog fieldset > p {
     color: var(--muted);
     font-family: var(--font-mono);

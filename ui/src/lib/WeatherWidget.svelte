@@ -417,82 +417,84 @@
     </button>
   </div>
   <form class="settings-form weather-config-form" onsubmit={saveConfig}>
-    <label for={`weather-search-${widget.id}`}>Find a city</label>
-    <div class="weather-search-row">
-      <input
-        id={`weather-search-${widget.id}`}
-        class="text-input"
-        bind:value={searchQuery}
-        placeholder="City or postal code"
-        autocomplete="off"
-        onkeydown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            void searchCities();
-          }
-        }}
-      />
-      <button
-        class="ui-button ui-button--secondary secondary-btn"
-        type="button"
-        disabled={searchLoading}
-        onclick={searchCities}
-      >
-        {searchLoading ? "Searching…" : "Search"}
-      </button>
-    </div>
-
-    {#if searchResults.length > 0}
-      <div class="weather-search-results" aria-label="City search results">
-        {#each searchResults as result (result.id)}
-          <button type="button" onclick={() => addLocation(result)}>
-            <span
-              ><strong>{result.name}</strong><small
-                >{locationLabel(result)}</small
-              ></span
-            >
-            <span>Add</span>
-          </button>
-        {/each}
+    <div class="settings-form-scroll weather-config-fields">
+      <label for={`weather-search-${widget.id}`}>Find a city</label>
+      <div class="weather-search-row">
+        <input
+          id={`weather-search-${widget.id}`}
+          class="text-input"
+          bind:value={searchQuery}
+          placeholder="City or postal code"
+          autocomplete="off"
+          onkeydown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void searchCities();
+            }
+          }}
+        />
+        <button
+          class="ui-button ui-button--secondary secondary-btn"
+          type="button"
+          disabled={searchLoading}
+          onclick={searchCities}
+        >
+          {searchLoading ? "Searching…" : "Search"}
+        </button>
       </div>
-    {/if}
 
-    <div class="weather-config-section">
-      <span class="form-section-label">Tracked cities</span>
-      <div class="tracked-city-list">
-        {#each draftLocations as location (location.id)}
-          <div>
-            <span
-              ><strong>{location.name}</strong><small
-                >{locationLabel(location)}</small
-              ></span
-            >
-            <button
-              class="ui-button ui-button--danger ui-button--icon"
-              type="button"
-              aria-label={`Remove ${location.name}`}
-              onclick={() => removeLocation(location.id)}
-            >
-              <X size={16} strokeWidth={1.8} aria-hidden="true" />
+      {#if searchResults.length > 0}
+        <div class="weather-search-results" aria-label="City search results">
+          {#each searchResults as result (result.id)}
+            <button type="button" onclick={() => addLocation(result)}>
+              <span
+                ><strong>{result.name}</strong><small
+                  >{locationLabel(result)}</small
+                ></span
+              >
+              <span>Add</span>
             </button>
-          </div>
-        {:else}
-          <p>No cities selected. The widget will show a setup prompt.</p>
-        {/each}
+          {/each}
+        </div>
+      {/if}
+
+      <div class="weather-config-section">
+        <span class="form-section-label">Tracked cities</span>
+        <div class="tracked-city-list">
+          {#each draftLocations as location (location.id)}
+            <div>
+              <span
+                ><strong>{location.name}</strong><small
+                  >{locationLabel(location)}</small
+                ></span
+              >
+              <button
+                class="ui-button ui-button--danger ui-button--icon"
+                type="button"
+                aria-label={`Remove ${location.name}`}
+                onclick={() => removeLocation(location.id)}
+              >
+                <X size={16} strokeWidth={1.8} aria-hidden="true" />
+              </button>
+            </div>
+          {:else}
+            <p>No cities selected. The widget will show a setup prompt.</p>
+          {/each}
+        </div>
       </div>
+
+      <label for={`weather-unit-${widget.id}`}>Temperature unit</label>
+      <select
+        id={`weather-unit-${widget.id}`}
+        class="select-input"
+        bind:value={draftUnit}
+      >
+        <option value="celsius">Celsius</option>
+        <option value="fahrenheit">Fahrenheit</option>
+      </select>
+
+      {#if formError}<p class="form-error" role="alert">{formError}</p>{/if}
     </div>
-
-    <label for={`weather-unit-${widget.id}`}>Temperature unit</label>
-    <select
-      id={`weather-unit-${widget.id}`}
-      class="select-input"
-      bind:value={draftUnit}
-    >
-      <option value="celsius">Celsius</option>
-      <option value="fahrenheit">Fahrenheit</option>
-    </select>
-
-    {#if formError}<p class="form-error" role="alert">{formError}</p>{/if}
     <div class="settings-actions weather-form-actions">
       <button
         class="ui-button ui-button--secondary secondary-btn"
@@ -855,7 +857,14 @@
     width: min(620px, calc(100vw - 32px));
   }
 
-  .weather-config-form {
+  .weather-config-dialog[open],
+  .weather-detail-dialog[open] {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .weather-config-fields {
     display: grid;
     gap: 12px;
   }
@@ -867,6 +876,11 @@
   .weather-search-row input {
     min-width: 0;
     flex: 1 1 auto;
+    margin-bottom: 0;
+  }
+
+  .weather-config-fields > .select-input {
+    margin-bottom: 0;
   }
 
   .weather-search-results,
@@ -932,7 +946,6 @@
 
   .weather-form-actions {
     justify-content: flex-end;
-    margin-top: 6px;
   }
 
   .weather-detail-dialog {
@@ -944,9 +957,14 @@
   }
 
   .weather-detail-body {
+    min-height: 0;
+    flex: 1;
     display: grid;
     gap: 28px;
     padding: 24px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
   }
 
   .weather-detail-hero {

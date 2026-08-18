@@ -30,6 +30,8 @@ use std::{
 mod bible;
 pub mod calendar;
 mod contacts;
+mod kanban;
+mod lines;
 pub mod oidc;
 pub mod widget_integrations;
 mod youtube_reader;
@@ -122,6 +124,7 @@ pub struct UpdateSettingsRequest {
     pub timezone: String,
     pub sidebar_timezones: Option<Vec<String>>,
     pub temperature_unit: String,
+    pub lines_default_visibility: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -352,6 +355,11 @@ pub struct SetRssItemReadRequest {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct SetRssItemSavedRequest {
+    pub saved: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct PruneRssRequest {
     pub days: i64,
     pub mode: String,
@@ -444,6 +452,7 @@ pub enum ApiError {
     BadRequest(&'static str),
     Unauthorized,
     Forbidden,
+    AccessDenied(&'static str),
     Conflict(&'static str),
     NotFound(&'static str),
     Database(sqlx::Error),
@@ -457,9 +466,10 @@ pub enum ApiError {
 impl fmt::Display for ApiError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BadRequest(message) | Self::Conflict(message) | Self::Internal(message) => {
-                formatter.write_str(message)
-            }
+            Self::BadRequest(message)
+            | Self::Conflict(message)
+            | Self::Internal(message)
+            | Self::AccessDenied(message) => formatter.write_str(message),
             Self::Unauthorized => formatter.write_str("email or password is incorrect"),
             Self::Forbidden => formatter.write_str("administrator access is required"),
             Self::NotFound(message) => formatter.write_str(message),
@@ -477,7 +487,9 @@ impl ResponseError for ApiError {
         match self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::Forbidden | Self::AuthenticationDisabled(_) => StatusCode::FORBIDDEN,
+            Self::Forbidden | Self::AccessDenied(_) | Self::AuthenticationDisabled(_) => {
+                StatusCode::FORBIDDEN
+            }
             Self::Conflict(_) | Self::SetupRequired => StatusCode::CONFLICT,
             Self::NotFound(_) | Self::OidcUnavailable => StatusCode::NOT_FOUND,
             Self::Integration(_) => StatusCode::BAD_GATEWAY,
@@ -710,9 +722,45 @@ async fn complete_oidc_callback(
             .ok_or_else(|| "OIDC registration is disabled".to_owned())?
         }
     };
+    if let Some(picture_url) = identity.picture_url.as_deref() {
+        import_oidc_avatar_if_missing(state, &user_id, picture_url).await;
+    }
     issue_session(state, &user_id)
         .await
         .map_err(|error| error.to_string())
+}
+
+async fn import_oidc_avatar_if_missing(state: &AppState, user_id: &str, picture_url: &str) {
+    match db::queries::has_user_avatar(&state.pool, user_id).await {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            tracing::warn!(%error, "OIDC avatar lookup failed");
+            return;
+        }
+    }
+
+    let (mime_type, image_data) = match state
+        .widget_integrations
+        .fetch_bounded_public_image(picture_url, MAX_AVATAR_BYTES)
+        .await
+    {
+        Ok(image) => image,
+        Err(error) => {
+            tracing::warn!(%error, "OIDC avatar fetch failed");
+            return;
+        }
+    };
+    if let Err(error) = validate_image_upload(&mime_type, &image_data, "avatar") {
+        tracing::warn!(%error, "OIDC avatar validation failed");
+        return;
+    }
+    if let Err(error) =
+        db::queries::insert_user_avatar_if_absent(&state.pool, user_id, &mime_type, &image_data)
+            .await
+    {
+        tracing::warn!(%error, "OIDC avatar storage failed");
+    }
 }
 
 fn oidc_error_redirect(reason: &str, cookie_secure: bool) -> HttpResponse {
@@ -1382,6 +1430,12 @@ async fn update_settings(
     if !matches!(payload.temperature_unit.as_str(), "celsius" | "fahrenheit") {
         return Err(ApiError::BadRequest("temperature unit is invalid"));
     }
+    if !matches!(
+        payload.lines_default_visibility.as_str(),
+        "private" | "public"
+    ) {
+        return Err(ApiError::BadRequest("Lines default visibility is invalid"));
+    }
 
     Ok(web::Json(
         db::queries::update_user_settings(
@@ -1392,6 +1446,7 @@ async fn update_settings(
             timezone,
             &sidebar_timezones_json,
             &payload.temperature_unit,
+            &payload.lines_default_visibility,
         )
         .await?,
     ))
@@ -1408,6 +1463,7 @@ async fn delete_user_content(
         scope.as_str(),
         "contacts"
             | "tasks"
+            | "lines"
             | "calendar"
             | "rss"
             | "journal"
@@ -2242,6 +2298,19 @@ async fn set_rss_item_read(
         .ok_or(ApiError::NotFound("RSS item not found"))
 }
 
+async fn set_rss_item_saved(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    item_id: web::Path<String>,
+    payload: web::Json<SetRssItemSavedRequest>,
+) -> Result<web::Json<RssItem>, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    db::queries::set_rss_item_saved(&state.pool, &account.id, &item_id, payload.saved)
+        .await?
+        .map(web::Json)
+        .ok_or(ApiError::NotFound("RSS item not found"))
+}
+
 async fn prune_rss_items(
     state: web::Data<AppState>,
     request: HttpRequest,
@@ -2879,6 +2948,8 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
             .route("/tasks/{task_id}", web::delete().to(delete_task))
             .route("/tasks/{task_id}/archive", web::patch().to(archive_task))
             .route("/tasks/{task_id}/restore", web::patch().to(restore_task))
+            .configure(kanban::configure)
+            .configure(lines::configure)
             .route("/rss", web::get().to(rss_reader))
             .route(
                 "/rss/subscriptions",
@@ -2897,6 +2968,10 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
                 web::post().to(refresh_rss_subscription),
             )
             .route("/rss/items/{item_id}", web::patch().to(set_rss_item_read))
+            .route(
+                "/rss/items/{item_id}/read-later",
+                web::put().to(set_rss_item_saved),
+            )
             .route("/rss/prune", web::post().to(prune_rss_items))
             .configure(youtube_reader::configure)
             .route("/calendar", web::get().to(calendar_reader))
@@ -3017,6 +3092,7 @@ fn auth_response(account: SessionAccount) -> AuthResponse {
             timezone: account.timezone,
             sidebar_timezones,
             temperature_unit: account.temperature_unit,
+            lines_default_visibility: account.lines_default_visibility,
             updated_at: account.settings_updated_at,
         },
     }
@@ -3585,12 +3661,14 @@ mod tests {
                         "Asia/Tokyo".to_owned(),
                     ]),
                     temperature_unit: "fahrenheit".to_owned(),
+                    lines_default_visibility: "public".to_owned(),
                 })
                 .to_request(),
         )
         .await;
         assert_eq!(updated.display_name, "Ada Lovelace");
         assert_eq!(updated.temperature_unit, "fahrenheit");
+        assert_eq!(updated.lines_default_visibility, "public");
         assert_eq!(updated.sidebar_timezones, ["Europe/London", "Asia/Tokyo"]);
 
         let preserved: UserSettings = test::call_and_read_body_json(
@@ -3604,6 +3682,7 @@ mod tests {
                     timezone: "Europe/London".to_owned(),
                     sidebar_timezones: None,
                     temperature_unit: "fahrenheit".to_owned(),
+                    lines_default_visibility: "public".to_owned(),
                 })
                 .to_request(),
         )

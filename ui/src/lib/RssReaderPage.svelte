@@ -1,5 +1,6 @@
 <script lang="ts">
   import Check from "lucide-svelte/icons/check";
+  import Bookmark from "lucide-svelte/icons/bookmark";
   import ExternalLink from "lucide-svelte/icons/external-link";
   import Inbox from "lucide-svelte/icons/inbox";
   import Plus from "lucide-svelte/icons/plus";
@@ -16,6 +17,7 @@
     pruneRssItems,
     refreshRssSubscription,
     setRssItemRead,
+    setRssItemSaved,
     updateRssSubscription,
     type RssReaderItem,
     type RssReaderResponse,
@@ -23,10 +25,16 @@
     type RssSubscription,
   } from "$lib/api";
 
+  type FeedSourceKind = "feed" | "reddit";
+  type RssView = "stream" | "read-later";
+  type RedditSort = "hot" | "new" | "top" | "rising";
+  type RedditTopPeriod = "hour" | "day" | "week" | "month" | "year" | "all";
+
   let reader = $state.raw<RssReaderResponse>({ subscriptions: [], items: [] });
   let loading = $state(true);
   let pageError = $state("");
   let query = $state("");
+  let activeView = $state<RssView>("stream");
   let categoryFilter = $state("all");
   let sourceFilter = $state("all");
   let unreadOnly = $state(false);
@@ -37,7 +45,11 @@
   let itemDialog = $state<HTMLDialogElement>();
   let selectedItemId = $state<string | null>(null);
   let editingSubscriptionId = $state<string | null>(null);
+  let feedSourceKind = $state<FeedSourceKind>("feed");
   let feedUrl = $state("");
+  let redditSubreddit = $state("");
+  let redditSort = $state<RedditSort>("hot");
+  let redditTopPeriod = $state<RedditTopPeriod>("day");
   let feedCategory = $state("General");
   let retentionEnabled = $state(false);
   let retentionDays = $state(30);
@@ -58,9 +70,13 @@
   let unreadCount = $derived(
     reader.items.filter((item) => item.read_at === null).length,
   );
+  let readLaterCount = $derived(
+    reader.items.filter((item) => item.saved_at !== null).length,
+  );
   let filteredItems = $derived.by(() => {
     const needle = query.trim().toLowerCase();
     return reader.items.filter((item) => {
+      if (activeView === "read-later" && item.saved_at === null) return false;
       if (categoryFilter !== "all" && item.category !== categoryFilter)
         return false;
       if (sourceFilter !== "all" && item.subscription_id !== sourceFilter)
@@ -86,6 +102,9 @@
   );
   let selectedItemContent = $derived(
     selectedItem ? plainText(selectedItem.summary) : "",
+  );
+  let redditFeedPreview = $derived(
+    buildRedditFeedUrl(redditSubreddit, redditSort, redditTopPeriod),
   );
 
   onMount(() => {
@@ -134,7 +153,11 @@
 
   async function openAddFeed() {
     editingSubscriptionId = null;
+    feedSourceKind = "feed";
     feedUrl = "";
+    redditSubreddit = "";
+    redditSort = "hot";
+    redditTopPeriod = "day";
     feedCategory = "General";
     retentionEnabled = false;
     retentionDays = 30;
@@ -148,6 +171,7 @@
 
   function openEditFeed(subscription: RssSubscription) {
     editingSubscriptionId = subscription.id;
+    feedSourceKind = "feed";
     feedUrl = subscription.url;
     feedCategory = subscription.category;
     retentionEnabled = subscription.auto_delete_days !== null;
@@ -162,9 +186,25 @@
     if (!savingSubscription) subscriptionDialog?.close();
   }
 
+  function selectFeedSource(kind: FeedSourceKind) {
+    feedSourceKind = kind;
+    subscriptionError = "";
+    if (kind === "reddit" && feedCategory === "General") {
+      feedCategory = "Reddit";
+    }
+  }
+
   async function saveSubscription(event: SubmitEvent) {
     event.preventDefault();
     if (savingSubscription) return;
+    const sourceUrl =
+      editingSubscriptionId !== null || feedSourceKind === "feed"
+        ? feedUrl.trim()
+        : redditFeedPreview;
+    if (!sourceUrl) {
+      subscriptionError = "Enter a subreddit name or Reddit community URL.";
+      return;
+    }
     savingSubscription = true;
     subscriptionError = "";
     try {
@@ -175,7 +215,7 @@
       };
       reader = editingSubscriptionId
         ? await updateRssSubscription(editingSubscriptionId, settings)
-        : await createRssSubscription({ url: feedUrl.trim(), ...settings });
+        : await createRssSubscription({ url: sourceUrl, ...settings });
       subscriptionDialog?.close();
     } catch (reason: unknown) {
       subscriptionError =
@@ -242,6 +282,35 @@
     } catch (reason: unknown) {
       reader = previous;
       pageError = reason instanceof Error ? reason.message : "Unable to update item";
+    }
+  }
+
+  async function toggleSaved(item: RssReaderItem) {
+    const nextSaved = item.saved_at === null;
+    const previous = reader;
+    reader = {
+      ...reader,
+      items: reader.items.map((candidate) =>
+        candidate.id === item.id
+          ? {
+              ...candidate,
+              saved_at: nextSaved ? new Date().toISOString() : null,
+            }
+          : candidate,
+      ),
+    };
+    try {
+      const updated = await setRssItemSaved(item.id, nextSaved);
+      reader = {
+        ...reader,
+        items: reader.items.map((candidate) =>
+          candidate.id === updated.id ? updated : candidate,
+        ),
+      };
+    } catch (reason: unknown) {
+      reader = previous;
+      pageError =
+        reason instanceof Error ? reason.message : "Unable to update Read Later";
     }
   }
 
@@ -339,13 +408,49 @@
       return baseUrl;
     }
   }
+
+  function buildRedditFeedUrl(
+    value: string,
+    sort: RedditSort,
+    topPeriod: RedditTopPeriod,
+  ) {
+    const subreddit = parseSubreddit(value);
+    if (!subreddit) return "";
+    const url = new URL(`https://www.reddit.com/r/${subreddit}/${sort}.json`);
+    url.searchParams.set("limit", "25");
+    url.searchParams.set("raw_json", "1");
+    if (sort === "top") url.searchParams.set("t", topPeriod);
+    return url.toString();
+  }
+
+  function parseSubreddit(value: string) {
+    const input = value.trim();
+    if (!input) return "";
+    let candidate = input.replace(/^\/?r\//i, "").split(/[/?#]/, 1)[0];
+    if (/^https?:\/\//i.test(input)) {
+      try {
+        const url = new URL(input);
+        if (!/(^|\.)reddit\.com$/i.test(url.hostname)) return "";
+        const segments = url.pathname.split("/").filter(Boolean);
+        if (segments[0]?.toLowerCase() !== "r") return "";
+        candidate = segments[1] ?? "";
+      } catch {
+        return "";
+      }
+    }
+    return /^[a-z0-9_.-]{1,100}$/i.test(candidate) ? candidate : "";
+  }
 </script>
 
 <section class="rss-reader product-page" data-od-id="rss-page">
   <header class="rss-reader-header page-header">
     <div>
-      <h2>$ rss --stream</h2>
-      <p>{unreadCount} unread across {reader.subscriptions.length} sources</p>
+      <h2>$ rss --{activeView}</h2>
+      <p>
+        {activeView === "stream"
+          ? `${unreadCount} unread across ${reader.subscriptions.length} sources`
+          : `${readLaterCount} saved ${readLaterCount === 1 ? "article" : "articles"}`}
+      </p>
     </div>
     <div class="rss-header-actions">
       <button class="ui-button ui-button--secondary rss-secondary-button" type="button" onclick={openPrune}>
@@ -358,6 +463,28 @@
       </button>
     </div>
   </header>
+
+  <nav class="rss-view-tabs" aria-label="RSS reader views" data-od-id="rss-reader-views">
+    <button
+      class={activeView === "stream" ? "active" : undefined}
+      type="button"
+      aria-pressed={activeView === "stream"}
+      onclick={() => (activeView = "stream")}
+      data-od-id="rss-stream-view"
+    >
+      Stream <span>{reader.items.length}</span>
+    </button>
+    <button
+      class={activeView === "read-later" ? "active" : undefined}
+      type="button"
+      aria-pressed={activeView === "read-later"}
+      onclick={() => (activeView = "read-later")}
+      data-od-id="rss-read-later-view"
+    >
+      <Bookmark size={15} strokeWidth={1.8} aria-hidden="true" />
+      Read later <span>{readLaterCount}</span>
+    </button>
+  </nav>
 
   <div class="rss-filter-bar" data-od-id="rss-filters">
     <label class="rss-search">
@@ -434,6 +561,23 @@
               </span>
             </button>
             <div class="rss-item-actions">
+              <button
+                class={["rss-item-action", item.saved_at && "is-active"]}
+                type="button"
+                aria-label={item.saved_at
+                  ? `Remove ${item.title} from Read Later`
+                  : `Save ${item.title} to Read Later`}
+                title={item.saved_at ? "Remove from Read Later" : "Save to Read Later"}
+                onclick={() => toggleSaved(item)}
+                data-od-id={`rss-save-later-${item.id}`}
+              >
+                <Bookmark
+                  size={16}
+                  strokeWidth={1.8}
+                  fill={item.saved_at ? "currentColor" : "none"}
+                  aria-hidden="true"
+                />
+              </button>
               {#if item.url}
                 <button
                   class="rss-item-action"
@@ -460,13 +604,21 @@
         {:else}
           <div class="rss-empty">
             <Inbox size={30} strokeWidth={1.4} aria-hidden="true" />
-            <strong>{reader.subscriptions.length ? "No items match this view" : "Your reader is empty"}</strong>
+            <strong>
+              {activeView === "read-later"
+                ? "Nothing saved for later"
+                : reader.subscriptions.length
+                  ? "No items match this view"
+                  : "Your reader is empty"}
+            </strong>
             <p>
-              {reader.subscriptions.length
-                ? "Change the text, source, or category filter."
-                : "Subscribe to an RSS or Atom URL to start reading."}
+              {activeView === "read-later"
+                ? "Use the bookmark control on any article to keep it out of pruning and return to it here."
+                : reader.subscriptions.length
+                  ? "Change the text, source, or category filter."
+                  : "Subscribe to an RSS, Atom, or Reddit source to start reading."}
             </p>
-            {#if reader.subscriptions.length === 0}
+            {#if activeView === "stream" && reader.subscriptions.length === 0}
               <button class="ui-button ui-button--secondary rss-secondary-button" type="button" onclick={openAddFeed}>Add your first feed</button>
             {/if}
           </div>
@@ -577,6 +729,20 @@
         <button
           class="ui-button ui-button--secondary rss-secondary-button"
           type="button"
+          onclick={() => toggleSaved(selectedItem)}
+          data-od-id="rss-detail-save-later"
+        >
+          <Bookmark
+            size={15}
+            strokeWidth={1.8}
+            fill={selectedItem.saved_at ? "currentColor" : "none"}
+            aria-hidden="true"
+          />
+          {selectedItem.saved_at ? "Remove from later" : "Read later"}
+        </button>
+        <button
+          class="ui-button ui-button--secondary rss-secondary-button"
+          type="button"
           onclick={() => toggleRead(selectedItem)}
         >
           <Check size={15} strokeWidth={2} aria-hidden="true" />
@@ -612,18 +778,86 @@
       </button>
     </header>
     <form onsubmit={saveSubscription}>
-      <label for="rss-feed-url">Feed URL</label>
-      <input
-        id="rss-feed-url"
-        type="url"
-        bind:value={feedUrl}
-        {@attach captureSubscriptionUrlInput}
-        placeholder="https://example.com/feed.xml"
-        maxlength="2048"
-        disabled={editingSubscriptionId !== null}
-        required
-      />
-      <small>Public HTTPS RSS and Atom feeds are supported.</small>
+      {#if !editingSubscription}
+        <div class="rss-source-kind" role="group" aria-label="Feed source type" data-od-id="rss-source-type">
+          <button
+            class={feedSourceKind === "feed" ? "active" : undefined}
+            type="button"
+            aria-pressed={feedSourceKind === "feed"}
+            onclick={() => selectFeedSource("feed")}
+          >
+            RSS / Atom
+          </button>
+          <button
+            class={feedSourceKind === "reddit" ? "active" : undefined}
+            type="button"
+            aria-pressed={feedSourceKind === "reddit"}
+            onclick={() => selectFeedSource("reddit")}
+          >
+            Reddit
+          </button>
+        </div>
+      {/if}
+
+      {#if editingSubscription || feedSourceKind === "feed"}
+        <label for="rss-feed-url">Feed URL</label>
+        <input
+          id="rss-feed-url"
+          type="url"
+          bind:value={feedUrl}
+          {@attach captureSubscriptionUrlInput}
+          placeholder="https://example.com/feed.xml"
+          maxlength="2048"
+          disabled={editingSubscriptionId !== null}
+          required
+        />
+        <small>Public HTTPS RSS and Atom feeds are supported.</small>
+      {:else}
+        <section class="rss-reddit-helper" aria-labelledby="rss-reddit-helper-title" data-od-id="rss-reddit-helper">
+          <div class="rss-reddit-heading">
+            <span>[ REDDIT.SOURCE ]</span>
+            <strong id="rss-reddit-helper-title">Build a subreddit feed</strong>
+          </div>
+          <label for="rss-reddit-subreddit">Subreddit</label>
+          <input
+            id="rss-reddit-subreddit"
+            type="text"
+            bind:value={redditSubreddit}
+            placeholder="selfhosted or reddit.com/r/selfhosted"
+            maxlength="200"
+            autocomplete="off"
+            required
+            data-od-id="rss-reddit-subreddit"
+          />
+          <div class="rss-reddit-options">
+            <label for="rss-reddit-sort">
+              <span>Sort</span>
+              <select id="rss-reddit-sort" bind:value={redditSort} data-od-id="rss-reddit-sort">
+                <option value="hot">Hot</option>
+                <option value="new">New</option>
+                <option value="top">Top</option>
+                <option value="rising">Rising</option>
+              </select>
+            </label>
+            {#if redditSort === "top"}
+              <label for="rss-reddit-period">
+                <span>Period</span>
+                <select id="rss-reddit-period" bind:value={redditTopPeriod} data-od-id="rss-reddit-period">
+                  <option value="hour">Past hour</option>
+                  <option value="day">Past day</option>
+                  <option value="week">Past week</option>
+                  <option value="month">Past month</option>
+                  <option value="year">Past year</option>
+                  <option value="all">All time</option>
+                </select>
+              </label>
+            {/if}
+          </div>
+          <p class="rss-reddit-preview">
+            {redditFeedPreview || "Enter a subreddit name to prepare its Reddit listing."}
+          </p>
+        </section>
+      {/if}
 
       <label for="rss-feed-category">Category</label>
       <input
@@ -638,10 +872,10 @@
         {#each categories as category (category)}<option value={category}></option>{/each}
       </datalist>
 
-      <label class="rss-check-row">
-        <input type="checkbox" bind:checked={retentionEnabled} />
+      <button class="ui-toggle-button rss-check-row" type="button" aria-pressed={retentionEnabled} onclick={() => (retentionEnabled = !retentionEnabled)}>
+        <span class="ui-toggle-indicator" aria-hidden="true">{#if retentionEnabled}<Check size={13} />{/if}</span>
         <span><strong>Auto-delete old items</strong><small>Applied whenever the reader loads or this feed refreshes.</small></span>
-      </label>
+      </button>
 
       {#if retentionEnabled}
         <div class="rss-retention-grid">
@@ -686,7 +920,7 @@
       </button>
     </header>
     <form onsubmit={pruneItems}>
-      <p class="rss-prune-copy">Remove items older than a fixed age across every subscription. Feed-specific auto-delete settings are unchanged.</p>
+      <p class="rss-prune-copy">Remove items older than a fixed age across every subscription. Saved Read Later items are always kept, and feed-specific auto-delete settings are unchanged.</p>
       <div class="rss-retention-grid">
         <label for="rss-prune-days">Older than</label>
         <input id="rss-prune-days" type="number" bind:value={pruneDays} min="1" max="3650" required />
@@ -713,6 +947,10 @@
   .rss-reader-header h2 { margin-top: 8px; font-family: var(--font-mono); font-size: clamp(26px, 3vw, 42px); font-weight: 540; letter-spacing: -.04em; line-height: 1.05; }
   .rss-reader-header p { margin-top: 8px; color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
   .rss-header-actions, .rss-source-actions, .rss-dialog footer { display: flex; align-items: center; gap: 8px; }
+  .rss-view-tabs { display: flex; gap: 6px; overflow-x: auto; }
+  .rss-view-tabs button { display: inline-flex; align-items: center; gap: 7px; padding: 0 13px; border: 1px solid var(--border); border-radius: 6px; background: var(--page-surface, var(--surface)); color: var(--fg); font-family: var(--font-mono); font-size: 10px; }
+  .rss-view-tabs button:hover, .rss-view-tabs button.active { border-color: var(--fg); background: var(--fg); color: var(--surface); }
+  .rss-view-tabs span { color: inherit; font-variant-numeric: tabular-nums; opacity: .7; }
   button, input, select { font: inherit; }
   button { min-height: 42px; }
   .rss-primary-button, .rss-secondary-button, .rss-danger-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 14px; border: 1px solid var(--border); border-radius: 7px; font-family: var(--font-mono); font-size: 11px; font-weight: 560; letter-spacing: .02em; }
@@ -785,11 +1023,23 @@
   .rss-dialog header > button { width: 42px; min-height: 42px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 7px; }
   .rss-dialog form { display: grid; gap: 10px; padding: 22px; }
   .rss-dialog form > label:not(.rss-check-row), .rss-dialog legend { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .05em; }
-  .rss-dialog input[type="url"], .rss-dialog input[list], .rss-dialog input[type="number"] { min-height: 44px; width: 100%; padding: 0 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font-family: var(--font-mono); font-size: 12px; }
+  .rss-dialog input[type="url"], .rss-dialog input[type="text"], .rss-dialog input[list], .rss-dialog input[type="number"], .rss-dialog select { min-height: 44px; width: 100%; padding: 0 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font-family: var(--font-mono); font-size: 12px; }
   .rss-dialog input:disabled { color: var(--muted); }
   .rss-dialog form > small { margin-top: -4px; color: var(--muted); font-size: 10px; }
+  .rss-source-kind { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); }
+  .rss-source-kind button { min-height: 44px; border: 1px solid transparent; border-radius: 4px; color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .04em; }
+  .rss-source-kind button:hover { border-color: var(--border); color: var(--fg); }
+  .rss-source-kind button.active { border-color: var(--fg); background: var(--fg); color: var(--surface); }
+  .rss-reddit-helper { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); background: color-mix(in oklch, var(--bg) 82%, transparent); }
+  .rss-reddit-heading { display: grid; gap: 3px; padding-bottom: 9px; border-bottom: 1px solid var(--border); }
+  .rss-reddit-heading span { color: var(--muted); font-family: var(--font-mono); font-size: 9px; letter-spacing: .08em; }
+  .rss-reddit-heading strong { font-family: var(--font-display); font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+  .rss-reddit-helper > label, .rss-reddit-options label > span { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .05em; }
+  .rss-reddit-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .rss-reddit-options label { display: grid; gap: 6px; }
+  .rss-reddit-preview { overflow-wrap: anywhere; color: var(--muted); font-family: var(--font-mono); font-size: 9px; line-height: 1.5; }
   .rss-check-row { display: flex; align-items: start; gap: 10px; margin-top: 10px; padding: 13px; border: 1px solid var(--border); }
-  .rss-check-row input { margin-top: 3px; accent-color: var(--fg); }
+  .rss-check-row > :global(.ui-toggle-indicator) { margin-top: 1px; }
   .rss-check-row span { display: grid; gap: 3px; }
   .rss-check-row strong { font-size: 12px; font-weight: 560; }
   .rss-check-row small { color: var(--muted); font-size: 10px; }
@@ -848,6 +1098,7 @@
     .rss-dialog footer { flex-wrap: wrap; }
     .rss-dialog footer button { flex: 1; }
     .rss-dialog footer .rss-danger-button:first-child { flex-basis: 100%; margin-right: 0; }
+    .rss-reddit-options { grid-template-columns: 1fr; }
   }
   @media (prefers-reduced-motion: reduce) {
     .rss-dialog, .rss-dialog::backdrop { animation: none; }

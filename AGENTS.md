@@ -13,10 +13,12 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 ## Repository map
 
 - `ui/` — SvelteKit 5 static frontend, TypeScript, Tailwind CSS 4.
-- `ui/src/routes/+page.svelte` — application shell, authentication, settings, dashboard, and Tasks.
+- `ui/src/routes/+page.svelte` — application shell, authentication, settings, dashboard, Tasks, and product navigation.
+- `ui/src/lib/KanbanPage.svelte` — Kanban boards, card collaboration, workspace membership, and permission settings.
 - `ui/src/lib/` — feature pages and reusable widgets.
 - `ui/src/app.css` — shared visual system and component styling.
 - `ui/src/lib/api.ts` — typed browser API client.
+- `DESIGN.md` — persistent interface and interaction rules; read it before frontend changes.
 - `crates/server/` — Actix Web API, authentication, remote integrations, and static UI serving.
 - `crates/db/` — SQLx entities, queries, migrations, and SQLite connection lifecycle.
 - `SCHEMA.md` — human-readable database contract; update it with schema changes.
@@ -29,7 +31,10 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - Administrator checks are enforced by the server, never only by the interface.
 - The final administrator cannot be demoted or deleted.
 - The initial administrator setup is one-time and claimed atomically.
-- Sidebar navigation order is Dashboard, Tasks, Contacts, Calendar, RSS, Journal, YouTube, Coding, Subscriptions, Trading.
+- Sidebar navigation order is Dashboard, Tasks, Kanban, Contacts, Calendar, RSS, Journal, Lines, YouTube, Coding, Subscriptions, Trading. Kanban expands to Boards, Workspaces, and Invitations.
+- Kanban workspaces are collaboration aggregates and are distinct from the removed dashboard `user_workspaces` partition UI. Every board, column, card, comment, checklist, label, and attachment authorization must resolve through active `kanban_workspace_members` membership.
+- Kanban roles are `admin`, `member`, and `guest` with the 24 kan.bn-compatible workspace/board/list/card/comment/member permissions. Admin grants are immutable, workspace manage/delete stay admin-only, per-member overrides are allowed for other permissions, and the final workspace admin cannot be demoted or removed.
+- Kanban invitations are in-app only and may target existing Pandan users; do not add email delivery or arbitrary addresses.
 
 ### Appearance and uploads
 
@@ -39,8 +44,10 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
   - `loading` — private, per user, used by the authenticated loading transition.
   - `login` — global, administrator-managed, publicly readable before authentication.
 - Wallpaper formats are JPEG, PNG, WebP, and AVIF, with a 30 MB limit.
-- Avatars are private, per user, use the same image formats, and have a 10 MB limit.
+- Avatars are private, per user, use the same image formats, and have a 10 MB limit. An OIDC `picture` claim may initialize a missing avatar through the guarded public HTTPS fetch path, but must never replace an existing avatar or block login when fetching fails.
 - Task attachments are private, per user, and limited to 10 MB.
+- Lines attachments are limited to 10 MB. Their read access always follows the parent post: owner-only for private posts and authenticated-instance access for public posts.
+- Kanban card attachments are limited to 10 MB. Reads and writes always follow the parent card's active workspace membership and effective permissions.
 - Uploaded files are stored in SQLite. Keep content type, authorization, and size validation on the server.
 
 ### Authentication and secrets
@@ -61,6 +68,7 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - Preserve bounded redirects, connection/request timeouts, response-size limits, and per-provider failure isolation.
 - YouTube channel metadata refreshes every two hours through configured Invidious first and the public YouTube feed second. Shared portrait images are stored in SQLite and refreshed at most every 24 hours; failed portrait responses must never populate the cache.
 - Render user Markdown through the existing sanitizer. Custom HTML and iframe widgets remain sandboxed.
+- Lines public posts are readable only by authenticated instance users. Private posts remain owner-only, including from administrators; administrators may force-delete public posts but must never gain private-post read access.
 
 ### Bundled data
 
@@ -68,7 +76,9 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 
 ## Frontend conventions
 
+- Follow `DESIGN.md` for visual and interaction decisions. Its control rules apply across every feature.
 - Use Svelte 5 patterns and run the Svelte autofixer after modifying a `.svelte` file.
+- Use the official `@dnd-kit/svelte` adapter and `@dnd-kit/helpers` for Kanban card sorting; do not replace it with native HTML drag events or `svelte-dnd-action`.
 - Use Lucide Svelte for interface icons; do not introduce emoji controls.
 - Build standard actions from `ui-button` plus exactly one role class: `ui-button--primary`, `ui-button--secondary`, `ui-button--ghost`, or `ui-button--danger`. Add `ui-button--icon` only for icon-only controls.
 - Use GridStack for dashboard placement and resizing. Layout is editable only in Edit mode.
@@ -76,6 +86,7 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - Keep the terminal visual language: near-black surfaces, restrained green accents, monospaced content, crisp borders, and translucent structure over wallpaper.
 - Reuse existing CSS tokens and components before adding new styles. Avoid isolated hardcoded colors.
 - Keep modals centered, consistently structured, dismissible by their close control, and animated from the top with reduced-motion fallbacks.
+- Native `dialog` elements enter the browser top layer: never leave them on browser-default light colors or corner positioning. Use the shared modal class or explicitly bind the authenticated terminal tokens, plus `position: fixed`, `inset: 0`, and `margin: auto`; verify the open dialog is centered and dark in the rendered application.
 
 ## Backend and database conventions
 

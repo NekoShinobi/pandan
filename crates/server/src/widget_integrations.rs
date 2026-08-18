@@ -198,7 +198,7 @@ impl WidgetIntegrationService {
         self.invidious_base_url.is_some()
     }
 
-    /// Fetches and parses one public HTTPS RSS or Atom feed for the reader.
+    /// Fetches and parses one public HTTPS RSS, Atom, or recognized Reddit source for the reader.
     ///
     /// The same DNS and response-size protections used by RSS widgets are applied here.
     ///
@@ -207,6 +207,18 @@ impl WidgetIntegrationService {
     /// Returns a safe provider error when URL validation, fetching, or feed parsing fails.
     pub async fn fetch_rss_feed(&self, source: &str) -> Result<RssFeedSnapshot, String> {
         let url = validate_public_https_url(source).await?;
+        if let Some((subreddit, sort)) = reddit_listing_source(&url) {
+            let response = self
+                .client
+                .get(url.clone())
+                .send()
+                .await
+                .map_err(request_error)?;
+            let bytes = response_bytes(response).await?;
+            let payload: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| "Reddit returned an invalid listing".to_owned())?;
+            return parse_reddit_feed_snapshot(&url, &subreddit, sort, &payload);
+        }
         let response = self.client.get(url).send().await.map_err(request_error)?;
         let bytes = response_bytes(response).await?;
         let feed = feed_rs::parser::parse(&bytes[..])
@@ -362,6 +374,20 @@ impl WidgetIntegrationService {
     ///
     /// Returns a safe provider error when the URL, media type, or response is invalid.
     pub async fn fetch_public_image(&self, source: &str) -> Result<(String, Vec<u8>), String> {
+        self.fetch_bounded_public_image(source, MAX_RESPONSE_BYTES)
+            .await
+    }
+
+    /// Fetches one public HTTPS image with a caller-supplied response limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe provider error when the URL, media type, or response is invalid.
+    pub async fn fetch_bounded_public_image(
+        &self,
+        source: &str,
+        max_bytes: usize,
+    ) -> Result<(String, Vec<u8>), String> {
         let url = validate_public_https_url(source).await?;
         let response = self.client.get(url).send().await.map_err(request_error)?;
         let content_type = response
@@ -378,7 +404,7 @@ impl WidgetIntegrationService {
             })
             .ok_or_else(|| "provider image type is unsupported".to_owned())?
             .to_owned();
-        let bytes = response_bytes(response).await?;
+        let bytes = response_bytes_with_limit(response, max_bytes).await?;
         if bytes.is_empty() {
             return Err("provider image was empty".to_owned());
         }
@@ -1937,6 +1963,110 @@ fn parse_invidious_base_url(value: Option<&str>) -> Result<Option<Url>, String> 
     Ok(Some(url))
 }
 
+fn reddit_listing_source(url: &Url) -> Option<(String, &'static str)> {
+    if !matches!(url.host_str(), Some(host) if host.eq_ignore_ascii_case("reddit.com") || host.eq_ignore_ascii_case("www.reddit.com"))
+    {
+        return None;
+    }
+    let segments = url.path_segments()?.collect::<Vec<_>>();
+    let [root, subreddit, listing] = segments.as_slice() else {
+        return None;
+    };
+    if !root.eq_ignore_ascii_case("r") || !valid_slug(subreddit) {
+        return None;
+    }
+    let sort = match listing.strip_suffix(".json")? {
+        "hot" => "hot",
+        "new" => "new",
+        "top" => "top",
+        "rising" => "rising",
+        _ => return None,
+    };
+    Some(((*subreddit).to_owned(), sort))
+}
+
+fn parse_reddit_feed_snapshot(
+    source: &Url,
+    subreddit: &str,
+    sort: &str,
+    payload: &Value,
+) -> Result<RssFeedSnapshot, String> {
+    let fetched_at = chrono::Utc::now().to_rfc3339();
+    let children = payload["data"]["children"]
+        .as_array()
+        .ok_or_else(|| "Reddit returned an invalid listing".to_owned())?;
+    let items = children
+        .iter()
+        .filter_map(|child| child.get("data"))
+        .filter(|post| {
+            !post["stickied"].as_bool().unwrap_or(false)
+                && !post["pinned"].as_bool().unwrap_or(false)
+        })
+        .take(200)
+        .map(|post| {
+            let title = post["title"].as_str().unwrap_or("Untitled").to_owned();
+            let permalink = post["permalink"].as_str().unwrap_or_default();
+            let comments_url = format!("https://www.reddit.com{permalink}");
+            let url = post["url"]
+                .as_str()
+                .filter(|value| {
+                    Url::parse(value).is_ok_and(|url| {
+                        matches!(url.scheme(), "http" | "https")
+                            && url.username().is_empty()
+                            && url.password().is_none()
+                    })
+                })
+                .unwrap_or(&comments_url)
+                .to_owned();
+            let published_at = post["created_utc"]
+                .as_f64()
+                .and_then(|timestamp| {
+                    let seconds = timestamp.trunc() as i64;
+                    let nanos = (timestamp.fract().abs() * 1_000_000_000.0) as u32;
+                    chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, nanos)
+                })
+                .map_or_else(|| fetched_at.clone(), |date| date.to_rfc3339());
+            let external_id = post["id"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .map_or_else(
+                    || format!("{title}:{published_at}"),
+                    |value| value.to_owned(),
+                );
+            RssFeedEntry {
+                external_id,
+                url,
+                title,
+                summary: post["selftext"].as_str().unwrap_or_default().to_owned(),
+                published_at,
+            }
+        })
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        return Err("Reddit returned no readable posts".to_owned());
+    }
+    let period = source
+        .query_pairs()
+        .find_map(|(key, value)| (key == "t").then_some(value.into_owned()))
+        .filter(|value| {
+            matches!(
+                value.as_str(),
+                "hour" | "day" | "week" | "month" | "year" | "all"
+            )
+        });
+    let sort_label = match (sort, period.as_deref()) {
+        ("top", Some(period)) => format!("Top · {period}"),
+        ("new", _) => "New".to_owned(),
+        ("rising", _) => "Rising".to_owned(),
+        ("top", _) => "Top".to_owned(),
+        _ => "Hot".to_owned(),
+    };
+    Ok(RssFeedSnapshot {
+        title: format!("r/{subreddit} · {sort_label}"),
+        items,
+    })
+}
+
 async fn validate_public_https_url(value: &str) -> Result<Url, String> {
     let url = Url::parse(value).map_err(|_| "URL is invalid".to_owned())?;
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
@@ -2012,18 +2142,33 @@ async fn response_prefix_text(
 }
 
 async fn response_bytes(response: reqwest::Response) -> Result<Vec<u8>, String> {
-    let response = response.error_for_status().map_err(request_error)?;
+    response_bytes_with_limit(response, MAX_RESPONSE_BYTES).await
+}
+
+async fn response_bytes_with_limit(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    let mut response = response.error_for_status().map_err(request_error)?;
     if response
         .content_length()
-        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+        .is_some_and(|length| length > max_bytes as u64)
     {
         return Err("provider response was too large".to_owned());
     }
-    let bytes = response.bytes().await.map_err(request_error)?;
-    if bytes.len() > MAX_RESPONSE_BYTES {
-        return Err("provider response was too large".to_owned());
+    let mut bytes = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or_default()
+            .min(max_bytes as u64) as usize,
+    );
+    while let Some(chunk) = response.chunk().await.map_err(request_error)? {
+        if bytes.len().saturating_add(chunk.len()) > max_bytes {
+            return Err("provider response was too large".to_owned());
+        }
+        bytes.extend_from_slice(&chunk);
     }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 fn request_error(error: reqwest::Error) -> String {
@@ -2208,6 +2353,63 @@ mod tests {
                 "https://yt3.googleusercontent.com/channel=s512".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn reddit_listing_urls_are_recognized_without_claiming_other_paths() {
+        let source =
+            Url::parse("https://www.reddit.com/r/selfhosted/top.json?limit=25&raw_json=1&t=week")
+                .unwrap();
+        assert_eq!(
+            reddit_listing_source(&source),
+            Some(("selfhosted".to_owned(), "top"))
+        );
+        assert!(
+            reddit_listing_source(&Url::parse("https://www.reddit.com/search.json").unwrap())
+                .is_none()
+        );
+        assert!(
+            reddit_listing_source(
+                &Url::parse("https://example.com/r/selfhosted/top.json").unwrap()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn reddit_listings_become_reader_items_and_skip_pinned_posts() {
+        let source = Url::parse("https://www.reddit.com/r/selfhosted/new.json?limit=25").unwrap();
+        let payload = json!({
+            "data": { "children": [
+                { "data": {
+                    "id": "post-1",
+                    "title": "A useful project",
+                    "url": "https://example.com/project",
+                    "permalink": "/r/selfhosted/comments/post-1/a_useful_project/",
+                    "created_utc": 1_786_622_400.0,
+                    "selftext": "Project notes",
+                    "stickied": false,
+                    "pinned": false
+                } },
+                { "data": {
+                    "id": "rules",
+                    "title": "Community rules",
+                    "permalink": "/r/selfhosted/comments/rules/community_rules/",
+                    "created_utc": 1_786_622_300.0,
+                    "stickied": true
+                } }
+            ] }
+        });
+
+        let snapshot = parse_reddit_feed_snapshot(&source, "selfhosted", "new", &payload)
+            .expect("listing parses");
+
+        assert_eq!(snapshot.title, "r/selfhosted · New");
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(snapshot.items[0].external_id, "post-1");
+        assert_eq!(snapshot.items[0].url, "https://example.com/project");
+        assert_eq!(snapshot.items[0].summary, "Project notes");
+        assert_eq!(snapshot.items[0].published_at, "2026-08-13T12:00:00+00:00");
     }
 
     #[test]

@@ -298,14 +298,77 @@ pub async fn list_youtube_videos(
 ) -> Result<Vec<YoutubeVideo>, sqlx::Error> {
     sqlx::query_as::<_, YoutubeVideo>(
         "SELECT v.id, v.channel_id, c.title AS channel_title, v.url, v.thumbnail_url, \
-         v.title, v.published_at, v.fetched_at FROM youtube_videos v \
+         v.title, v.published_at, v.fetched_at, wl.saved_at AS watch_later_at \
+         FROM youtube_videos v \
          JOIN youtube_channels c ON c.channel_id = v.channel_id \
          JOIN youtube_subscriptions s ON s.channel_id = v.channel_id \
+         LEFT JOIN youtube_watch_later wl ON wl.video_id = v.id AND wl.user_id = ? \
          WHERE s.user_id = ? ORDER BY datetime(v.published_at) DESC, v.fetched_at DESC LIMIT 500",
+    )
+    .bind(user_id)
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Lists one user's saved YouTube videos in most-recently-saved order.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when saved videos cannot be loaded.
+pub async fn list_youtube_watch_later(
+    pool: &SqlitePool,
+    user_id: &str,
+) -> Result<Vec<YoutubeVideo>, sqlx::Error> {
+    sqlx::query_as::<_, YoutubeVideo>(
+        "SELECT v.id, v.channel_id, c.title AS channel_title, v.url, v.thumbnail_url, \
+         v.title, v.published_at, v.fetched_at, wl.saved_at AS watch_later_at \
+         FROM youtube_watch_later wl \
+         JOIN youtube_videos v ON v.id = wl.video_id \
+         JOIN youtube_channels c ON c.channel_id = v.channel_id \
+         WHERE wl.user_id = ? ORDER BY datetime(wl.saved_at) DESC, wl.saved_at DESC",
     )
     .bind(user_id)
     .fetch_all(pool)
     .await
+}
+
+/// Adds or removes a cached video from one user's Watch Later collection.
+///
+/// Saving requires a current subscription to the video's channel. Removing requires only the
+/// account-owned saved row, so a video can still be removed after unsubscribing.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the write cannot be completed.
+pub async fn set_youtube_watch_later(
+    pool: &SqlitePool,
+    user_id: &str,
+    video_id: &str,
+    saved: bool,
+) -> Result<bool, sqlx::Error> {
+    let result = if saved {
+        sqlx::query(
+            "INSERT INTO youtube_watch_later (user_id, video_id, saved_at) \
+             SELECT ?, v.id, ? FROM youtube_videos v \
+             JOIN youtube_subscriptions s ON s.channel_id = v.channel_id \
+             WHERE v.id = ? AND s.user_id = ? \
+             ON CONFLICT(user_id, video_id) DO UPDATE SET saved_at = excluded.saved_at",
+        )
+        .bind(user_id)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(video_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?
+    } else {
+        sqlx::query("DELETE FROM youtube_watch_later WHERE user_id = ? AND video_id = ?")
+            .bind(user_id)
+            .bind(video_id)
+            .execute(pool)
+            .await?
+    };
+    Ok(result.rows_affected() > 0)
 }
 
 /// Lists one user's groups in display order.
@@ -631,6 +694,27 @@ mod tests {
             list_youtube_videos(&pool, &second.id).await.unwrap().len(),
             1
         );
+        let video_id = list_youtube_videos(&pool, &first.id).await.unwrap()[0]
+            .id
+            .clone();
+        assert!(
+            set_youtube_watch_later(&pool, &first.id, &video_id, true)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            list_youtube_watch_later(&pool, &first.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            list_youtube_watch_later(&pool, &second.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         let gaming = create_youtube_group(&pool, &first.id, "Gaming")
             .await
@@ -662,6 +746,24 @@ mod tests {
             .unwrap();
         assert!(
             list_youtube_videos(&pool, &first.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            list_youtube_watch_later(&pool, &first.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            set_youtube_watch_later(&pool, &first.id, &video_id, false)
+                .await
+                .unwrap()
+        );
+        assert!(
+            list_youtube_watch_later(&pool, &first.id)
                 .await
                 .unwrap()
                 .is_empty()
