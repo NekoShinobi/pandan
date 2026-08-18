@@ -72,15 +72,28 @@ export interface LinePost {
   updated_at: string;
 }
 
+export interface LineAuthorProfile {
+  user_id: string;
+  display_name: string;
+  post_count: number;
+  first_post_at: string | null;
+}
+
+export interface LineAuthorFeed {
+  author: LineAuthorProfile;
+  posts: LinePost[];
+}
+
+export interface LineThread {
+  parent: LinePost | null;
+  post: LinePost;
+  replies: LinePost[];
+}
+
 export type KanbanRole = "admin" | "member" | "guest";
 export type KanbanSection = "boards" | "workspaces" | "invitations";
 export type KanbanLabelColor =
-  | "accent"
-  | "blue"
-  | "amber"
-  | "red"
-  | "violet"
-  | "gray";
+  "accent" | "blue" | "amber" | "red" | "violet" | "gray";
 
 export interface KanbanWorkspace {
   id: string;
@@ -577,7 +590,6 @@ export interface UpdateJournalNodeInput {
 export type WidgetKind =
   | "weather"
   | "task-summary"
-  | "search"
   | "focus"
   | "task-list"
   | "task-progress"
@@ -1303,6 +1315,24 @@ export function linePostAttachmentUrl(
   attachmentId: string,
 ): string {
   return `/api/lines/posts/${encodeURIComponent(postId)}/attachments/${encodeURIComponent(attachmentId)}`;
+}
+
+export function fetchLineThread(postId: string): Promise<LineThread> {
+  return requestJson<LineThread>(
+    `/api/lines/posts/${encodeURIComponent(postId)}/thread`,
+    { credentials: "same-origin" },
+  );
+}
+
+export function fetchLineAuthorFeed(userId: string): Promise<LineAuthorFeed> {
+  return requestJson<LineAuthorFeed>(
+    `/api/lines/authors/${encodeURIComponent(userId)}`,
+    { credentials: "same-origin" },
+  );
+}
+
+export function lineAuthorAvatarUrl(userId: string): string {
+  return `/api/lines/authors/${encodeURIComponent(userId)}/avatar`;
 }
 
 export function setLinePostReaction(

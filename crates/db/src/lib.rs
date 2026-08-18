@@ -131,6 +131,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "035_read_later",
         include_str!("../migrations/035_read_later.sql"),
     ),
+    (
+        "036_remove_search_widget",
+        include_str!("../migrations/036_remove_search_widget.sql"),
+    ),
+    (
+        "037_rss_refresh_schedule",
+        include_str!("../migrations/037_rss_refresh_schedule.sql"),
+    ),
 ];
 
 /// Maps migration names used by earlier development builds to their canonical names.
@@ -406,6 +414,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn search_widget_migration_removes_instances_and_preserves_the_rest() {
+        let options = SqliteConnectOptions::from_str("sqlite::memory:")
+            .expect("memory database URL parses")
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("database connects");
+
+        for (_, migration) in MIGRATIONS.iter().take(35) {
+            sqlx::raw_sql(*migration)
+                .execute(&pool)
+                .await
+                .expect("legacy migration applies");
+        }
+        let (user, _) = queries::create_account(
+            &pool,
+            "search-removal@example.com",
+            "$argon2id$upgrade",
+            "Search Removal",
+        )
+        .await
+        .expect("legacy account creates");
+        let kept = queries::create_dashboard_widget(&pool, &user.id, "youtube", 0, "standard")
+            .await
+            .expect("legacy widget creates");
+        queries::upsert_widget_secret(&pool, &user.id, &kept.id, "encrypted-token")
+            .await
+            .expect("legacy widget secret stores");
+        // The seed no longer places this kind, so recreate the legacy row directly.
+        sqlx::query(
+            "INSERT INTO dashboard_widgets (id, user_id, kind, workspace, position, size, config_json, grid_x, grid_y, grid_w, grid_h, created_at, updated_at) \
+             VALUES (?, ?, 'search', 0, 99, 'standard', '{}', 0, 5, 6, 4, datetime('now'), datetime('now'))",
+        )
+        .bind(format!("{}-search", user.id))
+        .bind(&user.id)
+        .execute(&pool)
+        .await
+        .expect("legacy search widget inserts");
+
+        sqlx::raw_sql(MIGRATIONS[35].1)
+            .execute(&pool)
+            .await
+            .expect("search widget removal migration applies");
+
+        let widgets = queries::list_dashboard_widgets(&pool, &user.id)
+            .await
+            .expect("widgets load");
+        assert!(widgets.iter().all(|widget| widget.kind != "search"));
+
+        let preserved = queries::get_dashboard_widget(&pool, &user.id, &kept.id)
+            .await
+            .expect("existing widget loads")
+            .expect("existing widget remains");
+        assert_eq!(preserved.kind, "youtube");
+        assert_eq!(
+            queries::get_widget_secret(&pool, &user.id, &kept.id)
+                .await
+                .expect("existing widget secret loads")
+                .as_deref(),
+            Some("encrypted-token")
+        );
+
+        let mut positions: Vec<i64> = widgets.iter().map(|widget| widget.position).collect();
+        positions.sort_unstable();
+        assert_eq!(
+            positions,
+            (0..i64::try_from(widgets.len()).expect("widget count fits i64")).collect::<Vec<_>>()
+        );
+
+        assert!(
+            queries::create_dashboard_widget(&pool, &user.id, "search", 0, "standard")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn yearless_contact_birthday_notes_are_recovered() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -587,7 +674,11 @@ mod tests {
             .await
             .expect("migration ledger creates");
 
-        for (name, migration_sql) in MIGRATIONS.iter().take(MIGRATIONS.len() - 1) {
+        let read_later_index = MIGRATIONS
+            .iter()
+            .position(|(name, _)| *name == "035_read_later")
+            .expect("Read Later migration exists");
+        for (name, migration_sql) in MIGRATIONS.iter().take(read_later_index) {
             let mut transaction = pool.begin().await.expect("migration starts");
             sqlx::raw_sql(*migration_sql)
                 .execute(&mut *transaction)
@@ -602,7 +693,7 @@ mod tests {
             transaction.commit().await.expect("migration commits");
         }
 
-        sqlx::raw_sql(MIGRATIONS.last().expect("Read Later migration exists").1)
+        sqlx::raw_sql(MIGRATIONS[read_later_index].1)
             .execute(&pool)
             .await
             .expect("legacy Read Later migration applies");
@@ -955,6 +1046,80 @@ mod tests {
                 .await
                 .unwrap()
                 .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn due_rss_subscriptions_are_claimed_once_per_refresh_window() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (owner, _) =
+            queries::create_account(&pool, "schedule@example.com", "$argon2id$sched", "Reader")
+                .await
+                .expect("reader creates");
+        let subscription = queries::create_rss_subscription(
+            &pool,
+            &owner.id,
+            &entities::RssSubscriptionDraft {
+                url: "https://example.com/feed.xml".to_owned(),
+                base_url: "https://example.com".to_owned(),
+                title: "Example feed".to_owned(),
+                category: "Research".to_owned(),
+                auto_delete_days: None,
+                auto_delete_mode: "read".to_owned(),
+            },
+            &[],
+        )
+        .await
+        .expect("subscription creates");
+
+        let aged = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+        sqlx::query(
+            "UPDATE rss_subscriptions SET last_fetched_at = ?, last_attempted_at = ? WHERE id = ?",
+        )
+        .bind(&aged)
+        .bind(&aged)
+        .bind(&subscription.id)
+        .execute(&pool)
+        .await
+        .expect("subscription ages");
+
+        let not_due_before = (chrono::Utc::now() - chrono::Duration::hours(3)).to_rfc3339();
+        assert!(
+            queries::list_due_rss_subscriptions(&pool, &not_due_before, 10)
+                .await
+                .expect("due subscriptions load")
+                .is_empty()
+        );
+
+        let due_before = (chrono::Utc::now() - chrono::Duration::minutes(30)).to_rfc3339();
+        let due = queries::list_due_rss_subscriptions(&pool, &due_before, 10)
+            .await
+            .expect("due subscriptions load");
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].id, subscription.id);
+        assert_eq!(due[0].user_id, owner.id);
+        assert_eq!(due[0].url, "https://example.com/feed.xml");
+
+        assert!(
+            queries::claim_rss_subscription_refresh(&pool, &subscription.id, &due_before)
+                .await
+                .expect("first claim succeeds")
+        );
+        assert!(
+            !queries::claim_rss_subscription_refresh(&pool, &subscription.id, &due_before)
+                .await
+                .expect("second claim is refused")
+        );
+
+        queries::set_rss_refresh_error(&pool, &owner.id, &subscription.id, "feed unavailable")
+            .await
+            .expect("refresh error stores");
+        assert!(
+            queries::list_due_rss_subscriptions(&pool, &due_before, 10)
+                .await
+                .expect("due subscriptions load")
+                .is_empty(),
+            "a failed refresh backs off for a full window"
         );
     }
 

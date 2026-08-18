@@ -15,10 +15,12 @@
     widget,
     onUpdate,
     onToast,
+    onOpenCalendarDate,
   }: {
     widget: DashboardWidget;
     onUpdate: (widget: DashboardWidget) => void;
     onToast: (message: string) => void;
+    onOpenCalendarDate: (date: string) => void;
   } = $props();
 
   const remoteKinds = new Set([
@@ -504,21 +506,24 @@
             {calendarMonthEventCount === 1 ? "event" : "events"}
           </span>
         </header>
-        <div class="calendar-month-grid" role="grid">
+        <div
+          class="calendar-month-grid"
+          role="group"
+          aria-label={`${calendarMonthLabel} dates`}
+        >
           {#each calendarWeekdays as weekday (weekday)}
-            <span class="calendar-month-weekday" role="columnheader"
-              >{weekday}</span
-            >
+            <span class="calendar-month-weekday" aria-hidden="true">{weekday}</span>
           {/each}
           {#each calendarMonthDays as day (day.key)}
-            <div
+            <button
               class={[
                 "calendar-month-day",
                 !day.currentMonth && "is-outside",
                 day.today && "is-today",
                 day.eventCount > 0 && "has-events",
               ]}
-              role="gridcell"
+              type="button"
+              onclick={() => onOpenCalendarDate(day.key)}
               aria-current={day.today ? "date" : undefined}
               aria-label={`${day.label}${day.eventCount ? `, ${day.eventCount} ${day.eventCount === 1 ? "event" : "events"}` : ""}`}
               data-od-id={`calendar-day-${widget.id}-${day.key}`}
@@ -527,7 +532,7 @@
               {#if day.eventCount > 0}
                 <span class="calendar-event-marker" aria-hidden="true"></span>
               {/if}
-            </div>
+            </button>
           {/each}
         </div>
       </section>

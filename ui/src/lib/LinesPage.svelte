@@ -7,38 +7,78 @@
   import LockKeyhole from "lucide-svelte/icons/lock-keyhole";
   import MessageCircle from "lucide-svelte/icons/message-circle";
   import Paperclip from "lucide-svelte/icons/paperclip";
+  import ArrowLeft from "lucide-svelte/icons/arrow-left";
   import RefreshCw from "lucide-svelte/icons/refresh-cw";
   import Search from "lucide-svelte/icons/search";
   import Send from "lucide-svelte/icons/send";
   import SmilePlus from "lucide-svelte/icons/smile-plus";
   import Trash2 from "lucide-svelte/icons/trash-2";
   import X from "lucide-svelte/icons/x";
-  import { onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import { SvelteMap } from "svelte/reactivity";
+  import { createViewSwap } from "$lib/viewSwap.svelte";
   import {
     createLinePost,
     deleteLinePost,
+    fetchLineAuthorFeed,
     fetchLinePosts,
+    fetchLineThread,
+    lineAuthorAvatarUrl,
     linePostAttachmentUrl,
     setLinePostReaction,
     uploadLinePostAttachment,
+    type LineAuthorFeed,
     type LinePost,
+    type LineThread,
     type LineVisibility,
   } from "$lib/api";
 
+  type LinesView =
+    | { kind: "feed" }
+    | { kind: "post"; postId: string }
+    | { kind: "author"; userId: string; fallbackName: string };
+
   let {
     viewerId,
+    viewerName,
     viewerRole,
     defaultVisibility,
   }: {
     viewerId: string;
+    viewerName: string;
     viewerRole: "administrator" | "member";
     defaultVisibility: LineVisibility;
   } = $props();
 
   const reactionChoices = ["👍", "❤️", "😂", "🎉", "😕", "👀"] as const;
+  const viewSwap = createViewSwap();
+
+  type DetailPrefetch =
+    | {
+        kind: "post";
+        postId: string;
+        promise: Promise<LineThread>;
+        value: LineThread | null;
+      }
+    | {
+        kind: "author";
+        userId: string;
+        promise: Promise<LineAuthorFeed>;
+        value: LineAuthorFeed | null;
+      };
+
+  // Screen changes request their data before the outgoing screen leaves, and
+  // the loader below claims the result, so a screen normally arrives with
+  // content rather than a loading line. Not reactive: only the loader reads it.
+  let detailPrefetch: DetailPrefetch | null = null;
 
   let posts = $state.raw<LinePost[]>([]);
+  let view = $state<LinesView>({ kind: "feed" });
+  let viewStack = $state.raw<LinesView[]>([]);
+  let thread = $state.raw<LineThread | null>(null);
+  let authorFeed = $state.raw<LineAuthorFeed | null>(null);
+  let detailLoading = $state(false);
+  let detailError = $state("");
   let scope = $state<"instance" | "mine">("instance");
   let searchQuery = $state("");
   let appliedSearch = $state("");
@@ -49,15 +89,28 @@
   let draftVisibility = $state<LineVisibility>("private");
   let pendingFiles = $state.raw<File[]>([]);
   let replyingTo = $state<LinePost | null>(null);
+  let replyContent = $state("");
+  let replyVisibility = $state<LineVisibility>("private");
+  let replyFiles = $state.raw<File[]>([]);
+  let replySubmitting = $state(false);
   let submitting = $state(false);
   let mutatingPostId = $state("");
   let reactionMenuPostId = $state("");
   let composer = $state<HTMLTextAreaElement>();
   let fileInput = $state<HTMLInputElement>();
+  let replyDialog = $state<HTMLDialogElement>();
+  let replyComposer = $state<HTMLTextAreaElement>();
+  let replyFileInput = $state<HTMLInputElement>();
 
   let characterCount = $derived(draftContent.length);
   let canSubmit = $derived(
     draftContent.trim().length > 0 && characterCount <= 2000 && !submitting,
+  );
+  let replyCharacterCount = $derived(replyContent.length);
+  let canSubmitReply = $derived(
+    replyContent.trim().length > 0 &&
+      replyCharacterCount <= 2000 &&
+      !replySubmitting,
   );
   let hashtagCounts = $derived.by(() => {
     const counts = new SvelteMap<string, number>();
@@ -73,10 +126,203 @@
       .slice(0, 12);
   });
 
+  let authorName = $derived(
+    authorFeed?.author.display_name ??
+      (view.kind === "author" ? view.fallbackName : ""),
+  );
+
   onMount(() => {
     draftVisibility = defaultVisibility;
     void loadPosts();
   });
+
+  onDestroy(() => {
+    viewSwap.cancel();
+  });
+
+  // Detail screens are conditionally rendered, so they load from an effect
+  // rather than onMount, and cancel in flight work when the view changes.
+  $effect(() => {
+    const current = view;
+    const prefetched = detailPrefetch;
+    detailPrefetch = null;
+    if (current.kind === "feed") return;
+
+    const readyThread =
+      current.kind === "post" &&
+      prefetched?.kind === "post" &&
+      prefetched.postId === current.postId
+        ? prefetched.value
+        : null;
+    const readyAuthorFeed =
+      current.kind === "author" &&
+      prefetched?.kind === "author" &&
+      prefetched.userId === current.userId
+        ? prefetched.value
+        : null;
+
+    if (readyThread || readyAuthorFeed) {
+      if (readyThread) thread = readyThread;
+      if (readyAuthorFeed) authorFeed = readyAuthorFeed;
+      detailLoading = false;
+      detailError = "";
+      return;
+    }
+
+    let cancelled = false;
+    detailLoading = true;
+    detailError = "";
+    (async () => {
+      try {
+        if (current.kind === "post") {
+          const request =
+            prefetched?.kind === "post" && prefetched.postId === current.postId
+              ? prefetched.promise
+              : fetchLineThread(current.postId);
+          const loaded = await request;
+          if (cancelled) return;
+          thread = loaded;
+        } else {
+          const request =
+            prefetched?.kind === "author" &&
+            prefetched.userId === current.userId
+              ? prefetched.promise
+              : fetchLineAuthorFeed(current.userId);
+          const loaded = await request;
+          if (cancelled) return;
+          authorFeed = loaded;
+        }
+      } catch (loadError) {
+        if (cancelled) return;
+        detailError =
+          loadError instanceof Error
+            ? loadError.message
+            : "Unable to open this screen.";
+      } finally {
+        if (!cancelled) detailLoading = false;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  /**
+   * Starts the request the incoming screen needs and parks it for the loader.
+   * The returned promise settles rather than rejects: the loader owns
+   * reporting the failure.
+   */
+  function prefetchDetail(target: LinesView) {
+    if (target.kind === "post") {
+      const entry = {
+        kind: "post" as const,
+        postId: target.postId,
+        promise: fetchLineThread(target.postId),
+        value: null as LineThread | null,
+      };
+      detailPrefetch = entry;
+      return entry.promise.then(
+        (loaded) => {
+          if (detailPrefetch === entry) entry.value = loaded;
+        },
+        () => undefined,
+      );
+    }
+
+    if (target.kind === "author") {
+      const entry = {
+        kind: "author" as const,
+        userId: target.userId,
+        promise: fetchLineAuthorFeed(target.userId),
+        value: null as LineAuthorFeed | null,
+      };
+      detailPrefetch = entry;
+      return entry.promise.then(
+        (loaded) => {
+          if (detailPrefetch === entry) entry.value = loaded;
+        },
+        () => undefined,
+      );
+    }
+
+    detailPrefetch = null;
+    return null;
+  }
+
+  function openView(next: LinesView) {
+    if (next.kind === "post" && view.kind === "post" && view.postId === next.postId)
+      return;
+    if (next.kind === "author" && view.kind === "author" && view.userId === next.userId)
+      return;
+    const current = view;
+    void viewSwap.run({
+      forward: true,
+      pending: prefetchDetail(next),
+      commit: () => {
+        viewStack = [...viewStack, current];
+        if (next.kind === "post") thread = null;
+        if (next.kind === "author") authorFeed = null;
+        reactionMenuPostId = "";
+        error = "";
+        view = next;
+      },
+    });
+  }
+
+  function openPost(post: LinePost) {
+    openView({ kind: "post", postId: post.id });
+  }
+
+  function openParentPost(post: LinePost) {
+    if (!post.reply_to_post_id) return;
+    openView({ kind: "post", postId: post.reply_to_post_id });
+  }
+
+  function openAuthor(post: LinePost) {
+    openView({
+      kind: "author",
+      userId: post.user_id,
+      fallbackName: post.author_name,
+    });
+  }
+
+  function goBack() {
+    const previous = viewStack.at(-1) ?? { kind: "feed" as const };
+    void viewSwap.run({
+      forward: false,
+      pending: prefetchDetail(previous),
+      commit: () => {
+        viewStack = viewStack.slice(0, -1);
+        reactionMenuPostId = "";
+        error = "";
+        view = previous;
+      },
+    });
+  }
+
+  function returnToFeed() {
+    // Filter changes call this from the timeline itself, where there is no
+    // screen change to cover.
+    if (view.kind === "feed") {
+      viewStack = [];
+      reactionMenuPostId = "";
+      return;
+    }
+    void viewSwap.run({
+      forward: false,
+      commit: () => {
+        viewStack = [];
+        reactionMenuPostId = "";
+        view = { kind: "feed" };
+      },
+    });
+  }
+
+  // Re-assigning the view hands the loader a fresh reference, which re-runs it.
+  function reloadDetail() {
+    if (view.kind !== "feed") view = { ...view };
+  }
 
   async function loadPosts() {
     loading = true;
@@ -98,13 +344,15 @@
   }
 
   async function selectScope(nextScope: "instance" | "mine") {
-    if (scope === nextScope) return;
+    if (scope === nextScope && view.kind === "feed") return;
     scope = nextScope;
+    returnToFeed();
     await loadPosts();
   }
 
   async function applySearch() {
     appliedSearch = searchQuery.trim();
+    returnToFeed();
     await loadPosts();
   }
 
@@ -112,57 +360,121 @@
     searchQuery = "";
     appliedSearch = "";
     activeTag = "";
+    returnToFeed();
     await loadPosts();
   }
 
   async function selectTag(tag: string) {
     activeTag = activeTag === tag ? "" : tag;
+    returnToFeed();
     await loadPosts();
   }
 
-  function chooseFiles(event: Event) {
+  function replacePost(updated: LinePost) {
+    posts = posts.map((candidate) =>
+      candidate.id === updated.id ? updated : candidate,
+    );
+    if (thread) {
+      thread = {
+        parent:
+          thread.parent?.id === updated.id ? updated : (thread.parent ?? null),
+        post: thread.post.id === updated.id ? updated : thread.post,
+        replies: thread.replies.map((candidate) =>
+          candidate.id === updated.id ? updated : candidate,
+        ),
+      };
+    }
+    if (authorFeed) {
+      authorFeed = {
+        ...authorFeed,
+        posts: authorFeed.posts.map((candidate) =>
+          candidate.id === updated.id ? updated : candidate,
+        ),
+      };
+    }
+  }
+
+  function dropPost(postId: string) {
+    posts = posts.filter((candidate) => candidate.id !== postId);
+    if (thread) {
+      thread = {
+        ...thread,
+        replies: thread.replies.filter((candidate) => candidate.id !== postId),
+      };
+    }
+    if (authorFeed) {
+      authorFeed = {
+        ...authorFeed,
+        posts: authorFeed.posts.filter((candidate) => candidate.id !== postId),
+      };
+    }
+  }
+
+  function acceptFiles(event: Event): File[] {
     const target = event.currentTarget as HTMLInputElement;
     const selected = Array.from(target.files ?? []);
     const oversized = selected.find((file) => file.size > 10 * 1024 * 1024);
     if (oversized) {
       error = `${oversized.name} is larger than 10 MB.`;
     }
-    pendingFiles = [
-      ...pendingFiles,
-      ...selected.filter(
-        (file) => file.size > 0 && file.size <= 10 * 1024 * 1024,
-      ),
-    ];
     target.value = "";
+    return selected.filter(
+      (file) => file.size > 0 && file.size <= 10 * 1024 * 1024,
+    );
+  }
+
+  function chooseFiles(event: Event) {
+    pendingFiles = [...pendingFiles, ...acceptFiles(event)];
+  }
+
+  function chooseReplyFiles(event: Event) {
+    replyFiles = [...replyFiles, ...acceptFiles(event)];
   }
 
   function removePendingFile(index: number) {
     pendingFiles = pendingFiles.filter((_, fileIndex) => fileIndex !== index);
   }
 
+  function removeReplyFile(index: number) {
+    replyFiles = replyFiles.filter((_, fileIndex) => fileIndex !== index);
+  }
+
+  async function publishPost(input: {
+    content: string;
+    visibility: LineVisibility;
+    files: File[];
+    replyToPostId: string | null;
+  }): Promise<string[]> {
+    const post = await createLinePost({
+      content: input.content,
+      visibility: input.visibility,
+      reply_to_post_id: input.replyToPostId,
+    });
+    const failedUploads: string[] = [];
+    for (const file of input.files) {
+      try {
+        await uploadLinePostAttachment(post.id, file);
+      } catch {
+        failedUploads.push(file.name);
+      }
+    }
+    return failedUploads;
+  }
+
   async function submitPost() {
     if (!canSubmit) return;
     submitting = true;
     error = "";
-    const files = pendingFiles;
     try {
-      const post = await createLinePost({
+      const failedUploads = await publishPost({
         content: draftContent,
         visibility: draftVisibility,
-        reply_to_post_id: replyingTo?.id ?? null,
+        files: pendingFiles,
+        replyToPostId: null,
       });
-      const failedUploads: string[] = [];
-      for (const file of files) {
-        try {
-          await uploadLinePostAttachment(post.id, file);
-        } catch {
-          failedUploads.push(file.name);
-        }
-      }
       draftContent = "";
       draftVisibility = defaultVisibility;
       pendingFiles = [];
-      replyingTo = null;
       reactionMenuPostId = "";
       await loadPosts();
       if (failedUploads.length) {
@@ -178,16 +490,53 @@
     }
   }
 
-  async function startReply(post: LinePost) {
-    replyingTo = post;
-    if (post.visibility === "private") draftVisibility = "private";
-    await tick();
-    composer?.focus();
+  async function submitReply() {
+    if (!canSubmitReply || !replyingTo) return;
+    replySubmitting = true;
+    error = "";
+    try {
+      const failedUploads = await publishPost({
+        content: replyContent,
+        visibility: replyVisibility,
+        files: replyFiles,
+        replyToPostId: replyingTo.id,
+      });
+      closeReply();
+      reactionMenuPostId = "";
+      await loadPosts();
+      if (view.kind !== "feed") reloadDetail();
+      if (failedUploads.length) {
+        error = `Reply saved, but these files could not be attached: ${failedUploads.join(", ")}.`;
+      }
+    } catch (submitError) {
+      error =
+        submitError instanceof Error
+          ? submitError.message
+          : "Unable to save reply.";
+    } finally {
+      replySubmitting = false;
+    }
   }
 
-  function cancelReply() {
+  async function startReply(post: LinePost) {
+    replyingTo = post;
+    replyContent = "";
+    replyFiles = [];
+    replyVisibility =
+      post.visibility === "private" ? "private" : defaultVisibility;
+    replyDialog?.showModal();
+    await tick();
+    replyComposer?.focus();
+  }
+
+  function closeReply() {
+    replyDialog?.close();
+  }
+
+  function resetReply() {
     replyingTo = null;
-    draftVisibility = defaultVisibility;
+    replyContent = "";
+    replyFiles = [];
   }
 
   async function removePost(post: LinePost) {
@@ -200,7 +549,10 @@
     error = "";
     try {
       await deleteLinePost(post.id);
-      posts = posts.filter((candidate) => candidate.id !== post.id);
+      dropPost(post.id);
+      if (view.kind === "post" && thread?.post.id === post.id) {
+        goBack();
+      }
     } catch (deleteError) {
       error =
         deleteError instanceof Error
@@ -222,9 +574,7 @@
         emoji,
         !current?.reacted_by_viewer,
       );
-      posts = posts.map((candidate) =>
-        candidate.id === updated.id ? updated : candidate,
-      );
+      replacePost(updated);
       reactionMenuPostId = "";
     } catch (reactionError) {
       error =
@@ -293,83 +643,323 @@
       void submitPost();
     }
   }
+
+  function handleReplyKeydown(event: KeyboardEvent) {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      void submitReply();
+    }
+  }
+
+  function hideBrokenAvatar(event: Event) {
+    if (event.currentTarget instanceof HTMLImageElement) {
+      event.currentTarget.remove();
+    }
+  }
 </script>
 
-<section class="lines-page" data-od-id="lines-page">
-  <div class="lines-feed-column">
-    <section class="lines-composer" data-od-id="lines-composer">
-      <div class="lines-composer-heading">
+{#snippet postCard(post: LinePost, focused: boolean)}
+  <article
+    class={["line-post", focused && "is-focused"]}
+    data-od-id={`line-post-${post.id}`}
+  >
+    <button
+      class="line-post-avatar-link"
+      type="button"
+      aria-label={`Posts by ${post.author_name}`}
+      onclick={() => openAuthor(post)}
+    >
+      {@render lineAvatar(post.author_name, lineAuthorAvatarUrl(post.user_id))}
+    </button>
+    <div class="line-post-body">
+      <header>
         <div>
-          <span>[ QUICK.CAPTURE ]</span>
-          <h2>Write a line.</h2>
-        </div>
-        <div class="lines-visibility" data-od-id="lines-visibility-control">
           <button
-            class={[draftVisibility === "private" && "is-active"]}
+            class="line-post-author"
             type="button"
-            aria-pressed={draftVisibility === "private"}
-            onclick={() => (draftVisibility = "private")}
+            onclick={() => openAuthor(post)}
+            data-od-id={`line-post-author-${post.id}`}
           >
-            <LockKeyhole size={14} strokeWidth={1.8} aria-hidden="true" />
-            Private
+            {post.author_name}
           </button>
           <button
-            class={[draftVisibility === "public" && "is-active"]}
+            class="line-post-timestamp"
             type="button"
-            aria-pressed={draftVisibility === "public"}
-            disabled={replyingTo?.visibility === "private"}
-            onclick={() => (draftVisibility = "public")}
+            aria-label={`Open this post from ${postDate(post.created_at)}`}
+            onclick={() => openPost(post)}
+            data-od-id={`line-post-permalink-${post.id}`}
           >
-            <Globe2 size={14} strokeWidth={1.8} aria-hidden="true" />
-            Instance
+            <time datetime={post.created_at}>{postDate(post.created_at)}</time>
           </button>
         </div>
-      </div>
+        <span
+          class="line-post-visibility"
+          title={post.visibility === "private"
+            ? "Private post — only you can view it"
+            : "Instance post — visible to signed-in users"}
+          data-od-id={`line-post-visibility-${post.id}`}
+        >
+          {#if post.visibility === "private"}
+            <LockKeyhole
+              size={13}
+              strokeWidth={1.8}
+              aria-hidden="true"
+            />
+            <span class="sr-only">Private post</span>
+          {:else}
+            <Globe2 size={13} strokeWidth={1.8} aria-hidden="true" />
+            <span class="sr-only">Instance post</span>
+          {/if}
+        </span>
+      </header>
 
-      {#if replyingTo}
-        <div class="lines-reply-context" data-od-id="lines-reply-context">
-          <MessageCircle size={15} strokeWidth={1.8} aria-hidden="true" />
-          <span>
-            Replying to <strong>{replyingTo.author_name}</strong>
-            <small>{replyingTo.content.slice(0, 120)}</small>
-          </span>
-          <button type="button" aria-label="Cancel reply" onclick={cancelReply}>
-            <X size={16} strokeWidth={1.8} aria-hidden="true" />
+      {#if post.reply_to_post_id}
+        {#if post.reply_to_author_name}
+          <button
+            class="line-post-reply-reference"
+            type="button"
+            aria-label={`Open the post by ${post.reply_to_author_name} that this replies to`}
+            onclick={() => openParentPost(post)}
+            data-od-id={`line-post-parent-${post.id}`}
+          >
+            Replying to <strong>{post.reply_to_author_name}</strong>
+            {#if post.reply_to_content}
+              <span>{post.reply_to_content.slice(0, 140)}</span>
+            {/if}
           </button>
-        </div>
+        {:else}
+          <div class="line-post-reply-reference is-static">
+            Replying to <strong>a removed post</strong>
+          </div>
+        {/if}
       {/if}
 
-      <textarea
-        bind:this={composer}
-        bind:value={draftContent}
-        onkeydown={handleComposerKeydown}
-        maxlength="2000"
-        rows="5"
-        placeholder="Markdown is supported. Add #hashtags to make this post discoverable."
-        aria-label={replyingTo ? "Write a reply" : "Write a post"}
-        data-od-id="lines-post-content"></textarea>
+      <div
+        class="line-post-markdown"
+        {@attach attachRenderedPost(post.content)}
+      ></div>
 
-      {#if pendingFiles.length}
-        <div class="lines-pending-files" data-od-id="lines-pending-files">
-          {#each pendingFiles as file, index (`${file.name}-${file.lastModified}-${index}`)}
-            <span>
-              {#if imageAttachment(file.type)}
-                <ImageIcon size={14} strokeWidth={1.8} aria-hidden="true" />
-              {:else}
-                <FileText size={14} strokeWidth={1.8} aria-hidden="true" />
-              {/if}
-              <span>{file.name}<small>{fileSize(file.size)}</small></span>
-              <button
-                type="button"
-                aria-label={`Remove ${file.name}`}
-                onclick={() => removePendingFile(index)}
+      {#if post.attachments.length}
+        <div class="line-post-attachments">
+          {#each post.attachments as attachment (attachment.id)}
+            {#if imageAttachment(attachment.mime_type)}
+              <a
+                class="line-post-image"
+                href={linePostAttachmentUrl(post.id, attachment.id)}
+                target="_blank"
+                rel="noreferrer"
               >
-                <X size={14} strokeWidth={1.8} aria-hidden="true" />
-              </button>
-            </span>
+                <img
+                  src={linePostAttachmentUrl(post.id, attachment.id)}
+                  alt={attachment.file_name}
+                  loading="lazy"
+                />
+              </a>
+            {:else}
+              <a
+                class="line-post-file"
+                href={linePostAttachmentUrl(post.id, attachment.id)}
+                download={attachment.file_name}
+              >
+                <FileText
+                  size={18}
+                  strokeWidth={1.7}
+                  aria-hidden="true"
+                />
+                <span>
+                  <strong>{attachment.file_name}</strong>
+                  <small>{fileSize(attachment.byte_size)}</small>
+                </span>
+              </a>
+            {/if}
           {/each}
         </div>
       {/if}
+
+      {#if post.tags.length}
+        <div class="line-post-tags" aria-label="Post hashtags">
+          {#each post.tags as tag (tag)}
+            <button type="button" onclick={() => selectTag(tag)}
+              >#{tag}</button
+            >
+          {/each}
+        </div>
+      {/if}
+
+      <footer>
+        <button
+          type="button"
+          onclick={() => startReply(post)}
+          data-od-id={`reply-line-post-${post.id}`}
+        >
+          <MessageCircle size={16} strokeWidth={1.8} aria-hidden="true" />
+          Reply
+        </button>
+
+        {#if post.reply_count}
+          <button
+            class="line-post-thread-link"
+            type="button"
+            onclick={() => openPost(post)}
+            data-od-id={`open-line-thread-${post.id}`}
+          >
+            {post.reply_count}
+            {post.reply_count === 1 ? "reply" : "replies"}
+          </button>
+        {/if}
+
+        <div class="line-post-reactions">
+          {#each post.reactions as reaction (reaction.emoji)}
+            <button
+              class:active={reaction.reacted_by_viewer}
+              type="button"
+              aria-pressed={reaction.reacted_by_viewer}
+              aria-label={`${reaction.emoji} reaction, ${reaction.count}`}
+              disabled={mutatingPostId === post.id}
+              onclick={() => toggleReaction(post, reaction.emoji)}
+            >
+              <span>{reaction.emoji}</span>{reaction.count}
+            </button>
+          {/each}
+          <button
+            type="button"
+            aria-label="Add a reaction"
+            aria-expanded={reactionMenuPostId === post.id}
+            onclick={() =>
+              (reactionMenuPostId =
+                reactionMenuPostId === post.id ? "" : post.id)}
+          >
+            <SmilePlus size={16} strokeWidth={1.8} aria-hidden="true" />
+          </button>
+          {#if reactionMenuPostId === post.id}
+            <div
+              class="line-reaction-picker"
+              aria-label="Choose a reaction"
+            >
+              {#each reactionChoices as emoji (emoji)}
+                <button
+                  type="button"
+                  aria-label={`React with ${emoji}`}
+                  onclick={() => toggleReaction(post, emoji)}
+                  >{emoji}</button
+                >
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        {#if post.user_id === viewerId || (viewerRole === "administrator" && post.visibility === "public")}
+          <button
+            class="line-post-delete"
+            type="button"
+            aria-label={post.user_id === viewerId
+              ? "Delete post"
+              : "Force-delete post"}
+            disabled={mutatingPostId === post.id}
+            onclick={() => removePost(post)}
+          >
+            <Trash2 size={16} strokeWidth={1.8} aria-hidden="true" />
+            {post.user_id === viewerId ? "Delete" : "Moderate"}
+          </button>
+        {/if}
+      </footer>
+    </div>
+  </article>
+{/snippet}
+
+{#snippet lineAvatar(name: string, source: string)}
+  <span class="line-avatar" aria-hidden="true">
+    <span>{initials(name)}</span>
+    <img src={source} alt="" loading="lazy" onerror={hideBrokenAvatar} />
+  </span>
+{/snippet}
+
+{#snippet visibilityChoice(
+  value: LineVisibility,
+  select: (next: LineVisibility) => void,
+  lockPrivate: boolean,
+  odId: string,
+)}
+  <div class="lines-visibility" data-od-id={odId}>
+    <button
+      class={[value === "private" && "is-active"]}
+      type="button"
+      aria-pressed={value === "private"}
+      onclick={() => select("private")}
+    >
+      <LockKeyhole size={14} strokeWidth={1.8} aria-hidden="true" />
+      Private
+    </button>
+    <button
+      class={[value === "public" && "is-active"]}
+      type="button"
+      aria-pressed={value === "public"}
+      disabled={lockPrivate}
+      onclick={() => select("public")}
+    >
+      <Globe2 size={14} strokeWidth={1.8} aria-hidden="true" />
+      Instance
+    </button>
+  </div>
+{/snippet}
+
+{#snippet pendingFileList(
+  files: File[],
+  remove: (index: number) => void,
+  odId: string,
+)}
+  <div class="lines-pending-files" data-od-id={odId}>
+    {#each files as file, index (`${file.name}-${file.lastModified}-${index}`)}
+      <span>
+        {#if imageAttachment(file.type)}
+          <ImageIcon size={14} strokeWidth={1.8} aria-hidden="true" />
+        {:else}
+          <FileText size={14} strokeWidth={1.8} aria-hidden="true" />
+        {/if}
+        <span>{file.name}<small>{fileSize(file.size)}</small></span>
+        <button
+          type="button"
+          aria-label={`Remove ${file.name}`}
+          onclick={() => remove(index)}
+        >
+          <X size={14} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+      </span>
+    {/each}
+  </div>
+{/snippet}
+
+<section class="lines-page" data-od-id="lines-page">
+  <div
+    class="lines-feed-column view-swap"
+    data-view-phase={viewSwap.phase}
+    data-view-direction={viewSwap.direction}
+    {@attach viewSwap.attach}
+  >
+    {#if view.kind === "feed"}
+    <section class="lines-composer" data-od-id="lines-composer">
+      <div class="lines-composer-entry">
+        {@render lineAvatar(viewerName, "/api/settings/avatar")}
+        <div class="lines-composer-field">
+          <textarea
+            bind:this={composer}
+            bind:value={draftContent}
+            onkeydown={handleComposerKeydown}
+            maxlength="2000"
+            rows="3"
+            placeholder="Markdown is supported. Add #hashtags to make this post discoverable."
+            aria-label="Write a post"
+            data-od-id="lines-post-content"></textarea>
+
+          {#if pendingFiles.length}
+            {@render pendingFileList(
+              pendingFiles,
+              removePendingFile,
+              "lines-pending-files",
+            )}
+          {/if}
+        </div>
+      </div>
 
       <div class="lines-composer-actions">
         <div>
@@ -394,16 +984,24 @@
             {characterCount} / 2000
           </span>
         </div>
-        <button
-          class="ui-button ui-button--primary"
-          type="button"
-          disabled={!canSubmit}
-          onclick={submitPost}
-          data-od-id="publish-line-post"
-        >
-          <Send size={16} strokeWidth={1.8} aria-hidden="true" />
-          {submitting ? "Posting…" : replyingTo ? "Reply" : "Post"}
-        </button>
+        <div class="lines-composer-publish">
+          {@render visibilityChoice(
+            draftVisibility,
+            (next) => (draftVisibility = next),
+            false,
+            "lines-visibility-control",
+          )}
+          <button
+            class="ui-button ui-button--primary"
+            type="button"
+            disabled={!canSubmit}
+            onclick={submitPost}
+            data-od-id="publish-line-post"
+          >
+            <Send size={16} strokeWidth={1.8} aria-hidden="true" />
+            {submitting ? "Posting…" : "Post"}
+          </button>
+        </div>
       </div>
     </section>
 
@@ -465,176 +1063,110 @@
         </div>
       {:else}
         {#each posts as post (post.id)}
-          <article class="line-post" data-od-id={`line-post-${post.id}`}>
-            <div class="line-post-avatar" aria-hidden="true">
-              {initials(post.author_name)}
-            </div>
-            <div class="line-post-body">
-              <header>
-                <div>
-                  <strong>{post.author_name}</strong>
-                  <time datetime={post.created_at}
-                    >{postDate(post.created_at)}</time
-                  >
-                </div>
-                <span
-                  class="line-post-visibility"
-                  title={post.visibility === "private"
-                    ? "Private post — only you can view it"
-                    : "Instance post — visible to signed-in users"}
-                  data-od-id={`line-post-visibility-${post.id}`}
-                >
-                  {#if post.visibility === "private"}
-                    <LockKeyhole
-                      size={13}
-                      strokeWidth={1.8}
-                      aria-hidden="true"
-                    />
-                    <span class="sr-only">Private post</span>
-                  {:else}
-                    <Globe2 size={13} strokeWidth={1.8} aria-hidden="true" />
-                    <span class="sr-only">Instance post</span>
-                  {/if}
-                </span>
-              </header>
-
-              {#if post.reply_to_post_id}
-                <div class="line-post-reply-reference">
-                  Replying to <strong
-                    >{post.reply_to_author_name ?? "a removed post"}</strong
-                  >
-                  {#if post.reply_to_content}
-                    <span>{post.reply_to_content.slice(0, 140)}</span>
-                  {/if}
-                </div>
-              {/if}
-
-              <div
-                class="line-post-markdown"
-                {@attach attachRenderedPost(post.content)}
-              ></div>
-
-              {#if post.attachments.length}
-                <div class="line-post-attachments">
-                  {#each post.attachments as attachment (attachment.id)}
-                    {#if imageAttachment(attachment.mime_type)}
-                      <a
-                        class="line-post-image"
-                        href={linePostAttachmentUrl(post.id, attachment.id)}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <img
-                          src={linePostAttachmentUrl(post.id, attachment.id)}
-                          alt={attachment.file_name}
-                          loading="lazy"
-                        />
-                      </a>
-                    {:else}
-                      <a
-                        class="line-post-file"
-                        href={linePostAttachmentUrl(post.id, attachment.id)}
-                        download={attachment.file_name}
-                      >
-                        <FileText
-                          size={18}
-                          strokeWidth={1.7}
-                          aria-hidden="true"
-                        />
-                        <span>
-                          <strong>{attachment.file_name}</strong>
-                          <small>{fileSize(attachment.byte_size)}</small>
-                        </span>
-                      </a>
-                    {/if}
-                  {/each}
-                </div>
-              {/if}
-
-              {#if post.tags.length}
-                <div class="line-post-tags" aria-label="Post hashtags">
-                  {#each post.tags as tag (tag)}
-                    <button type="button" onclick={() => selectTag(tag)}
-                      >#{tag}</button
-                    >
-                  {/each}
-                </div>
-              {/if}
-
-              <footer>
-                <button
-                  type="button"
-                  onclick={() => startReply(post)}
-                  data-od-id={`reply-line-post-${post.id}`}
-                >
-                  <MessageCircle
-                    size={16}
-                    strokeWidth={1.8}
-                    aria-hidden="true"
-                  />
-                  Reply{post.reply_count ? ` · ${post.reply_count}` : ""}
-                </button>
-
-                <div class="line-post-reactions">
-                  {#each post.reactions as reaction (reaction.emoji)}
-                    <button
-                      class:active={reaction.reacted_by_viewer}
-                      type="button"
-                      aria-pressed={reaction.reacted_by_viewer}
-                      aria-label={`${reaction.emoji} reaction, ${reaction.count}`}
-                      disabled={mutatingPostId === post.id}
-                      onclick={() => toggleReaction(post, reaction.emoji)}
-                    >
-                      <span>{reaction.emoji}</span>{reaction.count}
-                    </button>
-                  {/each}
-                  <button
-                    type="button"
-                    aria-label="Add a reaction"
-                    aria-expanded={reactionMenuPostId === post.id}
-                    onclick={() =>
-                      (reactionMenuPostId =
-                        reactionMenuPostId === post.id ? "" : post.id)}
-                  >
-                    <SmilePlus size={16} strokeWidth={1.8} aria-hidden="true" />
-                  </button>
-                  {#if reactionMenuPostId === post.id}
-                    <div
-                      class="line-reaction-picker"
-                      aria-label="Choose a reaction"
-                    >
-                      {#each reactionChoices as emoji (emoji)}
-                        <button
-                          type="button"
-                          aria-label={`React with ${emoji}`}
-                          onclick={() => toggleReaction(post, emoji)}
-                          >{emoji}</button
-                        >
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-
-                {#if post.user_id === viewerId || (viewerRole === "administrator" && post.visibility === "public")}
-                  <button
-                    class="line-post-delete"
-                    type="button"
-                    aria-label={post.user_id === viewerId
-                      ? "Delete post"
-                      : "Force-delete post"}
-                    disabled={mutatingPostId === post.id}
-                    onclick={() => removePost(post)}
-                  >
-                    <Trash2 size={16} strokeWidth={1.8} aria-hidden="true" />
-                    {post.user_id === viewerId ? "Delete" : "Moderate"}
-                  </button>
-                {/if}
-              </footer>
-            </div>
-          </article>
+          {@render postCard(post, false)}
         {/each}
       {/if}
     </section>
+    {:else}
+      <header class="lines-screen-head" data-od-id="lines-screen-head">
+        <button
+          class="lines-back"
+          type="button"
+          onclick={goBack}
+          data-od-id="lines-back"
+        >
+          <ArrowLeft size={17} strokeWidth={1.8} aria-hidden="true" />
+          Back
+        </button>
+        <div>
+          <span>{view.kind === "post" ? "[ THREAD ]" : "[ AUTHOR ]"}</span>
+          <h2>
+            {view.kind === "post"
+              ? thread
+                ? `${thread.post.author_name}'s post`
+                : "Post"
+              : authorName || "Author"}
+          </h2>
+        </div>
+        <button
+          class="lines-refresh"
+          type="button"
+          aria-label="Refresh this screen"
+          disabled={detailLoading}
+          onclick={reloadDetail}
+        >
+          <RefreshCw size={16} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+      </header>
+
+      {#if error}
+        <p class="lines-error" role="alert">{error}</p>
+      {/if}
+
+      <section
+        class="lines-feed"
+        aria-busy={detailLoading}
+        data-od-id={view.kind === "post" ? "lines-thread" : "lines-author-feed"}
+      >
+        {#if detailLoading}
+          <div class="lines-status">
+            <span></span>
+            {view.kind === "post" ? "Loading the thread…" : "Loading posts…"}
+          </div>
+        {:else if detailError}
+          <div class="lines-empty">
+            <strong>This screen is unavailable.</strong>
+            <p>{detailError}</p>
+            <button
+              class="ui-button ui-button--secondary"
+              type="button"
+              onclick={returnToFeed}>Back to the timeline</button
+            >
+          </div>
+        {:else if view.kind === "post" && thread}
+          {#if thread.parent}
+            {@render postCard(thread.parent, false)}
+          {/if}
+          {@render postCard(thread.post, true)}
+          {#if thread.replies.length}
+            <div class="lines-thread-divider">
+              <span
+                >{thread.replies.length}
+                {thread.replies.length === 1 ? "reply" : "replies"}</span
+              >
+            </div>
+            {#each thread.replies as reply (reply.id)}
+              {@render postCard(reply, false)}
+            {/each}
+          {:else}
+            <div class="lines-empty">
+              <strong>No replies yet.</strong>
+              <p>Use Reply on the post above to start the thread.</p>
+            </div>
+          {/if}
+        {:else if view.kind === "author" && authorFeed}
+          <div class="lines-author-card" data-od-id="lines-author-card">
+            {@render lineAvatar(
+              authorFeed.author.display_name,
+              lineAuthorAvatarUrl(authorFeed.author.user_id),
+            )}
+            <div>
+              <strong>{authorFeed.author.display_name}</strong>
+              <small>
+                {authorFeed.author.post_count}
+                {authorFeed.author.post_count === 1 ? "post" : "posts"}
+                visible to you{authorFeed.author.first_post_at
+                  ? ` · since ${postDate(authorFeed.author.first_post_at)}`
+                  : ""}
+              </small>
+            </div>
+          </div>
+          {#each authorFeed.posts as post (post.id)}
+            {@render postCard(post, false)}
+          {/each}
+        {/if}
+      </section>
+    {/if}
   </div>
 
   <aside
@@ -706,6 +1238,119 @@
   </aside>
 </section>
 
+<dialog
+  class="ui-dialog lines-reply-dialog"
+  bind:this={replyDialog}
+  onclose={resetReply}
+  aria-label="Reply to a post"
+  data-od-id="lines-reply-dialog"
+>
+  <header class="lines-reply-head">
+    <span>[ REPLY ]</span>
+    <button
+      class="ui-button ui-button--ghost ui-button--icon"
+      type="button"
+      aria-label="Close reply"
+      onclick={closeReply}
+      data-od-id="close-lines-reply"
+    >
+      <X size={18} strokeWidth={1.8} aria-hidden="true" />
+    </button>
+  </header>
+
+  {#if replyingTo}
+    <article class="lines-reply-source" data-od-id="lines-reply-source">
+      {@render lineAvatar(
+        replyingTo.author_name,
+        lineAuthorAvatarUrl(replyingTo.user_id),
+      )}
+      <div>
+        <header>
+          <strong>{replyingTo.author_name}</strong>
+          <time datetime={replyingTo.created_at}
+            >{postDate(replyingTo.created_at)}</time
+          >
+          {#if replyingTo.visibility === "private"}
+            <LockKeyhole size={13} strokeWidth={1.8} aria-hidden="true" />
+          {:else}
+            <Globe2 size={13} strokeWidth={1.8} aria-hidden="true" />
+          {/if}
+        </header>
+        <div
+          class="line-post-markdown"
+          {@attach attachRenderedPost(replyingTo.content)}
+        ></div>
+      </div>
+    </article>
+
+    <div class="lines-composer-entry lines-reply-entry">
+      {@render lineAvatar(viewerName, "/api/settings/avatar")}
+      <div class="lines-composer-field">
+        <textarea
+          bind:this={replyComposer}
+          bind:value={replyContent}
+          onkeydown={handleReplyKeydown}
+          maxlength="2000"
+          rows="4"
+          placeholder={`Reply to ${replyingTo.author_name}…`}
+          aria-label="Write a reply"
+          data-od-id="lines-reply-content"></textarea>
+
+        {#if replyFiles.length}
+          {@render pendingFileList(
+            replyFiles,
+            removeReplyFile,
+            "lines-reply-pending-files",
+          )}
+        {/if}
+      </div>
+    </div>
+
+    <div class="lines-composer-actions">
+      <div>
+        <input
+          bind:this={replyFileInput}
+          class="lines-file-input"
+          type="file"
+          multiple
+          onchange={chooseReplyFiles}
+          data-od-id="lines-reply-file-input"
+        />
+        <button
+          class="ui-button ui-button--ghost"
+          type="button"
+          onclick={() => replyFileInput?.click()}
+          data-od-id="attach-lines-reply-files"
+        >
+          <Paperclip size={16} strokeWidth={1.8} aria-hidden="true" />
+          Attach
+        </button>
+        <span class:over-limit={replyCharacterCount > 2000}>
+          {replyCharacterCount} / 2000
+        </span>
+      </div>
+      <div class="lines-composer-publish">
+        {@render visibilityChoice(
+          replyVisibility,
+          (next) => (replyVisibility = next),
+          replyingTo.visibility === "private",
+          "lines-reply-visibility-control",
+        )}
+        <button
+          class="ui-button ui-button--primary"
+          type="button"
+          disabled={!canSubmitReply}
+          onclick={submitReply}
+          data-od-id="publish-line-reply"
+        >
+          <Send size={16} strokeWidth={1.8} aria-hidden="true" />
+          {replySubmitting ? "Replying…" : "Reply"}
+        </button>
+      </div>
+    </div>
+  {/if}
+</dialog>
+
 <style>
   .lines-page {
     display: grid;
@@ -730,7 +1375,6 @@
     background: color-mix(in oklch, var(--surface) 78%, transparent);
   }
 
-  .lines-composer-heading,
   .lines-composer-actions,
   .line-post header,
   .line-post footer,
@@ -741,9 +1385,9 @@
     gap: 16px;
   }
 
-  .lines-composer-heading > div:first-child > span,
   .lines-filter-summary > span,
-  .lines-hashtags header > span {
+  .lines-hashtags header > span,
+  .lines-reply-head > span {
     color: var(--accent);
     font-family: var(--font-mono);
     font-size: 10px;
@@ -751,12 +1395,21 @@
     letter-spacing: 0.1em;
   }
 
-  .lines-composer h2 {
-    margin: 3px 0 0;
-    font-family: var(--font-display);
-    font-size: clamp(24px, 3vw, 34px);
-    font-weight: 610;
-    letter-spacing: -0.02em;
+  .lines-composer-entry {
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr);
+    align-items: start;
+    gap: 14px;
+  }
+
+  .lines-composer-field {
+    min-width: 0;
+  }
+
+  .lines-composer-publish {
+    display: flex;
+    align-items: center;
+    gap: 12px;
   }
 
   .lines-visibility {
@@ -765,6 +1418,9 @@
   }
 
   .lines-visibility button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     min-height: 40px;
     padding: 0 12px;
     border: 0;
@@ -790,36 +1446,6 @@
     opacity: 0.45;
   }
 
-  .lines-reply-context {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    margin-top: 18px;
-    padding: 12px;
-    border: 1px solid var(--border);
-    background: var(--fg-soft);
-    color: var(--muted);
-    font-size: 12px;
-  }
-
-  .lines-reply-context > span {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .lines-reply-context strong {
-    color: var(--fg);
-  }
-
-  .lines-reply-context small {
-    display: block;
-    overflow: hidden;
-    margin-top: 3px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .lines-reply-context button,
   .lines-pending-files button {
     width: 32px;
     height: 32px;
@@ -829,8 +1455,7 @@
 
   textarea {
     width: 100%;
-    min-height: 128px;
-    margin-top: 18px;
+    min-height: 96px;
     padding: 0;
     resize: vertical;
     border: 0;
@@ -856,7 +1481,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    margin: 8px 0 16px;
+    margin: 10px 0 0;
   }
 
   .lines-pending-files > span {
@@ -964,6 +1589,116 @@
     display: block;
   }
 
+  .lines-screen-head {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    min-height: 66px;
+    padding: 12px 12px 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in oklch, var(--surface) 78%, transparent);
+  }
+
+  .lines-screen-head > div {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .lines-screen-head > div > span {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+  }
+
+  .lines-screen-head h2 {
+    overflow: hidden;
+    margin: 2px 0 0;
+    font-family: var(--font-display);
+    font-size: 20px;
+    font-weight: 610;
+    letter-spacing: -0.01em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .lines-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 40px;
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
+
+  .lines-back:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .lines-screen-head .lines-refresh {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+  }
+
+  .lines-thread-divider {
+    padding: 10px 22px;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in oklch, var(--surface) 55%, transparent);
+  }
+
+  .lines-thread-divider span {
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .lines-author-card {
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr);
+    align-items: center;
+    gap: 14px;
+    padding: 20px 22px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .lines-author-card > div {
+    min-width: 0;
+  }
+
+  .lines-author-card strong {
+    display: block;
+    overflow: hidden;
+    font-size: 16px;
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .lines-author-card small {
+    display: block;
+    margin-top: 3px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+
   .lines-error {
     margin: 0;
     padding: 12px 18px;
@@ -986,8 +1721,10 @@
     border-bottom: 0;
   }
 
-  .line-post-avatar {
+  .line-avatar {
+    position: relative;
     display: grid;
+    overflow: hidden;
     place-items: center;
     width: 42px;
     height: 42px;
@@ -998,6 +1735,14 @@
     font-size: 11px;
     font-weight: 750;
     letter-spacing: 0.05em;
+  }
+
+  .line-avatar > img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
   }
 
   .line-post-body {
@@ -1011,11 +1756,43 @@
     min-width: 0;
   }
 
-  .line-post header strong {
+  .line-post-author {
     overflow: hidden;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--fg);
     font-size: 13px;
+    font-weight: 650;
+    text-align: left;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .line-post-author:hover,
+  .line-post-timestamp:hover time {
+    text-decoration: underline;
+  }
+
+  .line-post-timestamp {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .line-post-avatar-link {
+    align-self: start;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    line-height: 0;
+  }
+
+  .line-post-avatar-link:hover .line-avatar,
+  .line-post-avatar-link:focus-visible .line-avatar {
+    border-color: var(--accent);
   }
 
   .line-post time,
@@ -1035,11 +1812,38 @@
   }
 
   .line-post-reply-reference {
+    display: block;
+    width: 100%;
     margin-top: 10px;
     padding: 9px 11px;
+    border: 0;
     border-left: 1px solid var(--border);
+    background: transparent;
     color: var(--muted);
     font-size: 11px;
+    text-align: left;
+  }
+
+  .line-post-reply-reference:not(.is-static):hover {
+    border-left-color: var(--accent);
+    background: var(--fg-soft);
+  }
+
+  .line-post-thread-link {
+    padding: 0 8px;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
+  .line-post-thread-link:hover {
+    color: var(--accent);
+  }
+
+  .line-post.is-focused {
+    background: var(--fg-soft);
   }
 
   .line-post-reply-reference strong {
@@ -1576,13 +2380,21 @@
       padding: 16px;
     }
 
-    .lines-composer-heading {
-      align-items: flex-start;
-      flex-direction: column;
+    .lines-composer-entry,
+    .lines-author-card {
+      grid-template-columns: 34px minmax(0, 1fr);
+      gap: 10px;
     }
 
-    .lines-visibility {
-      width: 100%;
+    .lines-screen-head,
+    .lines-author-card,
+    .lines-thread-divider {
+      padding-right: 16px;
+      padding-left: 16px;
+    }
+
+    .lines-screen-head h2 {
+      font-size: 17px;
     }
 
     .lines-visibility button {
@@ -1590,13 +2402,19 @@
     }
 
     .lines-composer-actions {
-      align-items: flex-end;
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 12px;
     }
 
     .lines-composer-actions > div {
-      align-items: flex-start;
-      flex-direction: column;
-      gap: 4px;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .lines-composer-publish {
+      width: 100%;
+      justify-content: space-between;
     }
 
     .line-post {
@@ -1604,7 +2422,7 @@
       gap: 10px;
     }
 
-    .line-post-avatar {
+    .line-avatar {
       width: 34px;
       height: 34px;
       font-size: 9px;
@@ -1638,6 +2456,100 @@
       left: auto;
       flex-wrap: wrap;
       width: 164px;
+    }
+  }
+
+  .lines-reply-dialog {
+    width: min(640px, calc(100vw - 24px));
+    max-height: min(760px, calc(100dvh - 40px));
+  }
+
+  .lines-reply-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-height: 56px;
+    padding: 0 12px 0 22px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .lines-reply-source {
+    position: relative;
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr);
+    gap: 14px;
+    padding: 20px 22px 16px;
+  }
+
+  .lines-reply-source > div {
+    min-width: 0;
+  }
+
+  .lines-reply-source header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    color: var(--muted);
+  }
+
+  .lines-reply-source header strong {
+    color: var(--fg);
+    font-size: 14px;
+    font-weight: 640;
+  }
+
+  .lines-reply-source header time {
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+
+  .lines-reply-source header :global(svg) {
+    align-self: center;
+  }
+
+  .lines-reply-source::after {
+    position: absolute;
+    top: 68px;
+    bottom: 0;
+    left: 43px;
+    width: 1px;
+    background: var(--border);
+    content: "";
+  }
+
+  .lines-reply-entry {
+    padding: 0 22px 4px;
+  }
+
+  .lines-reply-dialog .lines-composer-actions {
+    margin: 0 22px;
+    padding: 15px 0 22px;
+    border-top: 1px solid var(--border);
+  }
+
+  @media (max-width: 900px) {
+    .lines-reply-source,
+    .lines-reply-entry,
+    .lines-reply-dialog .lines-composer-actions {
+      padding-right: 16px;
+      padding-left: 16px;
+    }
+
+    .lines-reply-dialog .lines-composer-actions {
+      margin: 0 16px;
+      padding-right: 0;
+      padding-left: 0;
+    }
+
+    .lines-reply-source {
+      grid-template-columns: 34px minmax(0, 1fr);
+      gap: 10px;
+    }
+
+    .lines-reply-source::after {
+      top: 60px;
+      left: 33px;
     }
   }
 

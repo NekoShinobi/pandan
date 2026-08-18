@@ -33,6 +33,9 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - The initial administrator setup is one-time and claimed atomically.
 - Sidebar navigation order is Dashboard, Tasks, Kanban, Contacts, Calendar, RSS, Journal, Lines, YouTube, Coding, Subscriptions, Trading. Kanban expands to Boards, Workspaces, and Invitations.
 - Tasks Active and Archived views share the same page structure: keep New task and Focus Mode visible, and do not collapse the worklist grid when switching views.
+- The command palette is a global surface, not a dashboard feature. Keep its entry points page-independent: `Ctrl`/`Cmd` + `K`, the `/` key, and the header search control. Do not add palette triggers inside dashboard widgets or dashboard-only panels, and do not reintroduce the removed `search` web search widget; web search belongs in the palette's fallthrough row.
+- The Lines composer is avatar-first: the viewer's avatar sits beside the post entry with no heading above it, and the Private/Instance selector sits beside the Post button. Replies are composed in the centered reply modal, which quotes the parent post above the reply entry; do not restore the inline reply banner.
+- Lines has three screens inside its page: the timeline, a thread screen, and an author screen. A post timestamp or reply count opens the thread screen, `Replying to {author}` opens the parent post's thread screen, and an avatar or author name opens the author screen. These are full screens with a Back control, never modals, and the composer belongs to the timeline only.
 - Kanban workspaces are collaboration aggregates and are distinct from the removed dashboard `user_workspaces` partition UI. Every board, column, card, comment, checklist, label, and attachment authorization must resolve through active `kanban_workspace_members` membership.
 - Kanban roles are `admin`, `member`, and `guest` with the 24 kan.bn-compatible workspace/board/list/card/comment/member permissions. Admin grants are immutable, workspace manage/delete stay admin-only, per-member overrides are allowed for other permissions, and the final workspace admin cannot be demoted or removed.
 - Kanban invitations are in-app only and may target existing Pandan users; do not add email delivery or arbitrary addresses.
@@ -41,7 +44,7 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 
 - Wallpaper slots are:
   - `dashboard` — legacy private slot retained for existing data and API compatibility; do not expose it as a separate selector.
-  - `welcome` — private, per user, used by the authenticated `Welcome:{user}` loading transition and as the persistent background behind authenticated pages.
+  - `welcome` — private, per user, exposed in Account Settings as Main background, used by the authenticated `Welcome:{user}` loading transition and as the persistent background behind authenticated pages.
   - `loading` — legacy private slot retained for existing data and API compatibility; do not expose it as a separate selector.
   - `login` — global, administrator-managed, publicly readable before authentication.
 - For an existing authenticated session, render the Welcome loading overlay in the initial server response so the dashboard surface never flashes before the boot transition.
@@ -68,9 +71,14 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - RSS, ICS, Invidious, Gitea, and Forgejo URLs must use public HTTPS destinations.
 - Preserve DNS/IP validation against loopback, private, link-local, multicast, and reserved ranges.
 - Preserve bounded redirects, connection/request timeouts, response-size limits, and per-provider failure isolation.
+- RSS subscriptions refresh in a background worker every 30 minutes. Scheduling reads
+  `rss_subscriptions.last_attempted_at`, which is stamped when a refresh is claimed, so a failing
+  source backs off for a full window. Keep manual refresh available alongside it.
 - YouTube channel metadata refreshes every two hours through configured Invidious first and the public YouTube feed second. Shared portrait images are stored in SQLite and refreshed at most every 24 hours; failed portrait responses must never populate the cache.
 - Render user Markdown through the existing sanitizer. Custom HTML and iframe widgets remain sandboxed.
 - Lines public posts are readable only by authenticated instance users. Private posts remain owner-only, including from administrators; administrators may force-delete public posts but must never gain private-post read access.
+- Lines author avatars are served from `/api/lines/authors/{user_id}/avatar` and follow post visibility: an avatar is readable only when that author has at least one post the viewer can already see. Do not widen it into a general user-avatar lookup.
+- `/api/lines/posts/{post_id}/thread` and `/api/lines/authors/{user_id}` apply the same visibility rule as the timeline. A thread only exposes a parent or reply the viewer may already read, and an author profile resolves only for authors with at least one post visible to the viewer.
 
 ### Bundled data
 

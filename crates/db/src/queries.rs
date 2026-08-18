@@ -4,11 +4,11 @@ use crate::entities::{
     KanbanAttachment, KanbanBoard, KanbanBoardSummary, KanbanCard, KanbanCardDraft,
     KanbanChecklist, KanbanChecklistItem, KanbanColumn, KanbanComment, KanbanDirectoryUser,
     KanbanInvitation, KanbanLabel, KanbanMember, KanbanMemberPermission, KanbanOverview,
-    KanbanRolePermission, KanbanWorkspace, KanbanWorkspaceSettings, LinePost, LinePostAttachment,
-    LinePostDraft, LinePostReaction, ManagedUser, OidcAuthorization, PaymentSubscription, RssItem,
-    RssItemDraft, RssSubscription, RssSubscriptionDraft, SessionAccount, Task, TaskAttachment,
-    TaskDraft, TaskSubtask, User, UserAppearance, UserAvatar, UserBackground, UserCredentials,
-    UserSettings, Workspace,
+    KanbanRolePermission, KanbanWorkspace, KanbanWorkspaceSettings, LineAuthorProfile, LinePost,
+    LinePostAttachment, LinePostDraft, LinePostReaction, ManagedUser, OidcAuthorization,
+    PaymentSubscription, RssItem, RssItemDraft, RssRefreshTarget, RssSubscription,
+    RssSubscriptionDraft, SessionAccount, Task, TaskAttachment, TaskDraft, TaskSubtask, User,
+    UserAppearance, UserAvatar, UserBackground, UserCredentials, UserSettings, Workspace,
 };
 pub use crate::youtube_queries::*;
 use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
@@ -16,12 +16,11 @@ use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
 const DEFAULT_WIDGETS: &[(&str, i64, i64, &str, i64, i64, i64, i64)] = &[
     ("weather", 0, 0, "wide", 0, 0, 8, 5),
     ("task-summary", 0, 1, "compact", 8, 0, 4, 5),
-    ("search", 0, 2, "standard", 0, 5, 6, 4),
-    ("focus", 0, 3, "standard", 6, 5, 6, 4),
-    ("task-list", 0, 4, "wide", 0, 9, 8, 6),
-    ("task-progress", 0, 5, "compact", 8, 9, 4, 6),
-    ("feed-list", 0, 6, "wide", 0, 15, 8, 6),
-    ("feed-sources", 0, 7, "compact", 8, 15, 4, 6),
+    ("focus", 0, 2, "standard", 0, 5, 6, 4),
+    ("task-list", 0, 3, "wide", 0, 9, 8, 6),
+    ("task-progress", 0, 4, "compact", 8, 9, 4, 6),
+    ("feed-list", 0, 5, "wide", 0, 15, 8, 6),
+    ("feed-sources", 0, 6, "compact", 8, 15, 4, 6),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -852,6 +851,26 @@ async fn hydrate_line_post(
     })
 }
 
+/// Builds a Lines feed statement from the shared projection; the first bind is the viewer id.
+macro_rules! line_post_select {
+    ($tail:literal) => {
+        concat!(
+            "SELECT p.id, p.user_id, author.display_name AS author_name, p.content, p.visibility, \
+             p.reply_to_post_id, reply_author.display_name AS reply_to_author_name, \
+             parent.content AS reply_to_content, \
+             (SELECT COUNT(*) FROM line_posts replies \
+              WHERE replies.reply_to_post_id = p.id \
+                AND (replies.visibility = 'public' OR replies.user_id = ?)) AS reply_count, \
+             p.created_at, p.updated_at \
+             FROM line_posts p \
+             JOIN user_settings author ON author.user_id = p.user_id \
+             LEFT JOIN line_posts parent ON parent.id = p.reply_to_post_id \
+             LEFT JOIN user_settings reply_author ON reply_author.user_id = parent.user_id ",
+            $tail
+        )
+    };
+}
+
 /// Lists Lines posts visible to an authenticated viewer.
 ///
 /// # Errors
@@ -865,27 +884,16 @@ pub async fn list_line_posts(
     tag: &str,
 ) -> Result<Vec<LinePost>, sqlx::Error> {
     let search_pattern = format!("%{}%", query.to_lowercase());
-    let records = sqlx::query_as::<_, LinePostRecord>(
-        "SELECT p.id, p.user_id, author.display_name AS author_name, p.content, p.visibility, \
-                p.reply_to_post_id, reply_author.display_name AS reply_to_author_name, \
-                parent.content AS reply_to_content, \
-                (SELECT COUNT(*) FROM line_posts replies \
-                 WHERE replies.reply_to_post_id = p.id \
-                   AND (replies.visibility = 'public' OR replies.user_id = ?)) AS reply_count, \
-                p.created_at, p.updated_at \
-         FROM line_posts p \
-         JOIN user_settings author ON author.user_id = p.user_id \
-         LEFT JOIN line_posts parent ON parent.id = p.reply_to_post_id \
-         LEFT JOIN user_settings reply_author ON reply_author.user_id = parent.user_id \
-         WHERE (p.visibility = 'public' OR p.user_id = ?) \
-           AND (? = 'instance' OR p.user_id = ?) \
-           AND (? = '' OR LOWER(p.content) LIKE ?) \
-           AND (? = '' OR EXISTS( \
-               SELECT 1 FROM line_post_tags filter_tags \
-               WHERE filter_tags.post_id = p.id AND filter_tags.tag = ? COLLATE NOCASE \
-           )) \
-         ORDER BY p.created_at DESC, p.id DESC LIMIT 100",
-    )
+    let records = sqlx::query_as::<_, LinePostRecord>(line_post_select!(
+        "WHERE (p.visibility = 'public' OR p.user_id = ?) \
+         AND (? = 'instance' OR p.user_id = ?) \
+         AND (? = '' OR LOWER(p.content) LIKE ?) \
+         AND (? = '' OR EXISTS( \
+             SELECT 1 FROM line_post_tags filter_tags \
+             WHERE filter_tags.post_id = p.id AND filter_tags.tag = ? COLLATE NOCASE \
+         )) \
+         ORDER BY p.created_at DESC, p.id DESC LIMIT 100"
+    ))
     .bind(viewer_id)
     .bind(viewer_id)
     .bind(scope)
@@ -897,6 +905,14 @@ pub async fn list_line_posts(
     .fetch_all(pool)
     .await?;
 
+    hydrate_line_posts(pool, viewer_id, records).await
+}
+
+async fn hydrate_line_posts(
+    pool: &SqlitePool,
+    viewer_id: &str,
+    records: Vec<LinePostRecord>,
+) -> Result<Vec<LinePost>, sqlx::Error> {
     let mut posts = Vec::with_capacity(records.len());
     for record in records {
         posts.push(hydrate_line_post(pool, viewer_id, record).await?);
@@ -914,20 +930,9 @@ pub async fn get_line_post(
     viewer_id: &str,
     post_id: &str,
 ) -> Result<Option<LinePost>, sqlx::Error> {
-    let record = sqlx::query_as::<_, LinePostRecord>(
-        "SELECT p.id, p.user_id, author.display_name AS author_name, p.content, p.visibility, \
-                p.reply_to_post_id, reply_author.display_name AS reply_to_author_name, \
-                parent.content AS reply_to_content, \
-                (SELECT COUNT(*) FROM line_posts replies \
-                 WHERE replies.reply_to_post_id = p.id \
-                   AND (replies.visibility = 'public' OR replies.user_id = ?)) AS reply_count, \
-                p.created_at, p.updated_at \
-         FROM line_posts p \
-         JOIN user_settings author ON author.user_id = p.user_id \
-         LEFT JOIN line_posts parent ON parent.id = p.reply_to_post_id \
-         LEFT JOIN user_settings reply_author ON reply_author.user_id = parent.user_id \
-         WHERE p.id = ? AND (p.visibility = 'public' OR p.user_id = ?)",
-    )
+    let record = sqlx::query_as::<_, LinePostRecord>(line_post_select!(
+        "WHERE p.id = ? AND (p.visibility = 'public' OR p.user_id = ?)"
+    ))
     .bind(viewer_id)
     .bind(post_id)
     .bind(viewer_id)
@@ -938,6 +943,108 @@ pub async fn get_line_post(
         Some(record) => Ok(Some(hydrate_line_post(pool, viewer_id, record).await?)),
         None => Ok(None),
     }
+}
+
+/// Lists one author's Lines posts that are visible to the viewer, newest first.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the author feed cannot be loaded.
+pub async fn list_line_posts_by_author(
+    pool: &SqlitePool,
+    viewer_id: &str,
+    author_id: &str,
+) -> Result<Vec<LinePost>, sqlx::Error> {
+    let records = sqlx::query_as::<_, LinePostRecord>(line_post_select!(
+        "WHERE p.user_id = ? AND (p.visibility = 'public' OR p.user_id = ?) \
+         ORDER BY p.created_at DESC, p.id DESC LIMIT 100"
+    ))
+    .bind(viewer_id)
+    .bind(author_id)
+    .bind(viewer_id)
+    .fetch_all(pool)
+    .await?;
+
+    hydrate_line_posts(pool, viewer_id, records).await
+}
+
+/// Lists the direct replies to one Lines post in thread reading order.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the replies cannot be loaded.
+pub async fn list_line_post_replies(
+    pool: &SqlitePool,
+    viewer_id: &str,
+    post_id: &str,
+) -> Result<Vec<LinePost>, sqlx::Error> {
+    let records = sqlx::query_as::<_, LinePostRecord>(line_post_select!(
+        "WHERE p.reply_to_post_id = ? AND (p.visibility = 'public' OR p.user_id = ?) \
+         ORDER BY p.created_at ASC, p.id ASC LIMIT 100"
+    ))
+    .bind(viewer_id)
+    .bind(post_id)
+    .bind(viewer_id)
+    .fetch_all(pool)
+    .await?;
+
+    hydrate_line_posts(pool, viewer_id, records).await
+}
+
+/// Loads the Lines profile of an author who has posts the viewer can see.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the profile cannot be loaded.
+pub async fn find_line_author_profile(
+    pool: &SqlitePool,
+    viewer_id: &str,
+    author_id: &str,
+) -> Result<Option<LineAuthorProfile>, sqlx::Error> {
+    sqlx::query_as::<_, LineAuthorProfile>(
+        "SELECT settings.user_id, settings.display_name, \
+                (SELECT COUNT(*) FROM line_posts p \
+                 WHERE p.user_id = settings.user_id \
+                   AND (p.visibility = 'public' OR p.user_id = ?)) AS post_count, \
+                (SELECT MIN(p.created_at) FROM line_posts p \
+                 WHERE p.user_id = settings.user_id \
+                   AND (p.visibility = 'public' OR p.user_id = ?)) AS first_post_at \
+         FROM user_settings settings \
+         WHERE settings.user_id = ? \
+           AND EXISTS( \
+               SELECT 1 FROM line_posts p \
+               WHERE p.user_id = settings.user_id \
+                 AND (p.visibility = 'public' OR p.user_id = ?) \
+           )",
+    )
+    .bind(viewer_id)
+    .bind(viewer_id)
+    .bind(author_id)
+    .bind(viewer_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Reports whether an author has at least one Lines post visible to the viewer.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the lookup cannot be completed.
+pub async fn line_author_is_visible(
+    pool: &SqlitePool,
+    viewer_id: &str,
+    author_id: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS( \
+             SELECT 1 FROM line_posts p \
+             WHERE p.user_id = ? AND (p.visibility = 'public' OR p.user_id = ?) \
+         )",
+    )
+    .bind(author_id)
+    .bind(viewer_id)
+    .fetch_one(pool)
+    .await
 }
 
 /// Creates one Lines post and its normalized hashtag index atomically.
@@ -1741,6 +1848,55 @@ pub async fn get_rss_subscription(
     .await
 }
 
+/// Lists subscriptions whose refresh window has elapsed, least recently attempted first.
+///
+/// Scheduling uses the last attempt rather than the last success so a failing source backs off
+/// for a full window instead of being retried on every sweep.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when due subscriptions cannot be loaded.
+pub async fn list_due_rss_subscriptions(
+    pool: &SqlitePool,
+    due_before: &str,
+    limit: usize,
+) -> Result<Vec<RssRefreshTarget>, sqlx::Error> {
+    sqlx::query_as::<_, RssRefreshTarget>(
+        "SELECT id, user_id, url FROM rss_subscriptions \
+         WHERE datetime(COALESCE(last_attempted_at, last_fetched_at, created_at)) \
+               <= datetime(?) \
+         ORDER BY datetime(COALESCE(last_attempted_at, last_fetched_at, created_at)) ASC \
+         LIMIT ?",
+    )
+    .bind(due_before)
+    .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+    .fetch_all(pool)
+    .await
+}
+
+/// Claims one due subscription refresh by stamping its attempt timestamp.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the atomic update cannot be completed.
+pub async fn claim_rss_subscription_refresh(
+    pool: &SqlitePool,
+    id: &str,
+    due_before: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE rss_subscriptions SET last_attempted_at = ? WHERE id = ? \
+         AND datetime(COALESCE(last_attempted_at, last_fetched_at, created_at)) <= datetime(?)",
+    )
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(id)
+    .bind(due_before)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        == 1)
+}
+
 async fn upsert_rss_items(
     transaction: &mut Transaction<'_, Sqlite>,
     subscription_id: &str,
@@ -1787,7 +1943,8 @@ pub async fn create_rss_subscription(
     sqlx::query(
         "INSERT INTO rss_subscriptions \
          (id, user_id, url, base_url, title, category, auto_delete_days, auto_delete_mode, \
-          last_fetched_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          last_fetched_at, last_attempted_at, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(user_id)
@@ -1797,6 +1954,7 @@ pub async fn create_rss_subscription(
     .bind(&draft.category)
     .bind(draft.auto_delete_days)
     .bind(&draft.auto_delete_mode)
+    .bind(&now)
     .bind(&now)
     .bind(&now)
     .bind(&now)
@@ -1856,10 +2014,11 @@ pub async fn refresh_rss_subscription(
     let now = chrono::Utc::now().to_rfc3339();
     let mut transaction = pool.begin().await?;
     let result = sqlx::query(
-        "UPDATE rss_subscriptions SET title = ?, last_fetched_at = ?, last_error = NULL, \
-         updated_at = ? WHERE id = ? AND user_id = ?",
+        "UPDATE rss_subscriptions SET title = ?, last_fetched_at = ?, last_attempted_at = ?, \
+         last_error = NULL, updated_at = ? WHERE id = ? AND user_id = ?",
     )
     .bind(title)
+    .bind(&now)
     .bind(&now)
     .bind(&now)
     .bind(id)
@@ -1886,11 +2045,14 @@ pub async fn set_rss_refresh_error(
     id: &str,
     message: &str,
 ) -> Result<(), sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
-        "UPDATE rss_subscriptions SET last_error = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+        "UPDATE rss_subscriptions SET last_error = ?, last_attempted_at = ?, updated_at = ? \
+         WHERE id = ? AND user_id = ?",
     )
     .bind(message)
-    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(&now)
+    .bind(&now)
     .bind(id)
     .bind(user_id)
     .execute(pool)

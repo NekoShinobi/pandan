@@ -1470,14 +1470,6 @@ body
   grid-template-columns: repeat(2, 1fr);
 }
 
-.widget-kind-search.widget-size-compact .search-widget-form {
-  grid-template-columns: minmax(0, 1fr) 44px;
-}
-
-.widget-kind-search.widget-size-compact .search-widget-form select {
-  grid-column: 1 / -1;
-}
-
 .widget-kind-focus.widget-size-compact .focus-widget-form {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -1911,12 +1903,17 @@ body
 
 .calendar-month-day {
   position: relative;
-  min-height: 42px;
+  min-height: 44px;
   display: grid;
   place-items: start end;
+  border: 0;
   padding: 6px;
   color: var(--fg);
   font-size: 11px;
+}
+
+.calendar-month-day:hover {
+  box-shadow: inset 0 0 0 1px currentColor;
 }
 
 .calendar-month-day.is-outside {
@@ -1944,7 +1941,7 @@ body
 }
 
 .widget-size-compact .calendar-month-day {
-  min-height: 32px;
+  min-height: 44px;
 }
 
 .widget-size-compact .calendar-month-weekday {
@@ -2264,15 +2261,6 @@ body
   margin-top: 28px;
 }
 
-.search-widget-form {
-  display: grid;
-  grid-template-columns: minmax(112px, 0.42fr) minmax(0, 1fr) 48px;
-  gap: 8px;
-  margin-top: 22px;
-}
-
-.search-widget-form select,
-.search-widget-form input,
 .focus-widget-form input {
   min-width: 0;
   min-height: 48px;
@@ -2288,23 +2276,14 @@ body
     border-color 160ms var(--ease-out);
 }
 
-.search-widget-form select:hover,
-.search-widget-form input:hover,
 .focus-widget-form input:hover {
   border-color: color-mix(in oklch, var(--fg) 30%, var(--border));
   background: color-mix(in oklch, var(--fg) 9%, transparent);
 }
 
-.search-widget-form select:focus-visible,
-.search-widget-form input:focus-visible,
 .focus-widget-form input:focus-visible {
   outline: 3px solid color-mix(in oklch, var(--accent) 55%, var(--surface));
   outline-offset: 2px;
-}
-
-.search-widget-form button {
-  width: 48px;
-  min-height: 48px;
 }
 
 .focus-widget-form {
@@ -3989,11 +3968,10 @@ body
 }
 
 .command-empty {
-  min-height: 160px;
   display: grid;
   place-content: center;
   gap: 8px;
-  padding: 24px;
+  padding: 20px 24px;
   color: var(--muted);
   font-family: var(--font-mono);
   text-align: center;
@@ -4008,6 +3986,42 @@ body
 .command-empty p {
   max-width: 42ch;
   font-size: 11px;
+}
+
+.command-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 12px 4px;
+}
+
+.command-group:first-child {
+  padding-top: 4px;
+}
+
+.command-group-label {
+  margin: 0;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+
+.command-group-engine {
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.command-option.is-active {
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .keycap {
@@ -4331,6 +4345,10 @@ body
   font-size: 11px;
 }
 
+.dashboard-header-clock {
+  font-variant-numeric: tabular-nums;
+}
+
 .dashboard-header-actions {
   flex: 0 0 auto;
   gap: 8px;
@@ -4406,6 +4424,19 @@ body
   transform: translateY(-1px);
 }
 
+.github-star-button {
+  gap: 7px;
+}
+
+.github-star-button svg {
+  color: var(--accent);
+}
+
+.github-star-button:hover svg,
+.github-star-button:focus-visible svg {
+  color: inherit;
+}
+
 .dashboard-home,
 .feature-page {
   width: 100%;
@@ -4479,31 +4510,6 @@ body
   margin-top: 12px;
   color: color-mix(in oklch, var(--surface) 78%, transparent);
   font-size: 13px;
-}
-
-.dashboard-intro > button {
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  flex: 0 0 auto;
-  padding: 0 15px;
-  border: 1px solid color-mix(in oklch, var(--surface) 30%, transparent);
-  border-radius: var(--radius-sm);
-  background: color-mix(
-    in oklch,
-    var(--page-surface, var(--surface)) 13%,
-    transparent
-  );
-  color: var(--surface);
-  font-size: 12px;
-  font-weight: 620;
-  backdrop-filter: blur(14px);
-}
-
-.dashboard-intro > button:hover {
-  background: var(--page-surface, var(--surface));
-  color: var(--fg);
 }
 
 .dashboard-main-panels {
@@ -4874,7 +4880,14 @@ body
 }
 
 .utility-calendar-day {
+  min-height: 44px;
+  border: 0;
   color: var(--fg);
+  cursor: pointer;
+}
+
+.utility-calendar-day:hover {
+  box-shadow: inset 0 0 0 1px currentColor;
 }
 
 .utility-calendar-day.is-outside {
@@ -6657,13 +6670,15 @@ body
   }
 
   .dashboard-edit-button,
-  .dashboard-add-button {
+  .dashboard-add-button,
+  .github-star-button.github-star-button {
     width: 44px;
     padding: 0;
   }
 
   .dashboard-edit-button span,
-  .dashboard-add-button span {
+  .dashboard-add-button span,
+  .github-star-button span {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -6686,10 +6701,6 @@ body
 
   .dashboard-intro h2 {
     font-size: 36px;
-  }
-
-  .dashboard-intro > button {
-    margin-top: auto;
   }
 
   .dashboard-main-panels,
@@ -7278,7 +7289,8 @@ body
 .mobile-menu-button,
 .header-icon-button,
 .dashboard-edit-button,
-.dashboard-add-button {
+.dashboard-add-button,
+.github-star-button {
   border-radius: 0;
   font-family: var(--font-mono);
   text-transform: uppercase;
@@ -7336,6 +7348,69 @@ body
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+/*
+ * Page-level view swap, driven by createViewSwap in $lib/viewSwap.svelte.ts.
+ * The container carries `view-swap` plus `data-view-phase`/`data-view-direction`;
+ * its direct children are what leaves and enters. `view-swap-copy` is for
+ * heading copy that swaps alongside the body without a directional slide.
+ */
+.view-swap {
+  --view-swap-shift: 18px;
+}
+
+.view-swap[data-view-direction="backward"] {
+  --view-swap-shift: -18px;
+}
+
+.view-swap[data-view-phase] {
+  overflow: hidden;
+}
+
+.view-swap[data-view-phase="leaving"] > * {
+  animation: view-swap-leave 150ms var(--ease-out) both;
+}
+
+.view-swap[data-view-phase="entering"] > * {
+  animation: view-swap-enter 260ms var(--ease-out) both;
+}
+
+.view-swap-copy {
+  animation: view-swap-copy-enter 260ms var(--ease-out) both;
+}
+
+@keyframes view-swap-leave {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(calc(var(--view-swap-shift) * -1), 0, 0);
+  }
+}
+
+@keyframes view-swap-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(var(--view-swap-shift), 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes view-swap-copy-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
   }
 }
 
@@ -7403,7 +7478,6 @@ body
   letter-spacing: 0.02em;
 }
 
-.dashboard-intro > button,
 .panel-heading > button,
 .utility-shortcuts button,
 .rss-source-box button,
@@ -7414,14 +7488,6 @@ body
   text-transform: uppercase;
 }
 
-.dashboard-intro > button {
-  border-color: var(--border);
-  background: color-mix(in oklch, var(--bg) 76%, transparent);
-  color: var(--fg);
-  backdrop-filter: none;
-}
-
-.dashboard-intro > button:hover,
 .panel-heading > button:hover,
 .utility-shortcuts button:hover,
 .rss-source-box button:hover,
@@ -7786,6 +7852,7 @@ body
 
 .dialog-close,
 .command-option,
+.command-group-engine,
 .keycap,
 .text-input,
 .select-input,
@@ -8149,7 +8216,8 @@ body
 .sidebar-submenu button:focus-visible,
 .kanban-page :is(button, input, textarea, select, a):focus-visible,
 .kanban-dialog :is(button, input, textarea, select):focus-visible,
-.kanban-card-dialog :is(button, input, textarea, select, a, [role="button"]):focus-visible {
+.kanban-card-dialog
+  :is(button, input, textarea, select, a, [role="button"]):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -8158,6 +8226,11 @@ body
   min-width: 0;
   padding: clamp(18px, 2.4vw, 34px);
   color: var(--fg);
+}
+
+.kanban-page-body {
+  min-width: 0;
+  display: flow-root;
 }
 
 .kanban-page-header,
@@ -8509,6 +8582,9 @@ body
 
 .kanban-board-summary h3 {
   margin: 0 0 10px;
+  font-size: clamp(28px, 4vw, 38px);
+  line-height: 1.2;
+  letter-spacing: -0.025em;
 }
 
 .kanban-board-description {

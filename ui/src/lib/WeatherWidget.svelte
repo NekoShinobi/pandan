@@ -11,7 +11,7 @@
   import Sun from "lucide-svelte/icons/sun";
   import Wind from "lucide-svelte/icons/wind";
   import X from "lucide-svelte/icons/x";
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy } from "svelte";
   import {
     updateDashboardWidgetConfig,
     type DashboardWidget,
@@ -55,6 +55,7 @@
   let detailDialog = $state<HTMLDialogElement>();
   let searchController: AbortController | undefined;
   let weatherController: AbortController | undefined;
+  let initialized = false;
 
   let locations = $derived(readLocations(widget.config.locations));
   let unit = $derived<TemperatureUnit>(
@@ -89,7 +90,9 @@
     weatherIcon(selectedWeather?.current.weatherCode ?? 0),
   );
 
-  onMount(() => {
+  $effect(() => {
+    if (initialized) return;
+    initialized = true;
     selectedLocationId = locations[0]?.id ?? null;
     if (locations.length > 0) void loadWeather(locations, unit);
   });
@@ -272,11 +275,17 @@
   <div class="weather-toolbar">
     <div>
       <p class="widget-kicker">Open-Meteo forecast</p>
-      <span class="weather-status"
-        >{loading
-          ? "Updating conditions…"
-          : "City-based · independent of profile"}</span
-      >
+      <span class="weather-status">
+        {#if loading}
+          <span
+            class="weather-spinner weather-spinner--inline"
+            aria-hidden="true"
+          ></span>
+          Updating conditions…
+        {:else}
+          City-based · independent of profile
+        {/if}
+      </span>
     </div>
     <div class="weather-actions">
       {#if locations.length > 0}
@@ -320,70 +329,76 @@
       {/each}
     </div>
 
-    {#if loading && snapshots.length === 0}
-      <div class="weather-loading" aria-live="polite">
+    {#if snapshots.length === 0 && !loadError}
+      <div class="weather-loading" role="status" aria-live="polite">
+        <span class="weather-spinner" aria-hidden="true"></span>
         Loading live weather…
       </div>
     {:else if selectedWeather}
-      <div class="weather-current">
-        <div class="weather-reading">
-          <div class="weather-place">
-            <h2>{selectedWeather.location.name}</h2>
-            <span>{locationLabel(selectedWeather.location)}</span>
-          </div>
-          <div class="weather-temperature-row">
-            <strong class="weather-temperature mono"
-              >{Math.round(selectedWeather.current.temperature)}°</strong
-            >
-            <div class="weather-condition">
-              <CurrentWeatherIcon
-                size={44}
-                strokeWidth={1.45}
-                aria-hidden="true"
-              />
-              <span
-                >{weatherCodeLabel(selectedWeather.current.weatherCode)}</span
+      {#key selectedWeather.location.id}
+        <div class="weather-current weather-reveal">
+          <div class="weather-reading">
+            <div class="weather-place">
+              <h2>{selectedWeather.location.name}</h2>
+              <span>{locationLabel(selectedWeather.location)}</span>
+            </div>
+            <div class="weather-temperature-row">
+              <strong class="weather-temperature mono"
+                >{Math.round(selectedWeather.current.temperature)}°</strong
               >
-              <small
-                >Feels like {Math.round(
-                  selectedWeather.current.apparentTemperature,
-                )}°</small
-              >
+              <div class="weather-condition">
+                <CurrentWeatherIcon
+                  size={44}
+                  strokeWidth={1.45}
+                  aria-hidden="true"
+                />
+                <span
+                  >{weatherCodeLabel(selectedWeather.current.weatherCode)}</span
+                >
+                <small
+                  >Feels like {Math.round(
+                    selectedWeather.current.apparentTemperature,
+                  )}°</small
+                >
+              </div>
             </div>
           </div>
-        </div>
-        <div class="weather-quick-stats">
-          <span
-            ><Droplets size={16} strokeWidth={1.7} aria-hidden="true" />
-            {Math.round(selectedWeather.current.humidity)}%</span
-          >
-          <span
-            ><Wind size={16} strokeWidth={1.7} aria-hidden="true" />
-            {Math.round(selectedWeather.current.windSpeed)}
-            {selectedWeather.windUnit}</span
-          >
-        </div>
-      </div>
-
-      <div class="weather-hour-strip" aria-label="Upcoming hourly forecast">
-        {#each upcomingHours.slice(0, widget.size === "compact" ? 3 : widget.size === "standard" ? 5 : 8) as hour (hour.time)}
-          <div>
-            <span class="mono">{formatHour(hour.time)}</span>
-            <strong class="mono">{Math.round(hour.temperature)}°</strong>
-            <small>{Math.round(hour.precipitationProbability)}% rain</small>
+          <div class="weather-quick-stats">
+            <span
+              ><Droplets size={16} strokeWidth={1.7} aria-hidden="true" />
+              {Math.round(selectedWeather.current.humidity)}%</span
+            >
+            <span
+              ><Wind size={16} strokeWidth={1.7} aria-hidden="true" />
+              {Math.round(selectedWeather.current.windSpeed)}
+              {selectedWeather.windUnit}</span
+            >
           </div>
-        {/each}
-      </div>
+        </div>
 
-      <button
-        class="weather-details-button"
-        type="button"
-        onclick={openDetails}
-        data-od-id={`weather-details-${widget.id}`}
-      >
-        View detailed forecast
-        <span aria-hidden="true">↗</span>
-      </button>
+        <div
+          class="weather-hour-strip weather-reveal"
+          aria-label="Upcoming hourly forecast"
+        >
+          {#each upcomingHours.slice(0, widget.size === "compact" ? 3 : widget.size === "standard" ? 5 : 8) as hour (hour.time)}
+            <div>
+              <span class="mono">{formatHour(hour.time)}</span>
+              <strong class="mono">{Math.round(hour.temperature)}°</strong>
+              <small>{Math.round(hour.precipitationProbability)}% rain</small>
+            </div>
+          {/each}
+        </div>
+
+        <button
+          class="weather-details-button weather-reveal"
+          type="button"
+          onclick={openDetails}
+          data-od-id={`weather-details-${widget.id}`}
+        >
+          View detailed forecast
+          <span aria-hidden="true">↗</span>
+        </button>
+      {/key}
     {:else}
       <div class="weather-error" role="status">
         <strong>Weather is unavailable</strong>
@@ -661,11 +676,75 @@
   }
 
   .weather-status {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: 6px;
     margin-top: 3px;
     color: var(--muted);
     font-family: var(--font-mono);
     font-size: 10px;
+  }
+
+  .weather-spinner {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
+    border: 2px solid var(--border);
+    border-top-color: var(--fg);
+    border-radius: 50%;
+    animation: weather-spin 700ms linear infinite;
+  }
+
+  .weather-spinner--inline {
+    width: 10px;
+    height: 10px;
+    border-width: 1.5px;
+  }
+
+  .weather-reveal {
+    animation: weather-reveal 320ms var(--ease-out) both;
+  }
+
+  .weather-current.weather-reveal {
+    animation-delay: 0ms;
+  }
+
+  .weather-hour-strip.weather-reveal {
+    animation-delay: 70ms;
+  }
+
+  .weather-details-button.weather-reveal {
+    animation-delay: 140ms;
+  }
+
+  @keyframes weather-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @keyframes weather-reveal {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .weather-spinner {
+      animation: none;
+    }
+
+    .weather-reveal {
+      opacity: 1;
+      transform: none;
+      animation: none;
+    }
   }
 
   .weather-actions {

@@ -30,6 +30,8 @@
   type RedditSort = "hot" | "new" | "top" | "rising";
   type RedditTopPeriod = "hour" | "day" | "week" | "month" | "year" | "all";
 
+  const BACKGROUND_SYNC_MS = 5 * 60 * 1000;
+
   let reader = $state.raw<RssReaderResponse>({ subscriptions: [], items: [] });
   let loading = $state(true);
   let pageError = $state("");
@@ -109,6 +111,31 @@
 
   onMount(() => {
     void loadReader();
+  });
+
+  // The server refreshes subscriptions in the background, so an open reader polls quietly to
+  // pick up entries fetched after the page loaded.
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    let active = true;
+    const sync = async () => {
+      if (!active || document.visibilityState !== "visible") return;
+      if (loading || savingSubscription || pruning || busySubscriptionId) return;
+      try {
+        const next = await fetchRssReader();
+        if (active) reader = next;
+      } catch {
+        // A background sync stays silent; the next deliberate action surfaces any failure.
+      }
+    };
+    const timer = window.setInterval(() => void sync(), BACKGROUND_SYNC_MS);
+    const onVisibilityChange = () => void sync();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   });
 
   async function loadReader() {

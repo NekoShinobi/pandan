@@ -10,12 +10,12 @@ use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
-use chrono::Datelike;
+use chrono::{Datelike, Duration as ChronoDuration, Utc};
 use db::entities::{
     AuthenticationSettings, CalendarEvent, CalendarSubscription, CodingProject, Contact,
     DashboardWidget, FeedItem, JournalNode, ManagedUser, PaymentSubscription, RssItem,
-    RssItemDraft, RssSubscription, RssSubscriptionDraft, SessionAccount, Task, TaskDraft,
-    TaskSubtaskDraft, User, UserAppearance, UserSettings,
+    RssItemDraft, RssRefreshTarget, RssSubscription, RssSubscriptionDraft, SessionAccount, Task,
+    TaskDraft, TaskSubtaskDraft, User, UserAppearance, UserSettings,
 };
 use futures_util::future::join_all;
 use rand_core::OsRng;
@@ -26,6 +26,8 @@ use std::{
     collections::{HashMap, HashSet},
     fmt,
 };
+use tokio::time::{Duration as TokioDuration, sleep};
+use tracing::{info, warn};
 
 mod bible;
 pub mod calendar;
@@ -46,6 +48,9 @@ const OIDC_AUTHORIZATION_MINUTES: i64 = 10;
 const MAX_WALLPAPER_BYTES: usize = 30 * 1024 * 1024;
 const MAX_AVATAR_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TASK_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
+const RSS_REFRESH_MINUTES: i64 = 30;
+const RSS_REFRESH_BATCH_SIZE: usize = 100;
+const RSS_REFRESH_SPACING_SECONDS: u64 = 1;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -1351,7 +1356,6 @@ fn validate_widget_kind(kind: &str) -> Result<(), ApiError> {
         kind,
         "weather"
             | "task-summary"
-            | "search"
             | "focus"
             | "task-list"
             | "task-progress"
@@ -2275,6 +2279,92 @@ async fn refresh_rss_subscription(
             db::queries::set_rss_refresh_error(
                 &state.pool,
                 &account.id,
+                &subscription.id,
+                &message,
+            )
+            .await?;
+            Err(ApiError::Integration(message))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Refreshes every RSS subscription whose window has elapsed, then sleeps until the next sweep.
+///
+/// Subscriptions are otherwise refreshed only by hand, so a reader that stays closed never
+/// collects new entries.
+pub fn spawn_rss_refresh_worker(state: web::Data<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            refresh_due_rss_subscriptions(&state).await;
+            sleep(TokioDuration::from_secs(RSS_REFRESH_MINUTES as u64 * 60)).await;
+        }
+    });
+}
+
+async fn refresh_due_rss_subscriptions(state: &AppState) {
+    loop {
+        let due_before = (Utc::now() - ChronoDuration::minutes(RSS_REFRESH_MINUTES)).to_rfc3339();
+        let subscriptions = match db::queries::list_due_rss_subscriptions(
+            &state.pool,
+            &due_before,
+            RSS_REFRESH_BATCH_SIZE,
+        )
+        .await
+        {
+            Ok(subscriptions) => subscriptions,
+            Err(error) => {
+                warn!(%error, "failed to load due RSS subscriptions");
+                return;
+            }
+        };
+        if subscriptions.is_empty() {
+            return;
+        }
+        let final_batch = subscriptions.len() < RSS_REFRESH_BATCH_SIZE;
+        for subscription in subscriptions {
+            match refresh_due_rss_subscription(state, &subscription, &due_before).await {
+                Ok(true) => info!(subscription = %subscription.id, "RSS subscription refreshed"),
+                Ok(false) => {}
+                Err(error) => {
+                    warn!(subscription = %subscription.id, %error, "RSS refresh failed");
+                }
+            }
+            sleep(TokioDuration::from_secs(RSS_REFRESH_SPACING_SECONDS)).await;
+        }
+        if final_batch {
+            return;
+        }
+    }
+}
+
+async fn refresh_due_rss_subscription(
+    state: &AppState,
+    subscription: &RssRefreshTarget,
+    due_before: &str,
+) -> Result<bool, ApiError> {
+    if !db::queries::claim_rss_subscription_refresh(&state.pool, &subscription.id, due_before)
+        .await?
+    {
+        return Ok(false);
+    }
+    match fetch_rss_snapshot(state, &subscription.url).await {
+        Ok((title, items)) => {
+            db::queries::refresh_rss_subscription(
+                &state.pool,
+                &subscription.user_id,
+                &subscription.id,
+                &title,
+                &items,
+            )
+            .await?;
+            db::queries::apply_rss_retention(&state.pool, &subscription.user_id).await?;
+            Ok(true)
+        }
+        Err(ApiError::Integration(message)) => {
+            db::queries::set_rss_refresh_error(
+                &state.pool,
+                &subscription.user_id,
                 &subscription.id,
                 &message,
             )
@@ -3537,7 +3627,7 @@ mod tests {
         assert_eq!(dashboard.user.role, "administrator");
         assert_eq!(dashboard.settings.display_name, "Ada");
         assert_eq!(dashboard.tasks.len(), 3);
-        assert_eq!(dashboard.widgets.len(), 8);
+        assert_eq!(dashboard.widgets.len(), 7);
 
         let created_widget: DashboardWidget = test::call_and_read_body_json(
             &app,

@@ -31,11 +31,13 @@
   import Search from "lucide-svelte/icons/search";
   import Settings from "lucide-svelte/icons/settings";
   import SlidersHorizontal from "lucide-svelte/icons/sliders-horizontal";
+  import Star from "lucide-svelte/icons/star";
   import Tag from "lucide-svelte/icons/tag";
   import Trash2 from "lucide-svelte/icons/trash-2";
   import X from "lucide-svelte/icons/x";
   import Youtube from "lucide-svelte/icons/circle-play";
   import { onDestroy, onMount, tick } from "svelte";
+  import { createViewSwap } from "$lib/viewSwap.svelte";
   import { MediaQuery, SvelteMap, SvelteSet } from "svelte/reactivity";
   import AnimatedList from "$lib/components/AnimatedList.svelte";
   import PrismaticBurst from "$lib/components/PrismaticBurst.svelte";
@@ -117,6 +119,15 @@
     | "coding"
     | "subscriptions"
     | "trading";
+  type CommandGroup = "PAGES" | "ACTIONS" | "WEB";
+  type CommandItem = {
+    id: string;
+    group: CommandGroup;
+    label: string;
+    hint: string;
+    keywords: string;
+    run: () => void;
+  };
   type TaskView = "active" | "archived";
   type TaskDueGroup = {
     id: "today" | "this-week" | "next-week" | "later" | "never";
@@ -155,10 +166,10 @@
   }> = [
     {
       id: "welcome",
-      code: "WELCOME",
-      title: "Welcome background",
+      code: "MAIN",
+      title: "Main background",
       description:
-        "Shown behind welcome:{user} and throughout your authenticated pages.",
+        "Used by the Welcome loading screen and throughout authenticated pages.",
     },
   ];
 
@@ -248,12 +259,6 @@
       title: "Today",
       description: "Tasks due today with a compact completion overview.",
       size: "compact",
-    },
-    {
-      kind: "search",
-      title: "Search",
-      description: "Search the web with your preferred engine.",
-      size: "standard",
     },
     {
       kind: "focus",
@@ -372,6 +377,19 @@
     },
   ];
 
+  const searchEngines = [
+    {
+      id: "duckduckgo",
+      label: "DuckDuckGo",
+      url: "https://duckduckgo.com/?q=",
+    },
+    { id: "google", label: "Google", url: "https://www.google.com/search?q=" },
+    { id: "bing", label: "Bing", url: "https://www.bing.com/search?q=" },
+    { id: "brave", label: "Brave", url: "https://search.brave.com/search?q=" },
+  ] as const;
+  type SearchEngineId = (typeof searchEngines)[number]["id"];
+  const searchEngineStorageKey = "pandan-search-engine";
+
   const productPages = [
     {
       id: "dashboard",
@@ -472,6 +490,7 @@
 
   let activeSection = $state<ProductPage>("dashboard");
   let contactDetailId = $state<string | null>(null);
+  let calendarDetailDate = $state<string | null>(null);
   let kanbanSection = $state<KanbanSection>("boards");
   let kanbanMenuOpen = $state(false);
   let sidebarOpen = $state(false);
@@ -490,6 +509,8 @@
   let tasks = $derived<Task[]>(dashboard?.tasks ?? []);
   let archivedTasks = $state.raw<Task[]>([]);
   let taskView = $state<TaskView>("active");
+  let taskViewTarget = $state<TaskView>("active");
+  const taskViewSwap = createViewSwap();
   let taskLabelFilter = $state("");
   let archivedTasksLoaded = $state(false);
   let loadingArchivedTasks = $state(false);
@@ -556,6 +577,8 @@
   let commandDialog = $state<HTMLDialogElement>();
   let commandSearchInput = $state<HTMLInputElement>();
   let commandQuery = $state("");
+  let commandIndex = $state(0);
+  let searchEngine = $state<SearchEngineId>("duckduckgo");
   let settingsDialog = $state<HTMLDialogElement>();
   let settingsScrollContainer = $state<HTMLDivElement>();
   let destructiveDialog = $state<HTMLDialogElement>();
@@ -698,13 +721,133 @@
       ? placeholderPages[activeSection as keyof typeof placeholderPages]
       : null,
   );
-  let filteredProductPages = $derived.by(() => {
-    const query = commandQuery.trim().toLowerCase();
-    if (!query) return productPages;
-    return productPages.filter(
-      (page) =>
-        page.label.toLowerCase().includes(query) || page.code.includes(query),
+  let commandItems = $derived.by<CommandItem[]>(() => {
+    const items: CommandItem[] = productPages.map((page) => ({
+      id: `page:${page.id}`,
+      group: "PAGES",
+      label: page.label,
+      hint: page.code,
+      keywords: `${page.label} ${page.code} ${page.description}`,
+      run: () => openProductPage(page.id),
+    }));
+
+    for (const submenuItem of kanbanSubmenuItems) {
+      items.push({
+        id: `kanban:${submenuItem.id}`,
+        group: "PAGES",
+        label: `Kanban / ${submenuItem.label}`,
+        hint: "03",
+        keywords: `kanban ${submenuItem.label} ${submenuItem.description}`,
+        run: () => openKanbanSection(submenuItem.id),
+      });
+    }
+
+    items.push(
+      {
+        id: "action:new-task",
+        group: "ACTIONS",
+        label: "New task",
+        hint: "+",
+        keywords: "new task create todo add",
+        run: () => {
+          openProductPage("tasks");
+          openTaskEditor();
+        },
+      },
+      {
+        id: "action:focus",
+        group: "ACTIONS",
+        label: "Start focus session",
+        hint: "+",
+        keywords: "focus timer pomodoro session deep work",
+        run: startFocusSession,
+      },
+      {
+        id: "action:add-widget",
+        group: "ACTIONS",
+        label: "Add dashboard widget",
+        hint: "+",
+        keywords: "add widget dashboard library",
+        run: () => {
+          openProductPage("dashboard");
+          openWidgetLibrary();
+        },
+      },
+      {
+        id: "action:edit-layout",
+        group: "ACTIONS",
+        label: layoutEditing ? "Exit dashboard edit mode" : "Edit dashboard layout",
+        hint: "+",
+        keywords: "edit layout dashboard arrange move resize grid",
+        run: () => {
+          openProductPage("dashboard");
+          void toggleLayoutEditing();
+        },
+      },
+      {
+        id: "action:settings",
+        group: "ACTIONS",
+        label: "Account settings",
+        hint: "+",
+        keywords: "settings account preferences profile",
+        run: openSettings,
+      },
+      {
+        id: "action:sign-out",
+        group: "ACTIONS",
+        label: "Sign out",
+        hint: "+",
+        keywords: "sign out log out logout leave",
+        run: () => void signOut(),
+      },
     );
+
+    return items;
+  });
+
+  let commandResults = $derived.by<CommandItem[]>(() => {
+    const query = commandQuery.trim();
+    const needle = query.toLowerCase();
+    const matches = needle
+      ? commandItems.filter((item) =>
+          item.keywords.toLowerCase().includes(needle),
+        )
+      : commandItems;
+    if (!query) return matches;
+    const engine =
+      searchEngines.find((option) => option.id === searchEngine) ??
+      searchEngines[0];
+    return [
+      ...matches,
+      {
+        id: "web:search",
+        group: "WEB",
+        label: `Search “${query}” on ${engine.label}`,
+        hint: "↗",
+        keywords: query,
+        run: () => {
+          window.open(
+            `${engine.url}${encodeURIComponent(query)}`,
+            "_blank",
+            "noopener,noreferrer",
+          );
+        },
+      },
+    ];
+  });
+
+  let hasLocalCommandMatches = $derived(
+    commandResults.some((item) => item.group !== "WEB"),
+  );
+
+  let commandGroups = $derived.by(() => {
+    const order: CommandGroup[] = ["PAGES", "ACTIONS", "WEB"];
+    return order
+      .map((group) => ({
+        group,
+        items: commandResults.filter((item) => item.group === group),
+      }))
+      .filter((entry) => entry.items.length > 0);
   });
   let dashboardClock = $derived(
     clockDisplay(currentTime, dashboard?.settings.timezone || "UTC"),
@@ -722,6 +865,23 @@
       month: "short",
       day: "numeric",
     }).format(currentTime),
+  );
+  let timeLabel = $derived(
+    new Intl.DateTimeFormat("en", {
+      timeZone: dashboardTimezone,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(currentTime),
+  );
+  let timezoneLabel = $derived(
+    new Intl.DateTimeFormat("en", {
+      timeZone: dashboardTimezone,
+      timeZoneName: "short",
+    })
+      .formatToParts(currentTime)
+      .find((part) => part.type === "timeZoneName")?.value ?? dashboardTimezone,
   );
   let dashboardCalendarMonthLabel = $derived(
     new Intl.DateTimeFormat("en", {
@@ -762,6 +922,10 @@
     if (productPages.some((item) => item.id === savedSection)) {
       activeSection = savedSection as ProductPage;
       kanbanMenuOpen = activeSection === "kanban";
+    }
+    const savedEngine = localStorage.getItem(searchEngineStorageKey);
+    if (savedEngine && searchEngines.some((item) => item.id === savedEngine)) {
+      searchEngine = savedEngine as SearchEngineId;
     }
     clockTimer = setInterval(() => (currentTime = new Date()), 1_000);
     const savedFocusDuration = Number(
@@ -809,6 +973,7 @@
     clearInterval(clockTimer);
     clearInterval(focusTimer);
     clearTimeout(focusExitTimer);
+    taskViewSwap.cancel();
   });
 
   function clockDisplay(date: Date, timezone: string) {
@@ -1162,6 +1327,7 @@
   function openProductPage(page: ProductPage) {
     activeSection = page;
     if (page !== "contacts") contactDetailId = null;
+    if (page !== "calendar") calendarDetailDate = null;
     sidebarOpen = false;
     pendingTaskDeleteId = "";
     localStorage.setItem("pandan-active-section", page);
@@ -1181,6 +1347,11 @@
   function openCalendarContact(contactId: string) {
     contactDetailId = contactId;
     openProductPage("contacts");
+  }
+
+  function openDashboardCalendarDate(date: string) {
+    calendarDetailDate = date;
+    openProductPage("calendar");
   }
 
   function toggleSidebar() {
@@ -1245,8 +1416,16 @@
 
   async function openCommand() {
     commandQuery = "";
+    commandIndex = 0;
     commandDialog?.showModal();
     await tick();
+    commandSearchInput?.focus();
+  }
+
+  function selectSearchEngine(event: Event) {
+    searchEngine = (event.currentTarget as HTMLSelectElement)
+      .value as SearchEngineId;
+    localStorage.setItem(searchEngineStorageKey, searchEngine);
     commandSearchInput?.focus();
   }
 
@@ -1265,9 +1444,21 @@
   }
 
   function handleCommandSearchKeydown(event: KeyboardEvent) {
-    if (event.key !== "Enter" || filteredProductPages.length === 0) return;
+    if (commandResults.length === 0) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      commandIndex = (commandIndex + 1) % commandResults.length;
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      commandIndex =
+        (commandIndex - 1 + commandResults.length) % commandResults.length;
+      return;
+    }
+    if (event.key !== "Enter") return;
     event.preventDefault();
-    jumpFromCommand(filteredProductPages[0].id);
+    runCommand(commandResults[commandIndex] ?? commandResults[0]);
   }
 
   function captureSettingsDialog(node: HTMLDialogElement) {
@@ -1443,7 +1634,9 @@
   }
 
   function resetTaskArchiveView() {
+    taskViewSwap.cancel();
     taskView = "active";
+    taskViewTarget = "active";
     taskLabelFilter = "";
     archivedTasks = [];
     archivedTasksLoaded = false;
@@ -1470,12 +1663,18 @@
   }
 
   async function selectTaskView(view: TaskView) {
-    taskView = view;
-    taskLabelFilter = "";
-    pendingTaskDeleteId = "";
-    if (view === "archived") {
-      await loadArchivedTasks();
-    }
+    if (view === taskViewTarget) return;
+    taskViewTarget = view;
+    await taskViewSwap.run({
+      forward: view === "archived",
+      pending:
+        view === "archived" && !archivedTasksLoaded ? loadArchivedTasks() : null,
+      commit: () => {
+        taskView = view;
+        taskLabelFilter = "";
+        pendingTaskDeleteId = "";
+      },
+    });
   }
 
   async function archiveTaskFromList(task: Task) {
@@ -2508,9 +2707,10 @@
     }
   }
 
-  function jumpFromCommand(page: ProductPage) {
+  function runCommand(item: CommandItem | undefined) {
+    if (!item) return;
     commandDialog?.close();
-    openProductPage(page);
+    item.run();
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -3190,7 +3390,14 @@
           </button>
           <div>
             <h1>$ {activeSectionLabel.toLowerCase()}</h1>
-            <p>SYS.DATE / {dateLabel}</p>
+            <p>
+              SYS.DATE / {dateLabel} · SYS.TIME /
+              <time
+                class="dashboard-header-clock"
+                datetime={currentTime.toISOString()}>{timeLabel}</time
+              >
+              {timezoneLabel}
+            </p>
           </div>
         </div>
 
@@ -3237,6 +3444,17 @@
               <span>Add widget</span>
             </button>
           {/if}
+          <a
+            class="ui-button ui-button--secondary github-star-button"
+            href="https://github.com/NekoShinobi/pandan"
+            target="_blank"
+            rel="noreferrer"
+            title="Star Pandan on GitHub"
+            data-od-id="github-star-link"
+          >
+            <Star size={17} strokeWidth={1.7} aria-hidden="true" />
+            <span>Star on GitHub</span>
+          </a>
         </div>
       </header>
 
@@ -3263,10 +3481,6 @@
                       <h2>welcome:{firstName}</h2>
                       <span>$ dashboard status --widgets --utilities</span>
                     </div>
-                    <button type="button" onclick={openCommand}>
-                      &gt; search
-                      <Search size={17} strokeWidth={1.7} aria-hidden="true" />
-                    </button>
                   </section>
 
                   <section
@@ -3317,6 +3531,7 @@
                               onClearCompleted={clearCompleted}
                               onStartFocus={startDashboardFocusSession}
                               onToast={showToast}
+                              onOpenCalendarDate={openDashboardCalendarDate}
                               onRemove={removeWidget}
                               onUpdateWidget={updateWidgetInstance}
                             />
@@ -3393,18 +3608,20 @@
                         >
                       {/each}
                       {#each dashboardCalendarDays as day (day.key)}
-                        <time
+                        <button
                           class={[
                             "utility-calendar-day",
                             !day.currentMonth && "is-outside",
                             day.today && "is-today",
                           ]}
-                          datetime={day.key}
+                          type="button"
+                          onclick={() => openDashboardCalendarDate(day.key)}
                           aria-label={day.key}
                           aria-current={day.today ? "date" : undefined}
+                          data-od-id={`dashboard-calendar-day-${day.key}`}
                         >
-                          {day.day}
-                        </time>
+                          <time datetime={day.key}>{day.day}</time>
+                        </button>
                       {/each}
                     </div>
                   </section>
@@ -3417,9 +3634,6 @@
                   </section>
                   <section class="utility-box utility-shortcuts">
                     <p>[ COMMANDS ]</p>
-                    <button type="button" onclick={openCommand}
-                      >&gt; open command menu</button
-                    >
                     <button type="button" onclick={openWidgetLibrary}
                       >&gt; add widget</button
                     >
@@ -3430,16 +3644,18 @@
           {:else if activeSection === "tasks"}
             <section class="feature-page product-page" data-od-id="tasks-page">
               <div class="feature-page-intro task-page-intro page-header">
-                <div>
-                  <h2>
-                    $ tasks --{taskView === "active" ? "active" : "archived"}
-                  </h2>
-                  <p>
-                    {taskView === "active"
-                      ? "Plan work with due dates, priorities, labels, recurring schedules, and subtasks."
-                      : "Review tasks removed from the active plan, restore what matters, or delete them permanently."}
-                  </p>
-                </div>
+                {#key taskView}
+                  <div class="view-swap-copy">
+                    <h2>
+                      $ tasks --{taskView === "active" ? "active" : "archived"}
+                    </h2>
+                    <p>
+                      {taskView === "active"
+                        ? "Plan work with due dates, priorities, labels, recurring schedules, and subtasks."
+                        : "Review tasks removed from the active plan, restore what matters, or delete them permanently."}
+                    </p>
+                  </div>
+                {/key}
                 <div class="task-page-actions">
                   <label class="task-label-filter">
                     <span>
@@ -3464,10 +3680,10 @@
                         "ui-button",
                         "ui-button--secondary",
                         "task-view-menu-button",
-                        taskView === "active" && "is-active",
+                        taskViewTarget === "active" && "is-active",
                       ]}
                       type="button"
-                      aria-pressed={taskView === "active"}
+                      aria-pressed={taskViewTarget === "active"}
                       onclick={() => selectTaskView("active")}
                       data-od-id="view-active-tasks"
                     >
@@ -3479,10 +3695,10 @@
                         "ui-button",
                         "ui-button--secondary",
                         "task-view-menu-button",
-                        taskView === "archived" && "is-active",
+                        taskViewTarget === "archived" && "is-active",
                       ]}
                       type="button"
-                      aria-pressed={taskView === "archived"}
+                      aria-pressed={taskViewTarget === "archived"}
                       onclick={() => selectTaskView("archived")}
                       data-od-id="view-archived-tasks"
                     >
@@ -3503,7 +3719,10 @@
               </div>
               <div class="tasks-page-layout">
                 <section
-                  class="tasks-worklist"
+                  class="tasks-worklist view-swap"
+                  data-view-phase={taskViewSwap.phase}
+                  data-view-direction={taskViewSwap.direction}
+                  {@attach taskViewSwap.attach}
                   data-od-id={taskView === "active"
                     ? "task-due-groups"
                     : "archived-task-list"}
@@ -4026,6 +4245,8 @@
               {tasks}
               onEditTask={openCalendarTask}
               onOpenContact={openCalendarContact}
+              initialDate={calendarDetailDate}
+              onInitialDateHandled={() => (calendarDetailDate = null)}
             />
           {:else if activeSection === "contacts"}
             <ContactsPage
@@ -4039,6 +4260,7 @@
           {:else if activeSection === "lines"}
             <LinesPage
               viewerId={dashboard.user.id}
+              viewerName={dashboard.settings.display_name}
               viewerRole={dashboard.user.role}
               defaultVisibility={dashboard.settings.lines_default_visibility}
             />
@@ -4297,7 +4519,10 @@
   <dialog
     class="command-dialog"
     {@attach captureCommandDialog}
-    onclose={() => (commandQuery = "")}
+    onclose={() => {
+      commandQuery = "";
+      commandIndex = 0;
+    }}
     onclick={(event) => event.target === commandDialog && commandDialog.close()}
     data-od-id="command-dialog"
   >
@@ -4312,6 +4537,7 @@
         autocomplete="off"
         spellcheck="false"
         bind:value={commandQuery}
+        oninput={() => (commandIndex = 0)}
         onkeydown={handleCommandSearchKeydown}
         {@attach captureCommandSearchInput}
         data-od-id="command-search-input"
@@ -4324,16 +4550,49 @@
       >
     </div>
     <div class="command-list">
-      {#each filteredProductPages as page (page.id)}
-        <button class="command-option" onclick={() => jumpFromCommand(page.id)}
-          ><span>{page.label}</span><span class="keycap">{page.code}</span
-          ></button
-        >
-      {:else}
+      {#if !hasLocalCommandMatches}
         <div class="command-empty" role="status">
           <span>[ NO MATCHES ]</span>
-          <p>Try Dashboard, Tasks, RSS, or another page name.</p>
+          <p>
+            Nothing on this instance matches. Try Dashboard, Tasks, RSS, or
+            another page name — or search the web below.
+          </p>
         </div>
+      {/if}
+      {#each commandGroups as entry (entry.group)}
+        <div class="command-group">
+          <p class="command-group-label">[ {entry.group} ]</p>
+          {#if entry.group === "WEB"}
+            <label class="sr-only" for="command-search-engine"
+              >Search engine</label
+            >
+            <select
+              id="command-search-engine"
+              class="command-group-engine"
+              value={searchEngine}
+              onchange={selectSearchEngine}
+              aria-label="Search engine"
+            >
+              {#each searchEngines as engine (engine.id)}
+                <option value={engine.id}>{engine.label}</option>
+              {/each}
+            </select>
+          {/if}
+        </div>
+        {#each entry.items as item (item.id)}
+          <button
+            class="command-option"
+            class:is-active={commandResults[commandIndex]?.id === item.id}
+            type="button"
+            onclick={() => runCommand(item)}
+            onmouseenter={() =>
+              (commandIndex = commandResults.findIndex(
+                (result) => result.id === item.id,
+              ))}
+            ><span>{item.label}</span><span class="keycap">{item.hint}</span
+            ></button
+          >
+        {/each}
       {/each}
     </div>
   </dialog>
@@ -4748,7 +5007,7 @@
           data-od-id="session-wallpaper-settings"
         >
           <div class="profile-wallpaper-heading">
-            <strong id="session-wallpaper-heading">Session backgrounds</strong>
+            <strong id="session-wallpaper-heading">Background</strong>
             <span>JPEG, PNG, WebP, or AVIF up to 30 MB.</span>
           </div>
           <div class="profile-wallpaper-list">
@@ -5107,7 +5366,7 @@
       <div class="appearance-control-heading">
         <strong>Page background processing</strong>
         <span
-          >Applied to the Welcome background behind authenticated pages.</span
+          >Applied to the Main background behind authenticated pages.</span
         >
       </div>
 

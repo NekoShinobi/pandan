@@ -90,6 +90,27 @@ pub struct LinePost {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct LineAuthorProfile {
+    pub user_id: String,
+    pub display_name: String,
+    pub post_count: i64,
+    pub first_post_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LineAuthorFeed {
+    pub author: LineAuthorProfile,
+    pub posts: Vec<LinePost>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LineThread {
+    pub parent: Option<LinePost>,
+    pub post: LinePost,
+    pub replies: Vec<LinePost>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
 pub struct LinePostAttachment {
     pub id: String,
     pub file_name: String,
@@ -271,6 +292,13 @@ pub struct RssSubscriptionDraft {
     pub category: String,
     pub auto_delete_days: Option<i64>,
     pub auto_delete_mode: String,
+}
+
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
+pub struct RssRefreshTarget {
+    pub id: String,
+    pub user_id: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

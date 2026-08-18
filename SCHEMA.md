@@ -323,6 +323,10 @@ per user. Reddit helpers store a public `reddit.com/r/{subreddit}/{sort}.json` l
 server maps its posts into the same item model. Fetching is restricted to public HTTPS destinations;
 a normalized origin is stored separately to make base-URL filtering predictable.
 
+The background refresh worker schedules on `last_attempted_at`, which is stamped when a refresh is
+claimed and by every manual refresh, so a failing source backs off for a full window instead of
+being retried on every sweep. `last_fetched_at` still records the last successful fetch.
+
 | Column             | Type    | Constraints                            |
 | ------------------ | ------- | -------------------------------------- |
 | `id`               | TEXT    | Primary key                            |
@@ -334,6 +338,7 @@ a normalized origin is stored separately to make base-URL filtering predictable.
 | `auto_delete_days` | INTEGER | Optional age from 1–3,650 days         |
 | `auto_delete_mode` | TEXT    | `read` or `all`                        |
 | `last_fetched_at`  | TEXT    | Optional RFC 3339 timestamp            |
+| `last_attempted_at`| TEXT    | Optional RFC 3339 refresh attempt      |
 | `last_error`       | TEXT    | Optional safe provider error           |
 | `created_at`       | TEXT    | Required, RFC 3339 timestamp           |
 | `updated_at`       | TEXT    | Required, RFC 3339 timestamp           |
@@ -646,6 +651,10 @@ query and the latest-pipeline query for that user's subscribed GitLab projects.
 Per-user widget instances and their persisted GridStack layout. The interface normalizes reading
 order from the twelve-column coordinates after a move or resize. Layout updates are written
 atomically so a resize or reorder cannot be only partially saved.
+
+The `search` web search widget was removed in migration `036`; web search now lives in the global
+command palette. The migration deletes placed instances, closes the reading-order gap they leave
+behind, and drops `search` from the `kind` check.
 
 | Column        | Type    | Constraints                                                         |
 | ------------- | ------- | ------------------------------------------------------------------- |

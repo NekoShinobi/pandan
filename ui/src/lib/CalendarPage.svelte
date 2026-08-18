@@ -8,7 +8,7 @@
   import RefreshCw from "lucide-svelte/icons/refresh-cw";
   import Trash2 from "lucide-svelte/icons/trash-2";
   import X from "lucide-svelte/icons/x";
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import {
     createCalendarSubscription,
     deleteCalendarSubscription,
@@ -50,10 +50,14 @@
     tasks = [],
     onEditTask = () => {},
     onOpenContact = () => {},
+    initialDate = null,
+    onInitialDateHandled = () => {},
   }: {
     tasks?: Task[];
     onEditTask?: (task: Task) => void;
     onOpenContact?: (contactId: string) => void;
+    initialDate?: string | null;
+    onInitialDateHandled?: () => void;
   } = $props();
 
   const defaultColor: CalendarColor = "#2DD4BF";
@@ -72,11 +76,16 @@
   const taskSourceId = "tasks-due";
   const taskColor = "var(--accent)";
 
+  const initialCalendarDate =
+    untrack(() => parseDateKey(initialDate)) ?? new Date();
+
   let calendar = $state.raw<CalendarResponse>({ subscriptions: [], events: [] });
   let loading = $state(true);
   let pageError = $state("");
-  let cursor = $state(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  let selectedDate = $state(dateKey(new Date()));
+  let cursor = $state(
+    new Date(initialCalendarDate.getFullYear(), initialCalendarDate.getMonth(), 1),
+  );
+  let selectedDate = $state(dateKey(initialCalendarDate));
   let hiddenCalendars = $state<string[]>([]);
   let dialog = $state<HTMLDialogElement>();
   let urlInput = $state<HTMLInputElement>();
@@ -147,6 +156,7 @@
   let taskDueCount = $derived(tasks.filter((task) => task.due_date !== null).length);
 
   onMount(() => {
+    if (initialDate) onInitialDateHandled();
     void loadCalendar();
   });
 
@@ -372,6 +382,12 @@
       month: "long",
       day: "numeric",
     }).format(date);
+  }
+
+  function parseDateKey(value: string | null | undefined) {
+    if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    const date = new Date(`${value}T12:00:00`);
+    return Number.isNaN(date.valueOf()) || dateKey(date) !== value ? null : date;
   }
 
   function dateKey(date: Date) {

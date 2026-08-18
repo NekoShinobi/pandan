@@ -2,9 +2,7 @@
   import ArrowRight from "lucide-svelte/icons/arrow-right";
   import Check from "lucide-svelte/icons/check";
   import GripVertical from "lucide-svelte/icons/grip-vertical";
-  import Search from "lucide-svelte/icons/search";
   import Trash2 from "lucide-svelte/icons/trash-2";
-  import { onMount } from "svelte";
   import IntegrationWidget from "$lib/IntegrationWidget.svelte";
   import WeatherWidget from "$lib/WeatherWidget.svelte";
   import type { DashboardWidget, FeedItem, Task, UserSettings } from "$lib/api";
@@ -28,6 +26,7 @@
     onClearCompleted,
     onStartFocus,
     onToast,
+    onOpenCalendarDate,
     onRemove,
     onUpdateWidget,
   }: {
@@ -47,28 +46,16 @@
     onClearCompleted: () => void;
     onStartFocus: (subject: string, minutes: number) => void;
     onToast: (message: string) => void;
+    onOpenCalendarDate: (date: string) => void;
     onRemove: (widget: DashboardWidget) => void;
     onUpdateWidget: (widget: DashboardWidget) => void;
   } = $props();
 
   const feedFilters: FeedFilter[] = ["All", "Design", "Technology", "Culture"];
-  const searchEngines = [
-    {
-      id: "duckduckgo",
-      label: "DuckDuckGo",
-      url: "https://duckduckgo.com/?q=",
-    },
-    { id: "google", label: "Google", url: "https://www.google.com/search?q=" },
-    { id: "bing", label: "Bing", url: "https://www.bing.com/search?q=" },
-    { id: "brave", label: "Brave", url: "https://search.brave.com/search?q=" },
-  ] as const;
-  type SearchEngineId = (typeof searchEngines)[number]["id"];
 
   let activeFilter = $state<FeedFilter>("All");
   let newTaskTitle = $state("");
   let savingTask = $state(false);
-  let searchQuery = $state("");
-  let searchEngine = $state<SearchEngineId>("duckduckgo");
   let focusGoal = $state("");
   let focusMinutes = $state(25);
   let filteredFeeds = $derived(
@@ -102,7 +89,6 @@
     {
       weather: "Weather",
       "task-summary": "Today",
-      search: "Search",
       focus: "Next focus",
       "task-list": "Tasks",
       "task-progress": "Progress",
@@ -122,18 +108,6 @@
     }[widget.kind] ?? "Widget",
   );
 
-  onMount(() => {
-    const savedEngine = localStorage.getItem(
-      `pandan-search-engine-${widget.id}`,
-    );
-    if (
-      savedEngine &&
-      searchEngines.some((engine) => engine.id === savedEngine)
-    ) {
-      searchEngine = savedEngine as SearchEngineId;
-    }
-  });
-
   async function submitTask(event: SubmitEvent) {
     event.preventDefault();
     const title = newTaskTitle.trim();
@@ -145,23 +119,6 @@
     } finally {
       savingTask = false;
     }
-  }
-
-  function selectSearchEngine(event: Event) {
-    searchEngine = (event.currentTarget as HTMLSelectElement)
-      .value as SearchEngineId;
-    localStorage.setItem(`pandan-search-engine-${widget.id}`, searchEngine);
-  }
-
-  function submitSearch(event: SubmitEvent) {
-    event.preventDefault();
-    const query = searchQuery.trim();
-    if (!query) return;
-    const engine =
-      searchEngines.find((option) => option.id === searchEngine) ??
-      searchEngines[0];
-    const destination = `${engine.url}${encodeURIComponent(query)}`;
-    window.open(destination, "_blank", "noopener,noreferrer");
   }
 
   function submitFocus(event: SubmitEvent) {
@@ -237,48 +194,6 @@
           <p class="empty-state">No tasks due today.</p>
         {/each}
       </div>
-    {:else if widget.kind === "search"}
-      <div class="widget-head">
-        <h2>Search the web</h2>
-      </div>
-      <form
-        class="search-widget-form"
-        onsubmit={submitSearch}
-        data-od-id={`search-dashboard-${widget.id}`}
-      >
-        <label class="sr-only" for={`search-engine-${widget.id}`}
-          >Search engine</label
-        >
-        <select
-          id={`search-engine-${widget.id}`}
-          value={searchEngine}
-          onchange={selectSearchEngine}
-          aria-label="Search engine"
-        >
-          {#each searchEngines as engine (engine.id)}
-            <option value={engine.id}>{engine.label}</option>
-          {/each}
-        </select>
-        <label class="sr-only" for={`web-search-${widget.id}`}
-          >Search query</label
-        >
-        <input
-          id={`web-search-${widget.id}`}
-          type="search"
-          bind:value={searchQuery}
-          placeholder="Search the web…"
-          autocomplete="off"
-          maxlength="240"
-          required
-        />
-        <button
-          class="ui-button ui-button--primary ui-button--icon"
-          type="submit"
-          aria-label={`Search with ${searchEngines.find((engine) => engine.id === searchEngine)?.label ?? "selected engine"}`}
-        >
-          <Search size={18} strokeWidth={1.8} aria-hidden="true" />
-        </button>
-      </form>
     {:else if widget.kind === "focus"}
       <form class="focus-widget-form" onsubmit={submitFocus}>
         <p class="widget-kicker">Next focus</p>
@@ -431,7 +346,12 @@
         {/each}
       </div>
     {:else}
-      <IntegrationWidget {widget} onUpdate={onUpdateWidget} {onToast} />
+      <IntegrationWidget
+        {widget}
+        onUpdate={onUpdateWidget}
+        {onToast}
+        {onOpenCalendarDate}
+      />
     {/if}
   </div>
 </article>

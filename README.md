@@ -40,21 +40,23 @@ Pandan brings planning, reading, contacts, calendars, notes, lightweight instanc
 | **Kanban** | Shared workspaces with multiple boards, Todo / In Progress / Finished defaults, drag-and-drop cards, sanitized Markdown descriptions, assignees, live labels, due dates, comments, checklists, attachments, favorites, archives, in-app invitations, and configurable Admin / Member / Guest permissions. |
 | **Contacts** | Search, tags, favorites, archives, portraits, yearless birthdays, important dates, Pandan/Monica JSON import, Pandan JSON export, and CardDAV synchronization. |
 | **Calendar** | Task due dates, multiple public HTTPS ICS feeds, recurring events, custom source colors, contact birthdays, a month grid, and a selected-day agenda. |
-| **RSS** | RSS and Atom subscriptions plus Reddit subreddit helpers, categories, source filters, article details, read state, a pruning-safe Read Later queue, manual refresh, and age-based retention. |
+| **RSS** | RSS and Atom subscriptions plus Reddit subreddit helpers, categories, source filters, article details, read state, a pruning-safe Read Later queue, automatic background refresh every 30 minutes, manual refresh, and age-based retention. |
 | **Journal** | Nested documents that can contain Markdown content and child documents; rendered Markdown is sanitized before display. |
-| **Lines** | A Markdown timeline with public or private posts, replies, hashtag discovery, search, file attachments, reactions, and administrator moderation of public posts. |
+| **Lines** | A Markdown timeline with account avatars, public or private posts, threaded replies composed in a modal, thread and author screens, hashtag discovery, search, file attachments, reactions, and administrator moderation of public posts. |
 | **YouTube** | Channel subscriptions, groups, a private Watch Later queue, thumbnail or compact layouts, manual refresh, and server-side shared metadata caching. |
 | **Coding** | Releases from GitHub, GitLab, Codeberg, Gitea, and Forgejo; connected accounts can also show owned repositories, open pull requests, and GitLab pipelines. |
 | **Subscriptions** | Recurring service costs, first-payment dates, filtering, and separate daily, weekly, monthly, and yearly totals for each currency. |
 | **Trading** | A navigation placeholder for a future market workspace; watchlists and trade planning are not implemented yet. |
 
-Accounts also have a private avatar, one to five sidebar monitor timezones, temperature and location preferences, a default Lines visibility, background adjustments, and a Welcome wallpaper used by the authenticated loading transition and behind authenticated pages. Administrators manage accounts, authentication policy, public Lines moderation, and the public Login wallpaper. Each user can permanently clear one content area at a time from Settings after explicit confirmation.
+A global command palette is available from every page with `Ctrl`/`Cmd` + `K`, the `/` key, or the header search control. It jumps to any product page or Kanban section, runs quick actions such as New task, Start focus session, and Account settings, and falls through to a web search on DuckDuckGo, Google, Bing, or Brave when the query matches nothing local.
+
+Accounts also have a private avatar, one to five sidebar monitor timezones, temperature and location preferences, a default Lines visibility, background adjustments, and a Main background used by the authenticated Welcome loading transition and behind authenticated pages. Administrators manage accounts, authentication policy, public Lines moderation, and the public Login wallpaper. Each user can permanently clear one content area at a time from Settings after explicit confirmation.
 
 ## Dashboard widgets
 
 Pandan currently includes:
 
-- Weather, a deterministic daily Bible verse from the bundled English Revised Version, task summary, task list, task progress, web search, focus timer, curated feed, feed sources, personal calendar, and world clocks.
+- Weather, a deterministic daily Bible verse from the bundled English Revised Version, task summary, task list, task progress, focus timer, curated feed, feed sources, personal calendar, and world clocks.
 - YouTube uploads, RSS/Atom feeds, Reddit, market symbols, code releases, and Twitch or Kick live-channel status.
 - Sandboxed custom HTML and HTTPS iframe widgets. Custom HTML cannot run scripts, navigate the parent, or access the parent page; remote sites may still refuse iframe embedding.
 

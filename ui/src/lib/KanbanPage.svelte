@@ -19,8 +19,9 @@
   import Trash2 from "lucide-svelte/icons/trash-2";
   import Users from "lucide-svelte/icons/users";
   import X from "lucide-svelte/icons/x";
-  import { onMount } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import { MediaQuery } from "svelte/reactivity";
+  import { createViewSwap } from "$lib/viewSwap.svelte";
   import KanbanCardSortable from "$lib/KanbanCardSortable.svelte";
   import KanbanColumnDropzone from "$lib/KanbanColumnDropzone.svelte";
   import {
@@ -117,6 +118,12 @@
     assignee_ids: string[];
     label_ids: string[];
   };
+
+  const kanbanSections: KanbanSection[] = ["boards", "workspaces", "invitations"];
+  const viewSwap = createViewSwap();
+  // Rendering lags the `section` prop by one leave animation so the outgoing
+  // view can fade before the sidebar's choice takes over.
+  let displayedSection = $state<KanbanSection>(untrack(() => section));
 
   let overview = $state.raw<KanbanOverview>({ workspaces: [], invitations: [] });
   let selectedWorkspaceId = $state("");
@@ -217,10 +224,28 @@
     void loadOverview();
   });
 
+  onDestroy(() => {
+    viewSwap.cancel();
+  });
+
   $effect(() => {
     if (!selectedWorkspaceId) return;
     if (section === "boards") void loadBoards();
     if (section === "workspaces") void loadSettings();
+  });
+
+  $effect(() => {
+    const next = section;
+    untrack(() => {
+      if (next === displayedSection) return;
+      void viewSwap.run({
+        forward:
+          kanbanSections.indexOf(next) > kanbanSections.indexOf(displayedSection),
+        commit: () => {
+          displayedSection = next;
+        },
+      });
+    });
   });
 
   async function run(action: () => Promise<void>) {
@@ -262,6 +287,9 @@
   }
 
   async function selectWorkspace(id: string) {
+    // Scoping the page to another workspace is a filter, not a navigation, and
+    // the switcher itself sits inside the swapping region — leave it unanimated
+    // rather than fading the control out from under the pointer.
     selectedWorkspaceId = id;
     board = null;
     settings = null;
@@ -338,9 +366,30 @@
   async function openBoard(id: string) {
     addingColumn = false;
     newColumnName = "";
-    await run(async () => {
-      board = await fetchKanbanBoard(id);
+    let opened: KanbanBoard | null = null;
+    const pending = run(async () => {
+      opened = await fetchKanbanBoard(id);
     });
+    await viewSwap.run({
+      forward: true,
+      pending,
+      commit: () => {
+        if (opened) board = opened;
+      },
+    });
+    // A board slower than the leave animation still opens, just without one.
+    await pending;
+    if (opened && board !== opened) board = opened;
+  }
+
+  async function closeBoard() {
+    await viewSwap.run({
+      forward: false,
+      commit: () => {
+        board = null;
+      },
+    });
+    await run(loadBoards);
   }
 
   async function refreshBoard() {
@@ -747,151 +796,160 @@
 
 <section class="kanban-page product-page" data-od-id="kanban-page">
   <header class="kanban-page-header" data-od-id="kanban-header">
-    <div>
-      <span class="kanban-kicker">PANDAN / KANBAN</span>
-      <h2>{section === "boards" ? "Boards" : section === "workspaces" ? "Workspaces" : "Invitations"}</h2>
-      <p>{section === "boards" ? "Move work from intent to finished." : section === "workspaces" ? "Members, roles, and workspace rules." : "Join shared workspaces from people already on Pandan."}</p>
-    </div>
-    {#if section === "workspaces"}
+    {#key displayedSection}
+      <div class="view-swap-copy">
+        <span class="kanban-kicker">PANDAN / KANBAN</span>
+        <h2>{displayedSection === "boards" ? "Boards" : displayedSection === "workspaces" ? "Workspaces" : "Invitations"}</h2>
+        <p>{displayedSection === "boards" ? "Move work from intent to finished." : displayedSection === "workspaces" ? "Members, roles, and workspace rules." : "Join shared workspaces from people already on Pandan."}</p>
+      </div>
+    {/key}
+    {#if displayedSection === "workspaces"}
       <button class="ui-button ui-button--primary" type="button" onclick={() => workspaceDialog?.showModal()} data-od-id="create-workspace"><Plus size={16} />New workspace</button>
-    {:else if section === "boards" && canCreateBoard && !board}
+    {:else if displayedSection === "boards" && canCreateBoard && !board}
       <button class="ui-button ui-button--primary" type="button" onclick={openCreateBoardDialog} data-od-id="create-board"><Plus size={16} />New board</button>
     {/if}
   </header>
 
   {#if error}<div class="kanban-error" role="alert">{error}</div>{/if}
-  {#if loading}
-    <div class="kanban-empty" aria-live="polite">Loading Kanban…</div>
-  {:else if section === "invitations"}
-    <div class="kanban-invitations" data-od-id="kanban-invitations">
-      {#each overview.invitations as invitation (invitation.workspace_id)}
-        <article class="kanban-invitation-card">
-          <div><span>{invitation.role}</span><h3>{invitation.workspace_name}</h3><p>{invitation.invited_by_name} invited you.</p></div>
-          <div class="kanban-row-actions"><button class="ui-button ui-button--primary" type="button" disabled={busy} onclick={() => answerInvitation(invitation.workspace_id, true)}>Accept</button><button class="ui-button ui-button--secondary" type="button" disabled={busy} onclick={() => answerInvitation(invitation.workspace_id, false)}>Decline</button></div>
-        </article>
-      {:else}<div class="kanban-empty">No pending invitations.</div>{/each}
-    </div>
-  {:else if overview.workspaces.length === 0}
-    <div class="kanban-empty"><h3>No Kanban workspace yet</h3><p>Create one to start with a board and the Todo / In Progress / Finished workflow.</p><button class="ui-button ui-button--primary" type="button" onclick={() => workspaceDialog?.showModal()}>Create workspace</button></div>
-  {:else}
-    <div class="kanban-workspace-switcher">
-      <label for="kanban-workspace">Workspace</label>
-      <select id="kanban-workspace" value={selectedWorkspaceId} onchange={(event) => selectWorkspace(event.currentTarget.value)}>{#each overview.workspaces as workspace (workspace.id)}<option value={workspace.id}>{workspace.name}</option>{/each}</select>
-      {#if activeWorkspace}<span>{activeWorkspace.role} · {activeWorkspace.member_count} members</span>{/if}
-    </div>
+  <div
+    class="kanban-page-body view-swap"
+    data-view-phase={viewSwap.phase}
+    data-view-direction={viewSwap.direction}
+    {@attach viewSwap.attach}
+  >
+    {#if loading}
+      <div class="kanban-empty" aria-live="polite">Loading Kanban…</div>
+    {:else if displayedSection === "invitations"}
+      <div class="kanban-invitations" data-od-id="kanban-invitations">
+        {#each overview.invitations as invitation (invitation.workspace_id)}
+          <article class="kanban-invitation-card">
+            <div><span>{invitation.role}</span><h3>{invitation.workspace_name}</h3><p>{invitation.invited_by_name} invited you.</p></div>
+            <div class="kanban-row-actions"><button class="ui-button ui-button--primary" type="button" disabled={busy} onclick={() => answerInvitation(invitation.workspace_id, true)}>Accept</button><button class="ui-button ui-button--secondary" type="button" disabled={busy} onclick={() => answerInvitation(invitation.workspace_id, false)}>Decline</button></div>
+          </article>
+        {:else}<div class="kanban-empty">No pending invitations.</div>{/each}
+      </div>
+    {:else if overview.workspaces.length === 0}
+      <div class="kanban-empty"><h3>No Kanban workspace yet</h3><p>Create one to start with a board and the Todo / In Progress / Finished workflow.</p><button class="ui-button ui-button--primary" type="button" onclick={() => workspaceDialog?.showModal()}>Create workspace</button></div>
+    {:else}
+      <div class="kanban-workspace-switcher">
+        <label for="kanban-workspace">Workspace</label>
+        <select id="kanban-workspace" value={selectedWorkspaceId} onchange={(event) => selectWorkspace(event.currentTarget.value)}>{#each overview.workspaces as workspace (workspace.id)}<option value={workspace.id}>{workspace.name}</option>{/each}</select>
+        {#if activeWorkspace}<span>{activeWorkspace.role} · {activeWorkspace.member_count} members</span>{/if}
+      </div>
 
-    {#if section === "boards"}
-      {#if board}
-        <div class="kanban-board-shell" data-od-id="active-kanban-board">
-          <div class="kanban-board-toolbar">
-            <button class="ui-button ui-button--ghost" type="button" onclick={() => { board = null; void loadBoards(); }}><ChevronLeft size={16} />All boards</button>
-            <div class="kanban-board-actions">
-              {#if canEditBoard}
-                <button class="ui-button ui-button--secondary" type="button" onclick={openEditBoardDialog} data-od-id="edit-kanban-board"><Pencil size={15} />Edit board</button>
-              {/if}
-              {#if canCreateColumn}
-                <button
-                  class="ui-button ui-button--secondary"
-                  type="button"
-                  aria-expanded={addingColumn}
-                  onclick={() => {
-                    addingColumn = !addingColumn;
-                    if (!addingColumn) newColumnName = "";
-                  }}
-                  data-od-id="show-add-kanban-column"
-                ><Plus size={15} />Add column</button>
-              {/if}
-              <button class="ui-button ui-button--secondary" type="button" onclick={requestBoardArchive}><Archive size={15} />{board.archived ? "Restore" : "Archive"}</button>
+      {#if displayedSection === "boards"}
+        {#if board}
+          <div class="kanban-board-shell" data-od-id="active-kanban-board">
+            <div class="kanban-board-toolbar">
+              <button class="ui-button ui-button--ghost" type="button" onclick={() => void closeBoard()}><ChevronLeft size={16} />All boards</button>
+              <div class="kanban-board-actions">
+                {#if canEditBoard}
+                  <button class="ui-button ui-button--secondary" type="button" onclick={openEditBoardDialog} data-od-id="edit-kanban-board"><Pencil size={15} />Edit board</button>
+                {/if}
+                {#if canCreateColumn}
+                  <button
+                    class="ui-button ui-button--secondary"
+                    type="button"
+                    aria-expanded={addingColumn}
+                    onclick={() => {
+                      addingColumn = !addingColumn;
+                      if (!addingColumn) newColumnName = "";
+                    }}
+                    data-od-id="show-add-kanban-column"
+                  ><Plus size={15} />Add column</button>
+                {/if}
+                <button class="ui-button ui-button--secondary" type="button" onclick={requestBoardArchive}><Archive size={15} />{board.archived ? "Restore" : "Archive"}</button>
+              </div>
             </div>
-          </div>
-          <div class="kanban-board-summary" data-od-id="active-kanban-board-summary">
-            <h3>{board.name}</h3>
-            {#if board.description}
-              <div class="kanban-markdown-preview kanban-board-description" {@attach renderSanitizedMarkdown(renderedBoardDescription)}></div>
-            {:else}
-              <p class="kanban-board-description-empty">No board description</p>
+            <div class="kanban-board-summary" data-od-id="active-kanban-board-summary">
+              <h3>{board.name}</h3>
+              {#if board.description}
+                <div class="kanban-markdown-preview kanban-board-description" {@attach renderSanitizedMarkdown(renderedBoardDescription)}></div>
+              {:else}
+                <p class="kanban-board-description-empty">No board description</p>
+              {/if}
+            </div>
+            {#if canCreateColumn && addingColumn}
+              <form class="kanban-add-column-form" onsubmit={submitColumn} data-od-id="add-kanban-column">
+                <label for="kanban-column-name">Column name</label>
+                <input id="kanban-column-name" required maxlength="80" placeholder="e.g. Review" bind:value={newColumnName} />
+                <button class="ui-button ui-button--primary" type="submit" disabled={busy || !newColumnName.trim()}>Add</button>
+                <button class="ui-button ui-button--ghost" type="button" onclick={() => { addingColumn = false; newColumnName = ""; }}>Cancel</button>
+              </form>
             {/if}
+            <div class="kanban-filters">
+              <label><Search size={15} /><input aria-label="Search cards" placeholder="Search cards" bind:value={cardSearch} /></label>
+              <select aria-label="Filter by assignee" bind:value={assigneeFilter}><option value="">All assignees</option>{#each board.members as member (member.user_id)}<option value={member.user_id}>{member.display_name}</option>{/each}</select>
+              <select aria-label="Filter by label" bind:value={labelFilter}><option value="">All labels</option>{#each board.labels as label (label.id)}<option value={label.id}>{label.name}</option>{/each}</select>
+              <select aria-label="Filter by due date" bind:value={dueFilter}><option value="all">Any due date</option><option value="overdue">Overdue</option><option value="week">Due this week</option><option value="none">No due date</option></select>
+              {#if canEditCard && cardFiltersActive}<span class="kanban-dnd-status">Clear filters to reorder cards.</span>{/if}
+            </div>
+            <DragDropProvider sensors={kanbanSensors} onDragStart={startCardDrag} onDragOver={previewCardMove} onDragEnd={(event) => void finishCardDrag(event)}>
+              <div class="kanban-canvas" data-od-id="kanban-board-columns">
+                {#each board.columns as column (column.id)}
+                  <KanbanColumnDropzone id={column.id} label={`${column.name} column`} odId={`kanban-column-${column.id}`} disabled={!canEditCard || cardFiltersActive || busy}>
+                      {#snippet header()}
+                        <header><div><h4>{column.name}</h4><span>{visibleCards(column.cards).length}</span></div><button class="kanban-icon-button" type="button" aria-label={`Add card to ${column.name}`} onclick={() => (quickCardColumnId = column.id)}><Plus size={16} /></button></header>
+                      {/snippet}
+                      {#snippet children()}
+                        {#each visibleCards(column.cards) as card, index (card.id)}
+                          <KanbanCardSortable
+                            {card}
+                            columnId={column.id}
+                            disabled={!canEditCard || cardFiltersActive || busy}
+                            {index}
+                            reducedMotion={reducedMotion.current}
+                            onopen={openCard}
+                          />
+                        {/each}
+                      {/snippet}
+                      {#snippet footer()}
+                        {#if quickCardColumnId === column.id}
+                          <form class="kanban-quick-card" onsubmit={(event) => { event.preventDefault(); void createQuickCard(column.id); }}><input aria-label="Card title" placeholder="Card title" bind:value={quickCardTitle} /><div><button class="ui-button ui-button--primary" type="submit" disabled={busy}>Add card</button><button class="ui-button ui-button--ghost" type="button" onclick={() => (quickCardColumnId = "")}>Cancel</button></div></form>
+                        {:else if board?.permissions.includes("card:create")}
+                          <button class="kanban-add-card" type="button" onclick={() => (quickCardColumnId = column.id)}><Plus size={15} />Add card</button>
+                        {/if}
+                      {/snippet}
+                    </KanbanColumnDropzone>
+                {/each}
+              </div>
+            </DragDropProvider>
           </div>
-          {#if canCreateColumn && addingColumn}
-            <form class="kanban-add-column-form" onsubmit={submitColumn} data-od-id="add-kanban-column">
-              <label for="kanban-column-name">Column name</label>
-              <input id="kanban-column-name" required maxlength="80" placeholder="e.g. Review" bind:value={newColumnName} />
-              <button class="ui-button ui-button--primary" type="submit" disabled={busy || !newColumnName.trim()}>Add</button>
-              <button class="ui-button ui-button--ghost" type="button" onclick={() => { addingColumn = false; newColumnName = ""; }}>Cancel</button>
-            </form>
-          {/if}
-          <div class="kanban-filters">
-            <label><Search size={15} /><input aria-label="Search cards" placeholder="Search cards" bind:value={cardSearch} /></label>
-            <select aria-label="Filter by assignee" bind:value={assigneeFilter}><option value="">All assignees</option>{#each board.members as member (member.user_id)}<option value={member.user_id}>{member.display_name}</option>{/each}</select>
-            <select aria-label="Filter by label" bind:value={labelFilter}><option value="">All labels</option>{#each board.labels as label (label.id)}<option value={label.id}>{label.name}</option>{/each}</select>
-            <select aria-label="Filter by due date" bind:value={dueFilter}><option value="all">Any due date</option><option value="overdue">Overdue</option><option value="week">Due this week</option><option value="none">No due date</option></select>
-            {#if canEditCard && cardFiltersActive}<span class="kanban-dnd-status">Clear filters to reorder cards.</span>{/if}
+        {:else}
+          <div class="kanban-list-toolbar"><label><Search size={15} /><input aria-label="Search boards" placeholder="Search boards" bind:value={boardSearch} /></label><button class="ui-toggle-button kanban-toggle-filter" type="button" aria-pressed={archivedBoards} disabled={busy} onclick={() => void toggleArchivedBoards()}><span class="ui-toggle-indicator" aria-hidden="true">{#if archivedBoards}<Check size={13} />{/if}</span><span>Archived</span></button></div>
+          <div class="kanban-board-grid" data-od-id="kanban-board-list">
+            {#each filteredBoards as item (item.id)}
+              <article class="kanban-board-card" data-od-id={`kanban-board-${item.id}`}>
+                <button class="kanban-board-open" type="button" onclick={() => openBoard(item.id)}><span>{item.visibility}</span><h3>{item.name}</h3><dl><div><dt>Columns</dt><dd>{item.column_count}</dd></div><div><dt>Cards</dt><dd>{item.card_count}</dd></div></dl></button>
+                <button class:active={item.favorite} class="kanban-favorite" type="button" aria-label={item.favorite ? "Remove favorite" : "Add favorite"} onclick={() => toggleFavorite(item)}><Star size={16} fill={item.favorite ? "currentColor" : "none"} /></button>
+              </article>
+            {:else}<div class="kanban-empty">No {archivedBoards ? "archived" : "active"} boards in this workspace.</div>{/each}
           </div>
-          <DragDropProvider sensors={kanbanSensors} onDragStart={startCardDrag} onDragOver={previewCardMove} onDragEnd={(event) => void finishCardDrag(event)}>
-            <div class="kanban-canvas" data-od-id="kanban-board-columns">
-              {#each board.columns as column (column.id)}
-                <KanbanColumnDropzone id={column.id} label={`${column.name} column`} odId={`kanban-column-${column.id}`} disabled={!canEditCard || cardFiltersActive || busy}>
-                    {#snippet header()}
-                      <header><div><h4>{column.name}</h4><span>{visibleCards(column.cards).length}</span></div><button class="kanban-icon-button" type="button" aria-label={`Add card to ${column.name}`} onclick={() => (quickCardColumnId = column.id)}><Plus size={16} /></button></header>
-                    {/snippet}
-                    {#snippet children()}
-                      {#each visibleCards(column.cards) as card, index (card.id)}
-                        <KanbanCardSortable
-                          {card}
-                          columnId={column.id}
-                          disabled={!canEditCard || cardFiltersActive || busy}
-                          {index}
-                          reducedMotion={reducedMotion.current}
-                          onopen={openCard}
-                        />
-                      {/each}
-                    {/snippet}
-                    {#snippet footer()}
-                      {#if quickCardColumnId === column.id}
-                        <form class="kanban-quick-card" onsubmit={(event) => { event.preventDefault(); void createQuickCard(column.id); }}><input aria-label="Card title" placeholder="Card title" bind:value={quickCardTitle} /><div><button class="ui-button ui-button--primary" type="submit" disabled={busy}>Add card</button><button class="ui-button ui-button--ghost" type="button" onclick={() => (quickCardColumnId = "")}>Cancel</button></div></form>
-                      {:else if board?.permissions.includes("card:create")}
-                        <button class="kanban-add-card" type="button" onclick={() => (quickCardColumnId = column.id)}><Plus size={15} />Add card</button>
-                      {/if}
-                    {/snippet}
-                  </KanbanColumnDropzone>
+        {/if}
+      {:else if settings}
+        <div class="kanban-settings" data-od-id="kanban-workspace-settings">
+          <section class="kanban-settings-panel"><header><div><h3>Members</h3><p>Invitations are limited to accounts already on this Pandan instance.</p></div><Users size={19} /></header>
+            {#if settings.workspace.permissions.includes("member:invite")}<div class="kanban-member-search"><label><Search size={15} /><input placeholder="Name or email" bind:value={memberQuery} oninput={findMembers} /></label><select aria-label="Invitation role" bind:value={inviteRole}><option value="member">Member</option><option value="guest">Guest</option>{#if settings.workspace.role === "admin"}<option value="admin">Admin</option>{/if}</select>{#if directoryResults.length}<div class="kanban-directory-results">{#each directoryResults as result (result.user_id)}<button type="button" onclick={() => invite(result.user_id)}><span><strong>{result.display_name}</strong><small>{result.email}</small></span><Plus size={15} /></button>{/each}</div>{/if}</div>{/if}
+            <div class="kanban-member-list">
+              {#each settings.members as member (member.user_id)}
+                <div>
+                  <span class="kanban-member-avatar">
+                    <span aria-hidden="true">{member.display_name.slice(0, 1).toUpperCase()}</span>
+                    <img src={kanbanMemberAvatarUrl(member.user_id)} alt="" onerror={hideBrokenAvatar} />
+                  </span>
+                  <span><strong>{member.display_name}{member.user_id === viewerId ? " (you)" : ""}</strong><small>{member.email} · {member.status}</small></span>
+                  {#if settings.workspace.permissions.includes("member:edit")}<select aria-label={`Role for ${member.display_name}`} value={member.role} onchange={(event) => changeRoleFromSelect(member.user_id, event)}><option value="admin">Admin</option><option value="member">Member</option><option value="guest">Guest</option></select>{:else}<span class="kanban-role-badge">{member.role}</span>{/if}
+                  {#if settings.workspace.permissions.includes("member:remove")}<button class="kanban-icon-button" type="button" aria-label={`Remove ${member.display_name}`} onclick={() => removeMember(member.user_id)}><Trash2 size={15} /></button>{/if}
+                </div>
               {/each}
             </div>
-          </DragDropProvider>
-        </div>
-      {:else}
-        <div class="kanban-list-toolbar"><label><Search size={15} /><input aria-label="Search boards" placeholder="Search boards" bind:value={boardSearch} /></label><button class="ui-toggle-button kanban-toggle-filter" type="button" aria-pressed={archivedBoards} disabled={busy} onclick={() => void toggleArchivedBoards()}><span class="ui-toggle-indicator" aria-hidden="true">{#if archivedBoards}<Check size={13} />{/if}</span><span>Archived</span></button></div>
-        <div class="kanban-board-grid" data-od-id="kanban-board-list">
-          {#each filteredBoards as item (item.id)}
-            <article class="kanban-board-card" data-od-id={`kanban-board-${item.id}`}>
-              <button class="kanban-board-open" type="button" onclick={() => openBoard(item.id)}><span>{item.visibility}</span><h3>{item.name}</h3><dl><div><dt>Columns</dt><dd>{item.column_count}</dd></div><div><dt>Cards</dt><dd>{item.card_count}</dd></div></dl></button>
-              <button class:active={item.favorite} class="kanban-favorite" type="button" aria-label={item.favorite ? "Remove favorite" : "Add favorite"} onclick={() => toggleFavorite(item)}><Star size={16} fill={item.favorite ? "currentColor" : "none"} /></button>
-            </article>
-          {:else}<div class="kanban-empty">No {archivedBoards ? "archived" : "active"} boards in this workspace.</div>{/each}
+          </section>
+          {#if settings.workspace.permissions.includes("workspace:manage")}<section class="kanban-settings-panel"><header><div><h3>Role permissions</h3><p>Admin is immutable. Member and Guest follow kan.bn's 24-permission split.</p></div></header><div class="kanban-permission-table"><div class="kanban-permission-head"><span>Capability</span><span>Member</span><span>Guest</span></div>{#each permissionGroups as group (group.name)}<h4>{group.name}</h4>{#each group.permissions as permission (permission)}<div class="kanban-permission-row"><code>{permission}</code>{#each configurableRoles as role (role)}{@const granted = roleGrant(role, permission)}<button class="ui-toggle-button kanban-permission-toggle" type="button" aria-pressed={granted} aria-label={`${role} ${permission}: ${granted ? "allowed" : "denied"}`} disabled={busy} onclick={() => void toggleRoleGrant(role, permission, !granted)}><span class="ui-toggle-indicator" aria-hidden="true">{#if granted}<Check size={13} />{/if}</span><span>{granted ? "Allow" : "Deny"}</span></button>{/each}</div>{/each}{/each}</div></section>{/if}
+          {#if settings.workspace.permissions.includes("workspace:delete")}<section class="kanban-settings-panel kanban-danger-zone"><header><div><h3>Delete workspace</h3><p>Permanently removes every board, card, comment, and attachment.</p></div></header><button class="ui-button ui-button--danger" type="button" onclick={() => run(async () => { await deleteKanbanWorkspace(selectedWorkspaceId); await loadOverview(); })}>Delete {settings.workspace.name}</button></section>{/if}
         </div>
       {/if}
-    {:else if settings}
-      <div class="kanban-settings" data-od-id="kanban-workspace-settings">
-        <section class="kanban-settings-panel"><header><div><h3>Members</h3><p>Invitations are limited to accounts already on this Pandan instance.</p></div><Users size={19} /></header>
-          {#if settings.workspace.permissions.includes("member:invite")}<div class="kanban-member-search"><label><Search size={15} /><input placeholder="Name or email" bind:value={memberQuery} oninput={findMembers} /></label><select aria-label="Invitation role" bind:value={inviteRole}><option value="member">Member</option><option value="guest">Guest</option>{#if settings.workspace.role === "admin"}<option value="admin">Admin</option>{/if}</select>{#if directoryResults.length}<div class="kanban-directory-results">{#each directoryResults as result (result.user_id)}<button type="button" onclick={() => invite(result.user_id)}><span><strong>{result.display_name}</strong><small>{result.email}</small></span><Plus size={15} /></button>{/each}</div>{/if}</div>{/if}
-          <div class="kanban-member-list">
-            {#each settings.members as member (member.user_id)}
-              <div>
-                <span class="kanban-member-avatar">
-                  <span aria-hidden="true">{member.display_name.slice(0, 1).toUpperCase()}</span>
-                  <img src={kanbanMemberAvatarUrl(member.user_id)} alt="" onerror={hideBrokenAvatar} />
-                </span>
-                <span><strong>{member.display_name}{member.user_id === viewerId ? " (you)" : ""}</strong><small>{member.email} · {member.status}</small></span>
-                {#if settings.workspace.permissions.includes("member:edit")}<select aria-label={`Role for ${member.display_name}`} value={member.role} onchange={(event) => changeRoleFromSelect(member.user_id, event)}><option value="admin">Admin</option><option value="member">Member</option><option value="guest">Guest</option></select>{:else}<span class="kanban-role-badge">{member.role}</span>{/if}
-                {#if settings.workspace.permissions.includes("member:remove")}<button class="kanban-icon-button" type="button" aria-label={`Remove ${member.display_name}`} onclick={() => removeMember(member.user_id)}><Trash2 size={15} /></button>{/if}
-              </div>
-            {/each}
-          </div>
-        </section>
-        {#if settings.workspace.permissions.includes("workspace:manage")}<section class="kanban-settings-panel"><header><div><h3>Role permissions</h3><p>Admin is immutable. Member and Guest follow kan.bn's 24-permission split.</p></div></header><div class="kanban-permission-table"><div class="kanban-permission-head"><span>Capability</span><span>Member</span><span>Guest</span></div>{#each permissionGroups as group (group.name)}<h4>{group.name}</h4>{#each group.permissions as permission (permission)}<div class="kanban-permission-row"><code>{permission}</code>{#each configurableRoles as role (role)}{@const granted = roleGrant(role, permission)}<button class="ui-toggle-button kanban-permission-toggle" type="button" aria-pressed={granted} aria-label={`${role} ${permission}: ${granted ? "allowed" : "denied"}`} disabled={busy} onclick={() => void toggleRoleGrant(role, permission, !granted)}><span class="ui-toggle-indicator" aria-hidden="true">{#if granted}<Check size={13} />{/if}</span><span>{granted ? "Allow" : "Deny"}</span></button>{/each}</div>{/each}{/each}</div></section>{/if}
-        {#if settings.workspace.permissions.includes("workspace:delete")}<section class="kanban-settings-panel kanban-danger-zone"><header><div><h3>Delete workspace</h3><p>Permanently removes every board, card, comment, and attachment.</p></div></header><button class="ui-button ui-button--danger" type="button" onclick={() => run(async () => { await deleteKanbanWorkspace(selectedWorkspaceId); await loadOverview(); })}>Delete {settings.workspace.name}</button></section>{/if}
-      </div>
     {/if}
-  {/if}
+  </div>
 </section>
 
 <dialog class="ui-dialog kanban-dialog" bind:this={workspaceDialog} onclose={() => (error = "")} data-od-id="workspace-dialog"><form method="dialog" class="dialog-close-row"><button class="kanban-icon-button" aria-label="Close"><X size={18} /></button></form><form class="kanban-dialog-form" onsubmit={submitWorkspace}><span class="kanban-kicker">NEW WORKSPACE</span><h3>Create a shared workspace</h3><label>Name<input required maxlength="80" bind:value={workspaceName} /></label><label>Description<textarea rows="3" maxlength="1000" bind:value={workspaceDescription}></textarea></label><button class="ui-button ui-button--primary" type="submit" disabled={busy}>Create workspace</button></form></dialog>

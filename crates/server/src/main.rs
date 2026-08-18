@@ -47,6 +47,7 @@ async fn main() -> miette::Result<()> {
         widget_integrations,
     });
     server::spawn_youtube_refresh_worker(state.clone());
+    server::spawn_rss_refresh_worker(state.clone());
 
     info!(port, "server listening");
     HttpServer::new(move || {

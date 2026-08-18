@@ -1,6 +1,6 @@
 use super::{ApiError, AppState, authenticated_account, validate_short_text};
 use actix_web::{HttpRequest, HttpResponse, http::header, web};
-use db::entities::{LinePost, LinePostDraft};
+use db::entities::{LineAuthorFeed, LinePost, LinePostDraft, LineThread};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -64,7 +64,10 @@ pub fn configure(config: &mut web::ServiceConfig) {
             .route(
                 "/posts/{post_id}/reactions/{emoji}",
                 web::delete().to(remove_reaction),
-            ),
+            )
+            .route("/posts/{post_id}/thread", web::get().to(get_thread))
+            .route("/authors/{user_id}", web::get().to(get_author_feed))
+            .route("/authors/{user_id}/avatar", web::get().to(author_avatar)),
     );
 }
 
@@ -92,6 +95,59 @@ async fn list_posts(
     Ok(web::Json(
         db::queries::list_line_posts(&state.pool, &account.id, &query.scope, search, tag).await?,
     ))
+}
+
+async fn get_thread(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    post_id: web::Path<String>,
+) -> Result<web::Json<LineThread>, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    let post = db::queries::get_line_post(&state.pool, &account.id, &post_id)
+        .await?
+        .ok_or(ApiError::NotFound("post not found"))?;
+    let parent = match post.reply_to_post_id.as_deref() {
+        Some(parent_id) => db::queries::get_line_post(&state.pool, &account.id, parent_id).await?,
+        None => None,
+    };
+    let replies = db::queries::list_line_post_replies(&state.pool, &account.id, &post.id).await?;
+    Ok(web::Json(LineThread {
+        parent,
+        post,
+        replies,
+    }))
+}
+
+async fn get_author_feed(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    user_id: web::Path<String>,
+) -> Result<web::Json<LineAuthorFeed>, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    let author = db::queries::find_line_author_profile(&state.pool, &account.id, &user_id)
+        .await?
+        .ok_or(ApiError::NotFound("author not found"))?;
+    let posts = db::queries::list_line_posts_by_author(&state.pool, &account.id, &user_id).await?;
+    Ok(web::Json(LineAuthorFeed { author, posts }))
+}
+
+async fn author_avatar(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    user_id: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    if !db::queries::line_author_is_visible(&state.pool, &account.id, &user_id).await? {
+        return Err(ApiError::NotFound("author not found"));
+    }
+    let avatar = db::queries::find_user_avatar(&state.pool, &user_id)
+        .await?
+        .ok_or(ApiError::NotFound("avatar image not found"))?;
+    Ok(HttpResponse::Ok()
+        .insert_header((header::CONTENT_TYPE, avatar.mime_type))
+        .insert_header((header::CACHE_CONTROL, "private, no-cache"))
+        .insert_header((header::ETAG, format!("\"{}\"", avatar.updated_at)))
+        .body(avatar.image_data))
 }
 
 async fn get_post(
