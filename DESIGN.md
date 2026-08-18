@@ -17,3 +17,10 @@ This file is the persistent visual and interaction contract for Pandan. Read it 
 - Keep labels explicit and stable. When the visible label lacks context, add an `aria-label` that names the setting and its current state.
 - Disable the button while a non-idempotent state change is pending, and update the pressed state only from authoritative or intentionally optimistic state.
 - Use radio groups, selects, or segmented controls for mutually exclusive choices; toggle buttons are for independent states.
+
+## Motion and dialogs
+
+- Standard dialogs use the shared motion defined in `ui/src/app.css`: fade from transparent to opaque while moving from `-18px` on the Y axis to their resting position over `220ms` with `--ease-out`. Their backdrop fades in over `180ms`.
+- Dialogs must not add feature-specific entrance keyframes, scale effects, springs, or alternate travel distances. Component styles may define size, surface, and backdrop color without overriding the shared motion.
+- Full-screen experiences such as the focus session may use a distinct transition when it communicates a screen-level state change. Nested settings panels enter upward over `240ms` or less.
+- Every transform animation must have a reduced-motion fallback. The global reduced-motion rule removes standard dialog and panel movement.

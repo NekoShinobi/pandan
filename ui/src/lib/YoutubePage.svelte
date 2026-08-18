@@ -1362,7 +1362,6 @@
     background: var(--surface);
     color: var(--fg);
     box-shadow: 0 24px 80px color-mix(in oklch, var(--bg) 72%, transparent);
-    animation: youtube-dialog-in 240ms var(--ease-out);
   }
   .youtube-dialog::backdrop {
     background: color-mix(in oklch, var(--bg) 72%, transparent);
@@ -1492,16 +1491,6 @@
   .youtube-dialog footer .youtube-danger-button:first-child {
     margin-right: auto;
   }
-  @keyframes youtube-dialog-in {
-    from {
-      opacity: 0;
-      transform: translateY(-28px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
   @media (max-width: 1100px) {
     .youtube-feed.thumbnails {
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1579,9 +1568,6 @@
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .youtube-dialog {
-      animation: none;
-    }
     .youtube-thumbnail img {
       transition: none;
     }

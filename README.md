@@ -39,7 +39,7 @@ Pandan brings planning, reading, contacts, calendars, notes, lightweight instanc
 | **Tasks** | Priorities, descriptions, labels, subtasks, attachments, due dates, recurring schedules, completion, archiving, and completed-task cleanup. |
 | **Kanban** | Shared workspaces with multiple boards, Todo / In Progress / Finished defaults, drag-and-drop cards, sanitized Markdown descriptions, assignees, live labels, due dates, comments, checklists, attachments, favorites, archives, in-app invitations, and configurable Admin / Member / Guest permissions. |
 | **Contacts** | Search, tags, favorites, archives, portraits, yearless birthdays, important dates, Pandan/Monica JSON import, Pandan JSON export, and CardDAV synchronization. |
-| **Calendar** | Multiple public HTTPS ICS feeds, recurring events, custom source colors, contact birthdays, a month grid, and a selected-day agenda. |
+| **Calendar** | Task due dates, multiple public HTTPS ICS feeds, recurring events, custom source colors, contact birthdays, a month grid, and a selected-day agenda. |
 | **RSS** | RSS and Atom subscriptions plus Reddit subreddit helpers, categories, source filters, article details, read state, a pruning-safe Read Later queue, manual refresh, and age-based retention. |
 | **Journal** | Nested documents that can contain Markdown content and child documents; rendered Markdown is sanitized before display. |
 | **Lines** | A Markdown timeline with public or private posts, replies, hashtag discovery, search, file attachments, reactions, and administrator moderation of public posts. |
@@ -48,7 +48,7 @@ Pandan brings planning, reading, contacts, calendars, notes, lightweight instanc
 | **Subscriptions** | Recurring service costs, first-payment dates, filtering, and separate daily, weekly, monthly, and yearly totals for each currency. |
 | **Trading** | A navigation placeholder for a future market workspace; watchlists and trade planning are not implemented yet. |
 
-Accounts also have a private avatar, one to five sidebar monitor timezones, temperature and location preferences, a default Lines visibility, background adjustments, a Welcome wallpaper used behind authenticated pages, and a separate Loading wallpaper. Administrators manage accounts, authentication policy, public Lines moderation, and the public Login wallpaper. Each user can permanently clear one content area at a time from Settings after explicit confirmation.
+Accounts also have a private avatar, one to five sidebar monitor timezones, temperature and location preferences, a default Lines visibility, background adjustments, and a Welcome wallpaper used by the authenticated loading transition and behind authenticated pages. Administrators manage accounts, authentication policy, public Lines moderation, and the public Login wallpaper. Each user can permanently clear one content area at a time from Settings after explicit confirmation.
 
 ## Dashboard widgets
 
@@ -137,6 +137,23 @@ Pandan prevents an administrator from deleting their active account or removing 
 | `PANDAN_BASE_URL` | unset in the server | Public absolute HTTP(S) application URL. Required when OIDC is enabled and used to derive its callback URL. |
 | `PANDAN_SECRET_KEY` | unset | Base64 text that decodes to exactly 32 bytes. Enables encrypted provider-credential storage. |
 | `INVIDIOUS_BASE_URL` | unset | Optional public HTTPS Invidious base URL used before YouTube's public uploads feed. |
+
+### Production container settings
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PUID` | `99` | Numeric user ID assigned to the production application process at image build time. |
+| `PGID` | `100` | Numeric group ID assigned to the production application process at image build time. |
+
+The supplied Compose file passes these values into the production image build. Rebuild the image after changing either value. Development containers continue to use `DEV_UID` and `DEV_GID` so bind-mounted source files match the current host user.
+
+Volumes created by older Pandan images may still be owned by `10001:10001`. Before starting the new image against such a volume, update it once (replace `99:100` if you configured different IDs):
+
+```sh
+docker compose -f compose.yml run --rm --no-deps --user root \
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --entrypoint chown app \
+  -R 99:100 /app/data
+```
 
 Generate a credential-encryption key with:
 

@@ -51,6 +51,14 @@
     sensitivity: "base",
   });
 
+  let {
+    initialContactId = null,
+    onInitialContactHandled = () => {},
+  }: {
+    initialContactId?: string | null;
+    onInitialContactHandled?: () => void;
+  } = $props();
+
   let contactsData = $state.raw<ContactsResponse>({
     contacts: [],
     dav_sources: [],
@@ -156,6 +164,7 @@
   });
 
   async function loadContacts() {
+    const requestedContactId = initialContactId;
     loading = true;
     pageError = "";
     try {
@@ -166,11 +175,19 @@
             (contact) => contact.id === selected?.id,
           ) ?? null;
       }
+      if (requestedContactId) {
+        const requestedContact = contactsData.contacts.find(
+          (contact) => contact.id === requestedContactId,
+        );
+        if (requestedContact) await openDetail(requestedContact);
+        else pageError = "That contact is no longer available.";
+      }
     } catch (reason: unknown) {
       pageError =
         reason instanceof Error ? reason.message : "Unable to load contacts";
     } finally {
       loading = false;
+      if (requestedContactId) onInitialContactHandled();
     }
   }
 
@@ -2896,17 +2913,6 @@
   @keyframes spin {
     to {
       transform: rotate(360deg);
-    }
-  }
-  @media (prefers-reduced-motion: no-preference) {
-    .contact-dialog[open] {
-      animation: dialog-enter 220ms var(--ease-out);
-    }
-    @keyframes dialog-enter {
-      from {
-        opacity: 0;
-        transform: translateY(-18px);
-      }
     }
   }
   @media (prefers-reduced-motion: reduce) {

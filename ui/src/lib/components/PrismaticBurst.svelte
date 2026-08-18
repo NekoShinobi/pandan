@@ -1,6 +1,7 @@
 <script lang="ts">
   type Offset = { x?: number | string; y?: number | string };
   type AnimationType = "rotate" | "rotate3d" | "hover";
+  const MAX_FRAME_INTERVAL_MS = 1_000 / 60;
 
   type Props = {
     intensity?: number;
@@ -351,13 +352,19 @@ void main() {
     };
 
     let frame = 0;
-    let lastTime = performance.now();
+    let lastRenderTime = 0;
     let accumulatedTime = 0;
     let visible = false;
 
     const render = (time: number) => {
-      const delta = Math.min(Math.max(time - lastTime, 0) * 0.001, 0.1);
-      lastTime = time;
+      const elapsed = lastRenderTime === 0 ? 0 : time - lastRenderTime;
+      if (lastRenderTime > 0 && elapsed < MAX_FRAME_INTERVAL_MS) {
+        frame = requestAnimationFrame(render);
+        return;
+      }
+
+      const delta = Math.min(Math.max(elapsed, 0) * 0.001, 0.1);
+      lastRenderTime = time;
       applyProps();
       if (!current.paused && !reducedMotion.matches) {
         accumulatedTime += delta;
@@ -382,7 +389,7 @@ void main() {
     const resume = () => {
       cancelAnimationFrame(frame);
       if (!visible || document.hidden) return;
-      lastTime = performance.now();
+      lastRenderTime = 0;
       frame = requestAnimationFrame(render);
     };
     const visibilityObserver = new IntersectionObserver(([entry]) => {

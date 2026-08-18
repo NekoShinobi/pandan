@@ -1813,12 +1813,10 @@
     background: var(--page-surface, var(--surface));
     color: var(--fg);
     box-shadow: 0 24px 80px rgba(0, 0, 0, 0.48);
-    animation: journal-dialog-in 240ms cubic-bezier(0.2, 0, 0, 1);
   }
   .journal-dialog::backdrop {
     background: rgba(0, 0, 0, 0.7);
     backdrop-filter: blur(7px);
-    animation: journal-fade-in 180ms ease-out;
   }
   .journal-dialog header {
     min-height: 76px;
@@ -1926,24 +1924,6 @@
     color: var(--fg);
     font-size: 11px;
   }
-  @keyframes journal-dialog-in {
-    from {
-      opacity: 0;
-      transform: translateY(-36px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-  @keyframes journal-fade-in {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
-  }
   @media (max-width: 920px) {
     .journal-page {
       padding: 20px 16px;
@@ -2004,10 +1984,7 @@
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .journal-dialog,
-    .journal-dialog::backdrop,
     .journal-explorer {
-      animation: none;
       transition: none;
     }
   }

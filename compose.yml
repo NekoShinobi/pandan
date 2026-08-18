@@ -4,6 +4,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        PUID: ${PUID:-99}
+        PGID: ${PGID:-100}
     ports:
       - "${PORT:-9651}:9651"
     volumes:

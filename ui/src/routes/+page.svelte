@@ -38,7 +38,6 @@
   import { onDestroy, onMount, tick } from "svelte";
   import { MediaQuery, SvelteMap, SvelteSet } from "svelte/reactivity";
   import AnimatedList from "$lib/components/AnimatedList.svelte";
-  import BlurText from "$lib/components/BlurText.svelte";
   import PrismaticBurst from "$lib/components/PrismaticBurst.svelte";
   import CalendarPage from "$lib/CalendarPage.svelte";
   import CodingPage from "$lib/CodingPage.svelte";
@@ -161,12 +160,6 @@
       description:
         "Shown behind welcome:{user} and throughout your authenticated pages.",
     },
-    {
-      id: "loading",
-      code: "LOADING",
-      title: "Loading background",
-      description: "Shown while your account and dashboard are loading.",
-    },
   ];
 
   const allWallpaperSlots: WallpaperSlot[] = [
@@ -183,50 +176,50 @@
   }> = [
     {
       scope: "contacts",
-      title: "All contacts",
-      description: "Contacts, profile pictures, and CardDAV sources.",
+      title: "All Contacts",
+      description: "Contacts, Profile Pictures, And CardDAV Sources.",
     },
     {
       scope: "tasks",
-      title: "All tasks",
+      title: "All Tasks",
       description:
-        "Active and archived tasks, subtasks, labels, and attachments.",
+        "Active And Archived Tasks, Subtasks, Labels, And Attachments.",
     },
     {
       scope: "calendar",
-      title: "All calendars",
-      description: "Calendar subscriptions and their cached events.",
+      title: "All Calendars",
+      description: "Calendar Subscriptions And Their Cached Events.",
     },
     {
       scope: "rss",
-      title: "All RSS feeds",
-      description: "Feed subscriptions, articles, categories, and read state.",
+      title: "All RSS Feeds",
+      description: "Feed Subscriptions, Articles, Categories, And Read State.",
     },
     {
       scope: "journal",
-      title: "All journal entries",
-      description: "Every journal document and nested entry.",
+      title: "All Journal Entries",
+      description: "Every Journal Document And Nested Entry.",
     },
     {
       scope: "lines",
-      title: "All Lines posts",
+      title: "All Lines Posts",
       description:
-        "Your public and private posts, replies, reactions, and attachments.",
+        "Your Public And Private Posts, Replies, Reactions, And Attachments.",
     },
     {
       scope: "youtube",
-      title: "All YouTube data",
-      description: "Your channel subscriptions, groups, and display settings.",
+      title: "All YouTube Data",
+      description: "Your Channel Subscriptions, Groups, And Display Settings.",
     },
     {
       scope: "coding",
-      title: "All coding projects",
-      description: "Tracked repositories and saved provider credentials.",
+      title: "All Coding Projects",
+      description: "Tracked Repositories And Saved Provider Credentials.",
     },
     {
       scope: "subscriptions",
-      title: "All paid subscriptions",
-      description: "Every recurring service and its cost history.",
+      title: "All Paid Subscriptions",
+      description: "Every Recurring Service And Its Cost History.",
     },
   ];
 
@@ -357,30 +350,113 @@
   const clockMarks = Array.from({ length: 12 }, (_, index) => index);
   const dashboardCalendarWeekdays = ["M", "T", "W", "T", "F", "S", "S"];
   const focusDurations = [15, 25, 45] as const;
-  const kanbanSubmenuItems: Array<{ id: KanbanSection; label: string }> = [
-    { id: "boards", label: "Boards" },
-    { id: "workspaces", label: "Workspaces" },
-    { id: "invitations", label: "Invitations" },
+  const kanbanSubmenuItems: Array<{
+    id: KanbanSection;
+    label: string;
+    description: string;
+  }> = [
+    {
+      id: "boards",
+      label: "Boards",
+      description: "Open shared boards and move work through lists and cards.",
+    },
+    {
+      id: "workspaces",
+      label: "Workspaces",
+      description: "Manage Kanban collaborators, roles, and workspace access.",
+    },
+    {
+      id: "invitations",
+      label: "Invitations",
+      description: "Review and respond to workspace invitations.",
+    },
   ];
 
   const productPages = [
-    { id: "dashboard", label: "Dashboard", code: "01", icon: Home },
-    { id: "tasks", label: "Tasks", code: "02", icon: CheckSquare2 },
-    { id: "kanban", label: "Kanban", code: "03", icon: Columns3 },
-    { id: "contacts", label: "Contacts", code: "04", icon: ContactRound },
-    { id: "calendar", label: "Calendar", code: "05", icon: CalendarDays },
-    { id: "rss", label: "RSS", code: "06", icon: Rss },
-    { id: "journal", label: "Journal", code: "07", icon: BookOpen },
-    { id: "lines", label: "Lines", code: "08", icon: MessageSquareText },
-    { id: "youtube", label: "YouTube", code: "09", icon: Youtube },
-    { id: "coding", label: "Coding", code: "10", icon: Code2 },
+    {
+      id: "dashboard",
+      label: "Dashboard",
+      description: "Arrange widgets and see your day at a glance.",
+      code: "01",
+      icon: Home,
+    },
+    {
+      id: "tasks",
+      label: "Tasks",
+      description: "Capture, organize, and complete personal to-dos.",
+      code: "02",
+      icon: CheckSquare2,
+    },
+    {
+      id: "kanban",
+      label: "Kanban",
+      description: "Plan shared work across boards, lists, and cards.",
+      code: "03",
+      icon: Columns3,
+    },
+    {
+      id: "contacts",
+      label: "Contacts",
+      description: "Keep people, contact details, and important dates together.",
+      code: "04",
+      icon: ContactRound,
+    },
+    {
+      id: "calendar",
+      label: "Calendar",
+      description: "Review events and subscribed calendars in one schedule.",
+      code: "05",
+      icon: CalendarDays,
+    },
+    {
+      id: "rss",
+      label: "RSS",
+      description: "Read and manage posts from your subscribed feeds.",
+      code: "06",
+      icon: Rss,
+    },
+    {
+      id: "journal",
+      label: "Journal",
+      description: "Write private daily notes and longer entries.",
+      code: "07",
+      icon: BookOpen,
+    },
+    {
+      id: "lines",
+      label: "Lines",
+      description: "Share short posts with people on this Pandan instance.",
+      code: "08",
+      icon: MessageSquareText,
+    },
+    {
+      id: "youtube",
+      label: "YouTube",
+      description: "Follow channels and browse recent videos without distractions.",
+      code: "09",
+      icon: Youtube,
+    },
+    {
+      id: "coding",
+      label: "Coding",
+      description: "Track projects, repositories, and release activity.",
+      code: "10",
+      icon: Code2,
+    },
     {
       id: "subscriptions",
       label: "Subscriptions",
+      description: "Monitor recurring services, costs, and renewal dates.",
       code: "11",
       icon: ReceiptText,
     },
-    { id: "trading", label: "Trading", code: "12", icon: ChartCandlestick },
+    {
+      id: "trading",
+      label: "Trading",
+      description: "Plan watchlists, market notes, and trades.",
+      code: "12",
+      icon: ChartCandlestick,
+    },
   ] as const;
 
   const placeholderPages = {
@@ -395,11 +471,19 @@
   } as const;
 
   let activeSection = $state<ProductPage>("dashboard");
+  let contactDetailId = $state<string | null>(null);
   let kanbanSection = $state<KanbanSection>("boards");
   let kanbanMenuOpen = $state(false);
   let sidebarOpen = $state(false);
   let sidebarCollapsed = $state(false);
-  let welcomeVisible = $state(false);
+  let sidebarElement = $state<HTMLElement>();
+  let sidebarHint = $state<{
+    title: string;
+    description: string;
+    top: number;
+    source: HTMLElement;
+  } | null>(null);
+  let initialLoadingPending = $state(true);
   let welcomeLeaving = $state(false);
   let dashboard = $derived(data.dashboard);
   let setupRequired = $derived(data.setup.required);
@@ -423,6 +507,7 @@
   let focusRemainingSeconds = $state(25 * 60);
   let focusRunning = $state(false);
   let focusLeaving = $state(false);
+  let focusSettingsOpen = $state(false);
   let burstIntensity = $state(1.7);
   let burstSpeed = $state(0.34);
   let burstDistort = $state(0.35);
@@ -472,6 +557,7 @@
   let commandSearchInput = $state<HTMLInputElement>();
   let commandQuery = $state("");
   let settingsDialog = $state<HTMLDialogElement>();
+  let settingsScrollContainer = $state<HTMLDivElement>();
   let destructiveDialog = $state<HTMLDialogElement>();
   let adminDialog = $state<HTMLDialogElement>();
   let widgetLibraryDialog = $state<HTMLDialogElement>();
@@ -517,11 +603,8 @@
   let clockTimer: ReturnType<typeof setInterval> | undefined;
   let focusTimer: ReturnType<typeof setInterval> | undefined;
   let focusExitTimer: ReturnType<typeof setTimeout> | undefined;
-  let welcomeExitTimer: ReturnType<typeof setTimeout> | undefined;
   let welcomeRemoveTimer: ReturnType<typeof setTimeout> | undefined;
   let loadingAnimationMinimumTimer: ReturnType<typeof setTimeout> | undefined;
-  let loadingAnimationFallbackTimer: ReturnType<typeof setTimeout> | undefined;
-  let loadingAnimationResolver: (() => void) | undefined;
   let dragSnapshot: DashboardWidget[] = [];
   const gridInstances = new SvelteMap<number, GridStack>();
   const expandedTaskIds = new SvelteSet<string>();
@@ -599,6 +682,16 @@
   );
   let firstName = $derived(
     dashboard?.settings.display_name.trim().split(/\s+/)[0] || "there",
+  );
+  let loadingWelcomeName = $state("");
+  let loadingWelcomeDisplayName = $derived(
+    loadingWelcomeName ||
+      dashboard?.settings.display_name.trim().split(/\s+/)[0] ||
+      "there",
+  );
+  let loadingOverlayVisible = $derived(
+    (Boolean(dashboard) && initialLoadingPending) ||
+      (authenticating && loadingScreenReady),
   );
   let placeholderPage = $derived(
     activeSection in placeholderPages
@@ -702,6 +795,8 @@
       refreshPrivateWallpaperRevisions();
       resetAppearanceDraft();
       void showInitialLoadingScreen();
+    } else {
+      initialLoadingPending = false;
     }
   });
 
@@ -709,10 +804,8 @@
     clearAvatarDraft();
     clearWallpaperDrafts();
     clearTimeout(toastTimer);
-    clearTimeout(welcomeExitTimer);
     clearTimeout(welcomeRemoveTimer);
     clearTimeout(loadingAnimationMinimumTimer);
-    clearTimeout(loadingAnimationFallbackTimer);
     clearInterval(clockTimer);
     clearInterval(focusTimer);
     clearTimeout(focusExitTimer);
@@ -952,6 +1045,7 @@
     focusSubject = focusSubject.trim() || "Deep work";
     focusRemainingSeconds = focusDurationMinutes * 60;
     focusLeaving = false;
+    focusSettingsOpen = false;
     if (!focusDialog?.open) focusDialog?.showModal();
     toggleFocusTimer();
   }
@@ -972,6 +1066,7 @@
       focusExitTimer = undefined;
       focusDialog?.close();
       focusLeaving = false;
+      focusSettingsOpen = false;
       focusRemainingSeconds = focusDurationMinutes * 60;
       showToast("Focus session ended");
     };
@@ -985,70 +1080,43 @@
     focusExitTimer = setTimeout(closeSession, 420);
   }
 
-  function startWelcome() {
-    clearTimeout(welcomeExitTimer);
-    clearTimeout(welcomeRemoveTimer);
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      welcomeVisible = false;
-      welcomeLeaving = false;
-      return;
-    }
-    welcomeVisible = true;
-    welcomeLeaving = false;
-    welcomeExitTimer = setTimeout(() => (welcomeLeaving = true), 950);
-    welcomeRemoveTimer = setTimeout(() => (welcomeVisible = false), 1550);
-  }
-
-  function completeLoadingTextAnimation() {
-    loadingAnimationResolver?.();
-  }
-
   async function showInitialLoadingScreen() {
     authenticating = true;
-    loadingScreenReady = false;
+    loadingScreenReady = true;
+    setLoadingWelcomeName();
+    welcomeLeaving = false;
     try {
-      await prepareLoadingWallpaper();
-      loadingScreenReady = true;
       await tick();
-      await waitForLoadingScreen();
+      await Promise.all([prepareWelcomeWallpaper(), waitForLoadingScreen()]);
+      await finishLoadingScreen();
     } finally {
+      initialLoadingPending = false;
       loadingScreenReady = false;
       authenticating = false;
-      startWelcome();
+      welcomeLeaving = false;
     }
+  }
+
+  function setLoadingWelcomeName() {
+    loadingWelcomeName =
+      authDisplayName.trim().split(/\s+/)[0] ||
+      dashboard?.settings.display_name.trim().split(/\s+/)[0] ||
+      authEmail.split("@")[0] ||
+      "there";
   }
 
   function waitForLoadingScreen() {
     clearTimeout(loadingAnimationMinimumTimer);
-    clearTimeout(loadingAnimationFallbackTimer);
-
     return new Promise<void>((resolve) => {
-      let minimumElapsed = false;
-      let textComplete = false;
-      let settled = false;
+      loadingAnimationMinimumTimer = setTimeout(resolve, 2_700);
+    });
+  }
 
-      const settle = () => {
-        if (settled || !minimumElapsed || !textComplete) return;
-        settled = true;
-        clearTimeout(loadingAnimationMinimumTimer);
-        clearTimeout(loadingAnimationFallbackTimer);
-        loadingAnimationResolver = undefined;
-        resolve();
-      };
-
-      loadingAnimationResolver = () => {
-        textComplete = true;
-        settle();
-      };
-      loadingAnimationMinimumTimer = setTimeout(() => {
-        minimumElapsed = true;
-        settle();
-      }, 1_750);
-      loadingAnimationFallbackTimer = setTimeout(() => {
-        minimumElapsed = true;
-        textComplete = true;
-        settle();
-      }, 3_600);
+  function finishLoadingScreen() {
+    clearTimeout(welcomeRemoveTimer);
+    welcomeLeaving = true;
+    return new Promise<void>((resolve) => {
+      welcomeRemoveTimer = setTimeout(resolve, 600);
     });
   }
 
@@ -1075,9 +1143,9 @@
     });
   }
 
-  async function prepareLoadingWallpaper() {
+  async function prepareWelcomeWallpaper() {
     const fallback = "/wired-terminal-wallpaper.png";
-    const source = wallpaperSource("loading");
+    const source = wallpaperSource("welcome");
     const loaded = await preloadImage(source);
     if (!loaded && source !== fallback) {
       await preloadImage(fallback);
@@ -1093,6 +1161,7 @@
 
   function openProductPage(page: ProductPage) {
     activeSection = page;
+    if (page !== "contacts") contactDetailId = null;
     sidebarOpen = false;
     pendingTaskDeleteId = "";
     localStorage.setItem("pandan-active-section", page);
@@ -1104,6 +1173,16 @@
     openProductPage("kanban");
   }
 
+  function openCalendarTask(task: Task) {
+    openProductPage("tasks");
+    openTaskEditor(task);
+  }
+
+  function openCalendarContact(contactId: string) {
+    contactDetailId = contactId;
+    openProductPage("contacts");
+  }
+
   function toggleSidebar() {
     if (mobileNavigation.current) {
       sidebarOpen = !sidebarOpen;
@@ -1112,6 +1191,50 @@
     sidebarOpen = false;
     sidebarCollapsed = !sidebarCollapsed;
     localStorage.setItem("pandan-sidebar-collapsed", String(sidebarCollapsed));
+  }
+
+  function captureSidebar(node: HTMLElement) {
+    sidebarElement = node;
+    return () => {
+      sidebarElement = undefined;
+      sidebarHint = null;
+    };
+  }
+
+  function sidebarHintTarget(event: Event) {
+    if (!(event.target instanceof Element)) return null;
+    return event.target.closest<HTMLElement>("[data-sidebar-title]");
+  }
+
+  function showSidebarHint(event: Event) {
+    const source = sidebarHintTarget(event);
+    const title = source?.dataset.sidebarTitle;
+    const description = source?.dataset.sidebarDescription;
+    if (!source || !sidebarElement || !title || !description) return;
+
+    const sidebarBounds = sidebarElement.getBoundingClientRect();
+    const sourceBounds = source.getBoundingClientRect();
+    const sourceCenter =
+      sourceBounds.top - sidebarBounds.top + sourceBounds.height / 2;
+    const edgeInset = 58;
+    sidebarHint = {
+      title,
+      description,
+      top: Math.max(
+        edgeInset,
+        Math.min(sidebarBounds.height - edgeInset, sourceCenter),
+      ),
+      source,
+    };
+  }
+
+  function hideSidebarHint(event: PointerEvent | FocusEvent) {
+    const source = sidebarHintTarget(event);
+    const nextTarget = event.relatedTarget;
+    if (source && nextTarget instanceof Node && source.contains(nextTarget)) {
+      return;
+    }
+    if (sidebarHint?.source === source) sidebarHint = null;
   }
 
   function showToast(message: string) {
@@ -1151,6 +1274,13 @@
     settingsDialog = node;
     return () => {
       settingsDialog = undefined;
+    };
+  }
+
+  function captureSettingsScrollContainer(node: HTMLDivElement) {
+    settingsScrollContainer = node;
+    return () => {
+      settingsScrollContainer = undefined;
     };
   }
 
@@ -1782,6 +1912,7 @@
     if (authenticating) return;
 
     authenticating = true;
+    initialLoadingPending = false;
     loadingScreenReady = false;
     authError = "";
     try {
@@ -1795,11 +1926,14 @@
         await loginAccount({ email: authEmail, password: authPassword });
       }
       refreshPrivateWallpaperRevisions();
-      const loadingScreen = prepareLoadingWallpaper().then(async () => {
-        loadingScreenReady = true;
-        await tick();
-        await waitForLoadingScreen();
-      });
+      setLoadingWelcomeName();
+      welcomeLeaving = false;
+      loadingScreenReady = true;
+      await tick();
+      const loadingScreen = Promise.all([
+        prepareWelcomeWallpaper(),
+        waitForLoadingScreen(),
+      ]);
       const [nextDashboard] = await Promise.all([
         fetchDashboard(),
         loadingScreen,
@@ -1811,13 +1945,14 @@
       resetAppearanceDraft();
       authPassword = "";
       activeSection = "dashboard";
-      startWelcome();
+      await finishLoadingScreen();
     } catch (reason: unknown) {
       authError =
         reason instanceof Error ? reason.message : "Unable to continue";
     } finally {
       loadingScreenReady = false;
       authenticating = false;
+      welcomeLeaving = false;
     }
   }
 
@@ -1826,6 +1961,7 @@
     if (authenticating) return;
 
     authenticating = true;
+    initialLoadingPending = false;
     loadingScreenReady = false;
     authError = "";
     try {
@@ -1835,11 +1971,14 @@
         display_name: authDisplayName,
       });
       refreshPrivateWallpaperRevisions();
-      const loadingScreen = prepareLoadingWallpaper().then(async () => {
-        loadingScreenReady = true;
-        await tick();
-        await waitForLoadingScreen();
-      });
+      setLoadingWelcomeName();
+      welcomeLeaving = false;
+      loadingScreenReady = true;
+      await tick();
+      const loadingScreen = Promise.all([
+        prepareWelcomeWallpaper(),
+        waitForLoadingScreen(),
+      ]);
       const [nextDashboard] = await Promise.all([
         fetchDashboard(),
         loadingScreen,
@@ -1852,13 +1991,14 @@
       setupRequired = false;
       authPassword = "";
       activeSection = "dashboard";
-      startWelcome();
+      await finishLoadingScreen();
     } catch (reason: unknown) {
       authError =
         reason instanceof Error ? reason.message : "Unable to complete setup";
     } finally {
       loadingScreenReady = false;
       authenticating = false;
+      welcomeLeaving = false;
     }
   }
 
@@ -1873,6 +2013,7 @@
       dashboard.settings.lines_default_visibility;
     settingsError = "";
     settingsDialog?.showModal();
+    if (settingsScrollContainer) settingsScrollContainer.scrollTop = 0;
   }
 
   function applySidebarSettings(settings: UserSettings) {
@@ -2160,7 +2301,7 @@
       clearWallpaperDrafts(
         appearanceWallpaperOptions.map((option) => option.id),
       );
-      appearanceDialog?.close();
+      await closeAppearance(true);
       showToast("Appearance saved");
     } catch (reason: unknown) {
       appearanceError =
@@ -2357,7 +2498,7 @@
       avatarAvailable = true;
       avatarRevision = Date.now();
       activeSection = "dashboard";
-      welcomeVisible = false;
+      welcomeLeaving = false;
       authPassword = "";
       authError = "";
     } catch (reason: unknown) {
@@ -2515,33 +2656,29 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-{#if authenticating && loadingScreenReady}
+{#if loadingOverlayVisible}
   <div
-    class="loading-overlay"
-    style:--loading-background={wallpaperBackground("loading")}
+    class={[
+      "welcome-overlay",
+      "loading-welcome-overlay",
+      welcomeLeaving && "is-leaving",
+    ]}
+    style:--welcome-background={wallpaperBackground("welcome")}
     role="status"
     aria-live="polite"
     data-od-id="account-loading-screen"
   >
-    <div class="loading-copy">
-      <span>[ SESSION / SYNC ]</span>
-      <BlurText
-        class="loading-blur-text"
-        text={`loading:${authDisplayName.trim().split(/\s+/)[0] || dashboard?.settings.display_name.trim().split(/\s+/)[0] || authEmail.split("@")[0] || "user"}`}
-        delay={56}
-        animateBy="letters"
-        direction="top"
-        threshold={0}
-        stepDuration={0.48}
-        animationFrom={{ filter: "blur(18px)", opacity: 0, y: -30 }}
-        animationTo={[
-          { filter: "blur(8px)", opacity: 0.48, y: 5 },
-          { filter: "blur(0px)", opacity: 1, y: 0 },
-        ]}
-        onAnimationComplete={completeLoadingTextAnimation}
-      />
-      <samp>mounting personal workspace</samp>
-      <i aria-hidden="true"></i>
+    <div class="welcome-monogram" aria-hidden="true">P&gt;</div>
+    <div class="welcome-copy">
+      <strong>Welcome:{loadingWelcomeDisplayName}</strong>
+      <div class="welcome-loading-track" aria-hidden="true"><i></i></div>
+      <div class="welcome-boot-log" aria-label="Session startup status">
+        <samp>[ SESSION AUTHENTICATED ]</samp>
+        <samp>{loadingWelcomeDisplayName}@pandan</samp>
+        <samp
+          >dashboard.init --profile={loadingWelcomeDisplayName.toLowerCase()}</samp
+        >
+      </div>
     </div>
   </div>
 {/if}
@@ -2835,23 +2972,6 @@
     </p>
   </main>
 {:else}
-  {#if welcomeVisible}
-    <div
-      class={["welcome-overlay", welcomeLeaving && "is-leaving"]}
-      style:--welcome-background={wallpaperBackground("welcome")}
-      role="status"
-      aria-live="polite"
-      data-od-id="welcome-transition"
-    >
-      <div class="welcome-monogram" aria-hidden="true">P&gt;</div>
-      <div class="welcome-copy">
-        <span>[ SESSION AUTHENTICATED ]</span>
-        <strong>{firstName}@pandan</strong>
-        <samp>dashboard.init --profile={firstName.toLowerCase()}</samp>
-      </div>
-    </div>
-  {/if}
-
   <div
     class={[
       "dashboard-app",
@@ -2870,6 +2990,11 @@
       id="primary-sidebar"
       class="dashboard-sidebar"
       inert={mobileNavigation.current && !sidebarOpen}
+      {@attach captureSidebar}
+      onpointerover={showSidebarHint}
+      onpointerout={hideSidebarHint}
+      onfocusin={showSidebarHint}
+      onfocusout={hideSidebarHint}
       data-od-id="primary-sidebar"
     >
       <button
@@ -2877,11 +3002,16 @@
         type="button"
         onclick={() => openProductPage("dashboard")}
         aria-label="Open dashboard"
-        title="Dashboard"
+        aria-describedby="sidebar-desc-brand"
+        data-sidebar-title="Pandan dashboard"
+        data-sidebar-description="Return to your personal dashboard overview."
       >
         <span class="brand-glyph">P&gt;</span>
         <span class="brand-word">PANDAN / OS</span>
       </button>
+      <span id="sidebar-desc-brand" class="sr-only"
+        >Return to your personal dashboard overview.</span
+      >
 
       <nav class="sidebar-nav" aria-label="Primary navigation">
         {#each productPages as item (item.id)}
@@ -2893,11 +3023,13 @@
                 type="button"
                 aria-current={activeSection === "kanban" ? "page" : undefined}
                 aria-expanded={kanbanMenuOpen}
+                aria-describedby="sidebar-desc-kanban"
                 onclick={() => {
                   kanbanMenuOpen = !kanbanMenuOpen;
                   if (activeSection !== "kanban") openKanbanSection("boards");
                 }}
-                title="Kanban"
+                data-sidebar-title={item.label}
+                data-sidebar-description={item.description}
                 data-od-id="nav-kanban"
               >
                 <span class="sidebar-index">{item.code}</span>
@@ -2905,14 +3037,24 @@
                 <span>Kanban</span>
                 <ChevronDown class={kanbanMenuOpen ? "is-open" : undefined} size={15} strokeWidth={1.7} aria-hidden="true" />
               </button>
+              <span id="sidebar-desc-kanban" class="sr-only"
+                >{item.description}</span
+              >
               {#if kanbanMenuOpen && !sidebarCollapsed}
                 <div class="sidebar-submenu" aria-label="Kanban navigation">
                   {#each kanbanSubmenuItems as submenuItem (submenuItem.id)}
                     <button
                       type="button"
                       class:active={activeSection === "kanban" && kanbanSection === submenuItem.id}
+                      aria-describedby={`sidebar-desc-kanban-${submenuItem.id}`}
                       onclick={() => openKanbanSection(submenuItem.id)}
+                      data-sidebar-title={submenuItem.label}
+                      data-sidebar-description={submenuItem.description}
                     >{submenuItem.label}</button>
+                    <span
+                      id={`sidebar-desc-kanban-${submenuItem.id}`}
+                      class="sr-only">{submenuItem.description}</span
+                    >
                   {/each}
                 </div>
               {/if}
@@ -2922,14 +3064,19 @@
               class="sidebar-link"
               type="button"
               aria-current={activeSection === item.id ? "page" : undefined}
+              aria-describedby={`sidebar-desc-${item.id}`}
               onclick={() => openProductPage(item.id)}
-              title={item.label}
+              data-sidebar-title={item.label}
+              data-sidebar-description={item.description}
               data-od-id={`nav-${item.id}`}
             >
               <span class="sidebar-index">{item.code}</span>
               <PageIcon size={19} strokeWidth={1.7} aria-hidden="true" />
               <span>{item.label}</span>
             </button>
+            <span id={`sidebar-desc-${item.id}`} class="sr-only"
+              >{item.description}</span
+            >
           {/if}
         {/each}
       </nav>
@@ -2948,19 +3095,26 @@
           class="sidebar-link"
           type="button"
           onclick={openSettings}
-          title="Settings"
+          aria-describedby="sidebar-desc-settings"
+          data-sidebar-title="Settings"
+          data-sidebar-description="Manage your profile, appearance, authentication, and integrations."
           data-od-id="open-user-settings"
         >
           <span class="sidebar-index">13</span>
           <Settings size={19} strokeWidth={1.7} aria-hidden="true" />
           <span>Settings</span>
         </button>
+        <span id="sidebar-desc-settings" class="sr-only"
+          >Manage your profile, appearance, authentication, and integrations.</span
+        >
         <button
           class="sidebar-profile"
           type="button"
           onclick={openSettings}
           aria-label="Open account settings"
-          title="Account settings"
+          aria-describedby="sidebar-desc-account"
+          data-sidebar-title="Account"
+          data-sidebar-description="Review your account identity, role, and personal preferences."
         >
           <span class="sidebar-avatar">
             {#if avatarAvailable}
@@ -2980,7 +3134,22 @@
           </span>
           <Ellipsis size={18} strokeWidth={1.7} aria-hidden="true" />
         </button>
+        <span id="sidebar-desc-account" class="sr-only"
+          >Review your account identity, role, and personal preferences.</span
+        >
       </div>
+
+      {#if sidebarHint}
+        <div
+          class="sidebar-hint"
+          aria-hidden="true"
+          style:--sidebar-hint-y={`${sidebarHint.top}px`}
+          data-od-id="sidebar-context-popup"
+        >
+          <strong>{sidebarHint.title}</strong>
+          <p>{sidebarHint.description}</p>
+        </div>
+      {/if}
     </aside>
 
     <button
@@ -3318,30 +3487,21 @@
                       data-od-id="view-archived-tasks"
                     >
                       Archived
-                      {#if archivedTasksLoaded}
-                        <span>{archivedTasks.length}</span>
-                      {/if}
+                      <span>{archivedTasksLoaded ? archivedTasks.length : "—"}</span>
                     </button>
                   </nav>
-                  {#if taskView === "active"}
-                    <button
-                      class="ui-button ui-button--primary primary-btn task-create-button"
-                      type="button"
-                      onclick={() => openTaskEditor()}
-                      data-od-id="create-task"
-                    >
-                      <Plus size={17} strokeWidth={1.8} aria-hidden="true" />
-                      New task
-                    </button>
-                  {/if}
+                  <button
+                    class="ui-button ui-button--primary primary-btn task-create-button"
+                    type="button"
+                    onclick={() => openTaskEditor()}
+                    data-od-id="create-task"
+                  >
+                    <Plus size={17} strokeWidth={1.8} aria-hidden="true" />
+                    New task
+                  </button>
                 </div>
               </div>
-              <div
-                class={[
-                  "tasks-page-layout",
-                  taskView === "archived" && "is-archive-view",
-                ]}
-              >
+              <div class="tasks-page-layout">
                 <section
                   class="tasks-worklist"
                   data-od-id={taskView === "active"
@@ -3762,11 +3922,10 @@
                     </div>
                   {/if}
                 </section>
-                {#if taskView === "active"}
-                  <aside
-                    class="tasks-summary-box tasks-focus-panel"
-                    data-od-id="tasks-focus-timer"
-                  >
+                <aside
+                  class="tasks-summary-box tasks-focus-panel"
+                  data-od-id="tasks-focus-timer"
+                >
                     <div class="focus-timer-heading">
                       <span>[ FOCUS.MODE ]</span>
                       <small>{focusRunning ? "RUNNING" : "READY"}</small>
@@ -3857,16 +4016,22 @@
                         <dd>{completedCount}</dd>
                       </div>
                     </dl>
-                  </aside>
-                {/if}
+                </aside>
               </div>
             </section>
           {:else if activeSection === "kanban"}
             <KanbanPage section={kanbanSection} viewerId={dashboard.user.id} />
           {:else if activeSection === "calendar"}
-            <CalendarPage />
+            <CalendarPage
+              {tasks}
+              onEditTask={openCalendarTask}
+              onOpenContact={openCalendarContact}
+            />
           {:else if activeSection === "contacts"}
-            <ContactsPage />
+            <ContactsPage
+              initialContactId={contactDetailId}
+              onInitialContactHandled={() => (contactDetailId = null)}
+            />
           {:else if activeSection === "rss"}
             <RssReaderPage />
           {:else if activeSection === "journal"}
@@ -3937,7 +4102,11 @@
     aria-labelledby="focus-session-target"
     oncancel={(event) => {
       event.preventDefault();
-      endFocusSession();
+      if (focusSettingsOpen) {
+        focusSettingsOpen = false;
+      } else {
+        endFocusSession();
+      }
     }}
     data-od-id="focus-session-overlay"
   >
@@ -3960,13 +4129,27 @@
           <span>[ FOCUS.SESSION ]</span>
           <small>{focusSessionStatus}</small>
         </div>
-        <button
-          type="button"
-          aria-label="End focus session"
-          onclick={endFocusSession}
-        >
-          <X size={18} strokeWidth={1.8} aria-hidden="true" />
-        </button>
+        <div class="focus-session-header-actions">
+          <button
+            type="button"
+            aria-label={focusSettingsOpen
+              ? "Close focus visual settings"
+              : "Open focus visual settings"}
+            aria-controls="focus-visual-settings"
+            aria-expanded={focusSettingsOpen}
+            onclick={() => (focusSettingsOpen = !focusSettingsOpen)}
+            data-od-id="focus-visual-settings-toggle"
+          >
+            <Settings size={18} strokeWidth={1.8} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            aria-label="End focus session"
+            onclick={endFocusSession}
+          >
+            <X size={18} strokeWidth={1.8} aria-hidden="true" />
+          </button>
+        </div>
       </header>
 
       <main class="focus-session-content">
@@ -3991,78 +4174,94 @@
         <span>{focusDurationMinutes} minute session</span>
       </main>
 
-      <section
-        class="focus-burst-customizer"
-        aria-label="Prismatic Burst customization"
-      >
-        <div class="focus-burst-customizer-heading">
-          <span>Visual controls</span>
-          <button type="button" onclick={resetBurstControls}>Reset</button>
-        </div>
+      {#if focusSettingsOpen}
+        <section
+          id="focus-visual-settings"
+          class="focus-settings-panel"
+          aria-label="Focus visual settings"
+          data-od-id="focus-visual-settings"
+        >
+          <header class="focus-settings-heading">
+            <div>
+              <span>[ VISUAL.SETTINGS ]</span>
+              <strong>Focus atmosphere</strong>
+            </div>
+            <button type="button" onclick={resetBurstControls}>Reset</button>
+          </header>
 
-        <label>
-          <span>Intensity <output>{burstIntensity.toFixed(1)}</output></span>
-          <input
-            type="range"
-            min="0.5"
-            max="4"
-            step="0.1"
-            bind:value={burstIntensity}
-          />
-        </label>
+          <div class="focus-settings-grid">
+            <label>
+              <span>Intensity <output>{burstIntensity.toFixed(1)}</output></span>
+              <input
+                type="range"
+                min="0.5"
+                max="4"
+                step="0.1"
+                bind:value={burstIntensity}
+              />
+            </label>
 
-        <label>
-          <span>Speed <output>{burstSpeed.toFixed(2)}</output></span>
-          <input
-            type="range"
-            min="0"
-            max="1.5"
-            step="0.05"
-            bind:value={burstSpeed}
-          />
-        </label>
+            <label>
+              <span>Speed <output>{burstSpeed.toFixed(2)}</output></span>
+              <input
+                type="range"
+                min="0"
+                max="1.5"
+                step="0.05"
+                bind:value={burstSpeed}
+              />
+            </label>
 
-        <label>
-          <span>Distort <output>{burstDistort.toFixed(1)}</output></span>
-          <input
-            type="range"
-            min="0"
-            max="10"
-            step="0.1"
-            bind:value={burstDistort}
-          />
-        </label>
+            <label>
+              <span>Distort <output>{burstDistort.toFixed(1)}</output></span>
+              <input
+                type="range"
+                min="0"
+                max="10"
+                step="0.1"
+                bind:value={burstDistort}
+              />
+            </label>
 
-        <label>
-          <span
-            >Hover dampness
-            <output>{burstHoverDampness.toFixed(2)}</output></span
-          >
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.05"
-            bind:value={burstHoverDampness}
-          />
-        </label>
+            <label>
+              <span
+                >Hover dampness
+                <output>{burstHoverDampness.toFixed(2)}</output></span
+              >
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                bind:value={burstHoverDampness}
+              />
+            </label>
 
-        <label>
-          <span>Ray count <output>{burstRayCount}</output></span>
-          <input
-            type="range"
-            min="0"
-            max="48"
-            step="1"
-            bind:value={burstRayCount}
-          />
-        </label>
+            <label>
+              <span>Ray count <output>{burstRayCount}</output></span>
+              <input
+                type="range"
+                min="0"
+                max="48"
+                step="1"
+                bind:value={burstRayCount}
+              />
+            </label>
 
-        <button class="ui-toggle-button focus-burst-pause" type="button" aria-pressed={burstPaused} onclick={() => (burstPaused = !burstPaused)}>
-          <span class="ui-toggle-indicator" aria-hidden="true">{#if burstPaused}<Check size={13} />{/if}</span>
-          <span>Paused</span>
-        </button>
-      </section>
+            <button
+              class="ui-toggle-button focus-burst-pause"
+              type="button"
+              aria-pressed={burstPaused}
+              onclick={() => (burstPaused = !burstPaused)}
+            >
+              <span class="ui-toggle-indicator" aria-hidden="true"
+                >{#if burstPaused}<Check size={13} />{/if}</span
+              >
+              <span>Pause atmosphere</span>
+            </button>
+          </div>
+        </section>
+      {/if}
 
       <footer class="focus-session-footer">
         <span>Esc ends session</span>
@@ -4502,7 +4701,10 @@
       onsubmit={saveSettings}
       data-od-id="user-settings-form"
     >
-      <div class="settings-form-scroll">
+      <div
+        class="settings-form-scroll"
+        {@attach captureSettingsScrollContainer}
+      >
         <div class="profile-avatar-editor" data-od-id="avatar-settings">
           <span class="settings-avatar" aria-hidden="true">
             {#if avatarPreviewSource()}
@@ -4692,8 +4894,8 @@
           data-od-id="open-destructive-actions"
         >
           <span
-            ><strong>Destructive actions</strong><small
-              >Permanently remove complete areas of your data</small
+            ><strong>Destructive Actions</strong><small
+              >Permanently Remove Complete Areas Of Your Data</small
             ></span
           >
           <Trash2 size={18} strokeWidth={1.8} aria-hidden="true" />
@@ -4729,7 +4931,7 @@
       <button
         class="nested-dialog-back"
         type="button"
-        aria-label="Go back to account settings"
+        aria-label="Go Back To Account Settings"
         onclick={() => closeDestructiveActions(true)}
         data-od-id="back-to-settings-from-destructive-actions"
       >
@@ -4737,12 +4939,12 @@
         <span>Settings</span>
       </button>
       <div>
-        <h2>Destructive actions</h2>
-        <p>Permanent, account-scoped content deletion</p>
+        <h2>Destructive Actions</h2>
+        <p>Permanent, Account-Scoped Content Deletion</p>
       </div>
       <button
         class="ui-button ui-button--ghost ui-button--icon dialog-close"
-        aria-label="Close destructive actions"
+        aria-label="Close Destructive Actions"
         onclick={() => closeDestructiveActions()}
         ><X size={18} strokeWidth={1.8} aria-hidden="true" /></button
       >
@@ -4752,8 +4954,8 @@
       <div class="destructive-notice">
         <Trash2 size={18} aria-hidden="true" />
         <p>
-          These actions permanently delete only your account’s records. They
-          cannot be undone.
+          These Actions Permanently Delete Only Your Account’s Records. They
+          Cannot Be Undone.
         </p>
       </div>
       {#if destructiveError}
@@ -4776,8 +4978,8 @@
               {deletingContentScope === action.scope
                 ? "Deleting…"
                 : pendingContentDeletion === action.scope
-                  ? "Confirm delete"
-                  : "Delete all"}
+                  ? "Confirm Delete"
+                  : "Delete All"}
             </button>
           </article>
         {/each}
@@ -4833,16 +5035,41 @@
               data-od-id={`wallpaper-${option.id}-settings`}
             >
               <div
-                class="background-preview appearance-preview wallpaper-slot-preview"
+                class="login-page-preview"
                 style:--background-preview={wallpaperBackground(option.id)}
-                style:--preview-blur="0px"
-                style:--preview-brightness="100%"
-                style:--preview-contrast="100%"
-                style:--preview-saturation="100%"
-                aria-label={`${option.title} wallpaper preview`}
+                aria-label={`${option.title} page preview with the selected wallpaper`}
                 role="img"
+                data-od-id="login-page-image-preview"
               >
-                <span>[ {option.code} ]</span>
+                <div class="login-preview-brand" aria-hidden="true">
+                  <span>P&gt;</span>
+                  <strong>PANDAN</strong>
+                </div>
+                <div class="login-preview-context" aria-hidden="true">
+                  <div>
+                    <small>[ PRIVATE WORKSPACE ]</small>
+                    <strong>Your private workspace.</strong>
+                    <p>Dashboards, tasks, calendars, feeds, and journal.</p>
+                  </div>
+                </div>
+                <div class="login-preview-access" aria-hidden="true">
+                  <div class="login-preview-copy">
+                    <small>[ ACCOUNT ACCESS ]</small>
+                    <strong>Welcome back.</strong>
+                    <p>Sign in to return to your dashboard.</p>
+                  </div>
+                  <div class="login-preview-modes">
+                    <span>Sign in</span>
+                    <span>Create account</span>
+                  </div>
+                  <div class="login-preview-form">
+                    <span>Email</span>
+                    <i></i>
+                    <span>Password</span>
+                    <i></i>
+                    <b>Enter dashboard</b>
+                  </div>
+                </div>
               </div>
               <div class="wallpaper-slot-copy">
                 <strong>{option.title}</strong>

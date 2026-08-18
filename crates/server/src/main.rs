@@ -26,7 +26,7 @@ async fn main() -> miette::Result<()> {
     info!(%database_url, "connecting to database");
     let pool = db::connect(&database_url)
         .await
-        .map_err(|error| miette::miette!("database error: {error}"))?;
+        .map_err(|error| database_startup_error(&database_url, error))?;
     let cookie_secure = std::env::var("COOKIE_SECURE")
         .is_ok_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
     let oidc = server::oidc::OidcProvider::from_env()
@@ -66,4 +66,70 @@ async fn main() -> miette::Result<()> {
     .run()
     .await
     .map_err(|error| miette::miette!("server error: {error}"))
+}
+
+fn database_startup_error(database_url: &str, error: sqlx::Error) -> miette::Report {
+    if is_sqlite_access_error(&error) {
+        return miette::miette!(
+            "failed to open SQLite database configured by DATABASE_URL (`{database_url}`): \
+             {error}. Ensure the database's parent directory exists and is readable and writable \
+             by the user running Pandan"
+        );
+    }
+
+    miette::miette!("database error: {error}")
+}
+
+fn is_sqlite_access_error(error: &sqlx::Error) -> bool {
+    match error {
+        sqlx::Error::Io(error) => matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+        ),
+        sqlx::Error::Database(error) => error
+            .code()
+            .is_some_and(|code| is_sqlite_access_code(&code)),
+        _ => false,
+    }
+}
+
+fn is_sqlite_access_code(code: &str) -> bool {
+    code.parse::<i32>()
+        .is_ok_and(|code| matches!(code & 0xff, 8 | 14))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn database_access_error_explains_parent_directory_permissions() {
+        let error = sqlx::Error::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+
+        let message = database_startup_error("sqlite:///data/pandan.db", error).to_string();
+
+        assert!(message.contains("sqlite:///data/pandan.db"));
+        assert!(message.contains("parent directory"));
+        assert!(message.contains("readable and writable"));
+    }
+
+    #[test]
+    fn unrelated_database_errors_keep_the_generic_message() {
+        let error = sqlx::Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+
+        let message = database_startup_error("sqlite:///data/pandan.db", error).to_string();
+
+        assert!(message.starts_with("database error:"));
+        assert!(!message.contains("parent directory"));
+    }
+
+    #[test]
+    fn sqlite_read_only_and_cannot_open_codes_are_access_errors() {
+        assert!(is_sqlite_access_code("8"));
+        assert!(is_sqlite_access_code("14"));
+        assert!(is_sqlite_access_code("526"));
+        assert!(is_sqlite_access_code("1544"));
+        assert!(!is_sqlite_access_code("1"));
+        assert!(!is_sqlite_access_code("not-a-number"));
+    }
 }

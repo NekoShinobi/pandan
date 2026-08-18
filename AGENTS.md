@@ -32,6 +32,7 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - The final administrator cannot be demoted or deleted.
 - The initial administrator setup is one-time and claimed atomically.
 - Sidebar navigation order is Dashboard, Tasks, Kanban, Contacts, Calendar, RSS, Journal, Lines, YouTube, Coding, Subscriptions, Trading. Kanban expands to Boards, Workspaces, and Invitations.
+- Tasks Active and Archived views share the same page structure: keep New task and Focus Mode visible, and do not collapse the worklist grid when switching views.
 - Kanban workspaces are collaboration aggregates and are distinct from the removed dashboard `user_workspaces` partition UI. Every board, column, card, comment, checklist, label, and attachment authorization must resolve through active `kanban_workspace_members` membership.
 - Kanban roles are `admin`, `member`, and `guest` with the 24 kan.bn-compatible workspace/board/list/card/comment/member permissions. Admin grants are immutable, workspace manage/delete stay admin-only, per-member overrides are allowed for other permissions, and the final workspace admin cannot be demoted or removed.
 - Kanban invitations are in-app only and may target existing Pandan users; do not add email delivery or arbitrary addresses.
@@ -40,9 +41,10 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 
 - Wallpaper slots are:
   - `dashboard` — legacy private slot retained for existing data and API compatibility; do not expose it as a separate selector.
-  - `welcome` — private, per user, used by `welcome:{user}` and as the persistent background behind authenticated pages.
-  - `loading` — private, per user, used by the authenticated loading transition.
+  - `welcome` — private, per user, used by the authenticated `Welcome:{user}` loading transition and as the persistent background behind authenticated pages.
+  - `loading` — legacy private slot retained for existing data and API compatibility; do not expose it as a separate selector.
   - `login` — global, administrator-managed, publicly readable before authentication.
+- For an existing authenticated session, render the Welcome loading overlay in the initial server response so the dashboard surface never flashes before the boot transition.
 - Wallpaper formats are JPEG, PNG, WebP, and AVIF, with a 30 MB limit.
 - Avatars are private, per user, use the same image formats, and have a 10 MB limit. An OIDC `picture` claim may initialize a missing avatar through the guarded public HTTPS fetch path, but must never replace an existing avatar or block login when fetching fails.
 - Task attachments are private, per user, and limited to 10 MB.

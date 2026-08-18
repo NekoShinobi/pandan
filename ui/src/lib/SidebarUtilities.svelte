@@ -272,16 +272,27 @@
     <button
       type="button"
       aria-label="Configure sidebar clocks and weather"
+      aria-describedby="sidebar-desc-monitor"
       onclick={openSettings}
+      data-sidebar-title="Local monitor"
+      data-sidebar-description="Choose the timezones, city, and temperature unit shown in the sidebar."
       data-od-id="configure-sidebar-utilities"
     >
       <Settings2 size={15} strokeWidth={1.7} aria-hidden="true" />
     </button>
+    <span id="sidebar-desc-monitor" class="sr-only"
+      >Choose the timezones, city, and temperature unit shown in the
+      sidebar.</span
+    >
   </div>
 
   <div class="sidebar-clocks" data-od-id="sidebar-digital-clocks">
     {#each timezones as timezone (timezone)}
-      <div class="sidebar-clock">
+      <div
+        class="sidebar-clock"
+        data-sidebar-title={formatZone(timezone)}
+        data-sidebar-description={`Current local time in ${timezone}.`}
+      >
         <strong class="mono">{formatTime(timezone)}</strong>
         <span>{formatZone(timezone)}</span>
       </div>
@@ -291,7 +302,10 @@
   <button
     class="sidebar-weather"
     type="button"
+    aria-describedby="sidebar-desc-weather"
     onclick={openSettings}
+    data-sidebar-title="Weather"
+    data-sidebar-description="View current conditions and configure the sidebar monitor."
     data-od-id="sidebar-current-weather"
   >
     {#if weather}
@@ -315,6 +329,9 @@
       </span>
     {/if}
   </button>
+  <span id="sidebar-desc-weather" class="sr-only"
+    >View current conditions and configure the sidebar monitor.</span
+  >
 </section>
 
 <dialog

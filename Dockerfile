@@ -36,18 +36,21 @@ RUN touch crates/db/src/lib.rs crates/server/src/lib.rs crates/server/src/main.r
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app
 
+ARG PUID=99
+ARG PGID=100
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system --gid 10001 pandan \
-    && useradd --system --uid 10001 --gid pandan --home-dir /app pandan \
+    && if ! getent group "${PGID}" >/dev/null; then groupadd --system --gid "${PGID}" pandan; fi \
+    && useradd --system --non-unique --uid "${PUID}" --gid "${PGID}" --home-dir /app pandan \
     && mkdir -p /app/data \
-    && chown -R pandan:pandan /app
+    && chown -R "${PUID}:${PGID}" /app
 
-COPY --from=rust-builder --chown=pandan:pandan /app/target/release/pandan ./pandan
-COPY --from=ui-builder --chown=pandan:pandan /app/ui/build ./ui/build
+COPY --from=rust-builder --chown=${PUID}:${PGID} /app/target/release/pandan ./pandan
+COPY --from=ui-builder --chown=${PUID}:${PGID} /app/ui/build ./ui/build
 
-USER pandan:pandan
+USER ${PUID}:${PGID}
 
 ENV DATABASE_URL=sqlite:///app/data/pandan.db \
     PORT=9651 \

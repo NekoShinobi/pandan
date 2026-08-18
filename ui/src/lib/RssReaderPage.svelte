@@ -1016,8 +1016,8 @@
   .rss-empty button { margin-top: 8px; }
   :global(.rss-loading-icon), :global(.spinning) { animation: rss-spin .8s linear infinite; }
   @keyframes rss-spin { to { transform: rotate(360deg); } }
-  .rss-dialog { width: min(600px, calc(100vw - 32px)); max-height: min(780px, calc(100vh - 32px)); margin: auto; padding: 0; overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--page-surface, var(--surface)); color: var(--fg); box-shadow: 0 24px 80px rgba(0, 0, 0, .48); animation: rss-dialog-in 240ms cubic-bezier(.2, 0, 0, 1); }
-  .rss-dialog::backdrop { background: rgba(0, 0, 0, .7); backdrop-filter: blur(7px); animation: rss-fade-in 180ms ease-out; }
+  .rss-dialog { width: min(600px, calc(100vw - 32px)); max-height: min(780px, calc(100vh - 32px)); margin: auto; padding: 0; overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--page-surface, var(--surface)); color: var(--fg); box-shadow: 0 24px 80px rgba(0, 0, 0, .48); }
+  .rss-dialog::backdrop { background: rgba(0, 0, 0, .7); backdrop-filter: blur(7px); }
   .rss-dialog header { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
   .rss-dialog header h2 { margin-top: 5px; font-family: var(--font-display); font-size: 24px; font-weight: 600; letter-spacing: -.02em; }
   .rss-dialog header > button { width: 42px; min-height: 42px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 7px; }
@@ -1070,8 +1070,6 @@
   .rss-detail-actions { justify-content: space-between; padding: 14px 22px; border-top: 1px solid var(--border); }
   .rss-form-error { padding: 10px; border: 1px solid color-mix(in oklch, var(--fg) 28%, var(--border)); background: var(--fg-soft); color: var(--fg); font-size: 11px; }
   .rss-prune-copy { color: var(--muted); font-size: 12px; line-height: 1.55; }
-  @keyframes rss-dialog-in { from { opacity: 0; transform: translateY(-36px); } to { opacity: 1; transform: translateY(0); } }
-  @keyframes rss-fade-in { from { opacity: 0; } to { opacity: 1; } }
   @media (max-width: 920px) {
     .rss-reader { padding: 20px 16px; }
     .rss-reader-header { align-items: start; flex-direction: column; }
@@ -1101,7 +1099,6 @@
     .rss-reddit-options { grid-template-columns: 1fr; }
   }
   @media (prefers-reduced-motion: reduce) {
-    .rss-dialog, .rss-dialog::backdrop { animation: none; }
     :global(.rss-loading-icon), :global(.spinning) { animation: none; }
   }
 </style>
