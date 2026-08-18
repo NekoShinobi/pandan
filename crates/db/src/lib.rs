@@ -1295,4 +1295,65 @@ mod tests {
             .expect("user count loads");
         assert_eq!(user_count, 2);
     }
+
+    #[tokio::test]
+    async fn verified_oidc_identity_can_claim_initial_administrator_setup() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let user_id = queries::create_initial_oidc_administrator(
+            &pool,
+            "https://issuer.example/application/o/pandan/",
+            "initial-subject",
+            "owner@example.com",
+            "OIDC Owner",
+            "$argon2id$unusable",
+        )
+        .await
+        .expect("OIDC setup completes")
+        .expect("OIDC identity claims setup");
+
+        assert!(
+            queries::is_onboarding_complete(&pool)
+                .await
+                .expect("setup status loads")
+        );
+        let (email, role): (String, String) =
+            sqlx::query_as("SELECT email, role FROM users WHERE id = ?")
+                .bind(&user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("administrator loads");
+        assert_eq!(email, "owner@example.com");
+        assert_eq!(role, "administrator");
+
+        let resolved_user_id = queries::find_or_create_oidc_user(
+            &pool,
+            "https://issuer.example/application/o/pandan/",
+            "initial-subject",
+            "owner@example.com",
+            "OIDC Owner",
+            "$argon2id$another-unusable",
+            false,
+        )
+        .await
+        .expect("OIDC identity resolves")
+        .expect("persisted identity is linked");
+        assert_eq!(resolved_user_id, user_id);
+
+        assert!(
+            queries::create_initial_administrator(
+                &pool,
+                "second@example.com",
+                "$argon2id$password",
+                "Second Owner",
+            )
+            .await
+            .expect("competing setup resolves")
+            .is_none()
+        );
+        let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            .fetch_one(&pool)
+            .await
+            .expect("user count loads");
+        assert_eq!(user_count, 1);
+    }
 }

@@ -2552,7 +2552,8 @@
         <p class="widget-kicker">[ INSTALLATION OWNER ]</p>
         <h1 id="setup-title">Create your administrator.</h1>
         <p>
-          This first account owns the workspace and can manage every user who
+          Create this first account with a password or your configured single
+          sign-on provider. It owns the workspace and can manage every user who
           joins later.
         </p>
       </div>
@@ -2612,6 +2613,22 @@
           {authenticating ? "Securing workspace…" : "Create administrator"}
         </button>
       </form>
+
+      {#if authConfig.oidc_enabled}
+        <div class="auth-divider">
+          <span>or</span>
+        </div>
+        <button
+          class="ui-button ui-button--secondary oidc-btn"
+          type="button"
+          onclick={() => window.location.assign("/api/auth/oidc/start")}
+          disabled={authenticating}
+          data-od-id="oidc-create-administrator"
+        >
+          Create with {authConfig.oidc_provider_name ?? "single sign-on"}
+          <ArrowRight size={18} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+      {/if}
 
       <div class="setup-note">
         <p>

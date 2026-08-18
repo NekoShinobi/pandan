@@ -136,7 +136,7 @@ impl WidgetIntegrationService {
     ///
     /// Returns an error when the encryption key or HTTP client configuration is invalid.
     pub fn from_env() -> Result<Self, String> {
-        let key = std::env::var("PANDAN_WIDGET_SECRET_KEY").ok();
+        let key = std::env::var("PANDAN_SECRET_KEY").ok();
         let invidious_base_url = std::env::var("INVIDIOUS_BASE_URL").ok();
         Self::new_with_invidious(key.as_deref(), invidious_base_url.as_deref())
     }
@@ -165,12 +165,12 @@ impl WidgetIntegrationService {
             .map(|value| {
                 let bytes = STANDARD
                     .decode(value)
-                    .map_err(|_| "PANDAN_WIDGET_SECRET_KEY must be base64")?;
+                    .map_err(|_| "PANDAN_SECRET_KEY must be base64")?;
                 let key: [u8; 32] = bytes
                     .try_into()
-                    .map_err(|_| "PANDAN_WIDGET_SECRET_KEY must decode to exactly 32 bytes")?;
+                    .map_err(|_| "PANDAN_SECRET_KEY must decode to exactly 32 bytes")?;
                 XChaCha20Poly1305::new_from_slice(&key)
-                    .map_err(|_| "PANDAN_WIDGET_SECRET_KEY is invalid".to_owned())
+                    .map_err(|_| "PANDAN_SECRET_KEY is invalid".to_owned())
             })
             .transpose()?;
         let client = Client::builder()
@@ -2127,7 +2127,7 @@ mod tests {
         let malformed = WidgetIntegrationService::new(Some("not-base64"))
             .err()
             .expect("malformed key is rejected");
-        assert_eq!(malformed, "PANDAN_WIDGET_SECRET_KEY must be base64");
+        assert_eq!(malformed, "PANDAN_SECRET_KEY must be base64");
 
         let short_key = STANDARD.encode([7_u8; 31]);
         let wrong_length = WidgetIntegrationService::new(Some(&short_key))
@@ -2135,7 +2135,7 @@ mod tests {
             .expect("short key is rejected");
         assert_eq!(
             wrong_length,
-            "PANDAN_WIDGET_SECRET_KEY must decode to exactly 32 bytes"
+            "PANDAN_SECRET_KEY must decode to exactly 32 bytes"
         );
     }
 

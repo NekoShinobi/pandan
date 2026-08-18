@@ -826,7 +826,7 @@
         />
         {#if !secretStorageEnabled}
           <p class="field-note">
-            Set PANDAN_WIDGET_SECRET_KEY on the server to enable encrypted
+            Set PANDAN_SECRET_KEY on the server to enable encrypted
             credential storage.
           </p>
         {:else if widget.has_secret}

@@ -586,7 +586,6 @@ async fn setup(
 
 async fn oidc_start(state: web::Data<AppState>) -> Result<HttpResponse, ApiError> {
     let provider = state.oidc.as_ref().ok_or(ApiError::OidcUnavailable)?;
-    ensure_onboarding_complete(&state).await?;
     let attempt = provider.authorization_attempt();
     let expires_at =
         (chrono::Utc::now() + chrono::Duration::minutes(OIDC_AUTHORIZATION_MINUTES)).to_rfc3339();
@@ -645,12 +644,6 @@ async fn complete_oidc_callback(
     request: &HttpRequest,
     query: &OidcCallbackQuery,
 ) -> Result<Cookie<'static>, String> {
-    if !db::queries::is_onboarding_complete(&state.pool)
-        .await
-        .map_err(|error| format!("failed to load setup status: {error}"))?
-    {
-        return Err("administrator setup is required".to_owned());
-    }
     let provider = state
         .oidc
         .as_ref()
@@ -682,26 +675,41 @@ async fn complete_oidc_callback(
         .map_err(|error| error.to_string())?;
     let email = normalize_email(&identity.email).map_err(|error| error.to_string())?;
     let display_name: String = identity.display_name.chars().take(60).collect();
-    let authentication_settings = db::queries::get_authentication_settings(&state.pool)
-        .await
-        .map_err(|error| format!("failed to load authentication settings: {error}"))?;
     let random_password = uuid::Uuid::new_v4().to_string();
     let unusable_password_hash = web::block(move || hash_password(&random_password))
         .await
         .map_err(|_| "OIDC account password hardening failed".to_owned())?
         .map_err(|_| "OIDC account password hardening failed".to_owned())?;
-    let user_id = db::queries::find_or_create_oidc_user(
+    let initial_user_id = db::queries::create_initial_oidc_administrator(
         &state.pool,
         &identity.issuer,
         &identity.subject,
         &email,
         &display_name,
         &unusable_password_hash,
-        authentication_settings.oidc_registration_enabled,
     )
     .await
-    .map_err(|error| format!("failed to link OIDC identity: {error}"))?
-    .ok_or_else(|| "OIDC registration is disabled".to_owned())?;
+    .map_err(|error| format!("failed to create initial OIDC administrator: {error}"))?;
+    let user_id = match initial_user_id {
+        Some(user_id) => user_id,
+        None => {
+            let authentication_settings = db::queries::get_authentication_settings(&state.pool)
+                .await
+                .map_err(|error| format!("failed to load authentication settings: {error}"))?;
+            db::queries::find_or_create_oidc_user(
+                &state.pool,
+                &identity.issuer,
+                &identity.subject,
+                &email,
+                &display_name,
+                &unusable_password_hash,
+                authentication_settings.oidc_registration_enabled,
+            )
+            .await
+            .map_err(|error| format!("failed to link OIDC identity: {error}"))?
+            .ok_or_else(|| "OIDC registration is disabled".to_owned())?
+        }
+    };
     issue_session(state, &user_id)
         .await
         .map_err(|error| error.to_string())

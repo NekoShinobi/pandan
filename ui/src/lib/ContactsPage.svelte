@@ -1769,7 +1769,7 @@
           >
         </div>
         {#if !contactsData.secret_storage_enabled}<p class="muted-copy">
-            Password storage is unavailable until PANDAN_WIDGET_SECRET_KEY is
+            Password storage is unavailable until PANDAN_SECRET_KEY is
             configured. Anonymous DAV resources can still be added.
           </p>{/if}{#if davError}<p class="form-error" role="alert">
             {davError}

@@ -57,9 +57,11 @@ Private dashboard accounts. Passwords are stored only as Argon2id PHC strings.
 | `created_at`    | TEXT | Required, RFC 3339 timestamp                      |
 
 The first-run setup transaction creates the initial user with the `administrator` role and writes
-`app_metadata.onboarding_complete`. That metadata key is a one-time database claim: setup can
-succeed only when both the claim and all users are absent. Existing installations promote their
-earliest account to administrator when migration `005_onboarding` is first applied.
+`app_metadata.onboarding_complete`. Setup may use a password or a verified OIDC identity; for OIDC,
+the matching `oidc_identities` row is committed in the same transaction. The metadata key is a
+one-time database claim: setup can succeed only when both the claim and all users are absent.
+Existing installations promote their earliest account to administrator when migration
+`005_onboarding` is first applied.
 
 Administrators can list all accounts, promote or demote other users, and remove other accounts.
 These operations are authorized on the server. A user cannot mutate their own administrator role

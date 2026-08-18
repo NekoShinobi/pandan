@@ -3099,9 +3099,67 @@ pub async fn create_initial_administrator(
     password_hash: &str,
     display_name: &str,
 ) -> Result<Option<(User, UserSettings)>, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    let Some(administrator) =
+        insert_initial_administrator(&mut transaction, email, password_hash, display_name).await?
+    else {
+        transaction.rollback().await?;
+        return Ok(None);
+    };
+    transaction.commit().await?;
+    Ok(Some(administrator))
+}
+
+/// Atomically claims first-run setup for a verified OIDC identity.
+///
+/// Returns the initial administrator's user ID, or `None` when another setup request won the
+/// one-time claim. The account and OIDC identity are committed in the same transaction.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when setup cannot be completed.
+pub async fn create_initial_oidc_administrator(
+    pool: &SqlitePool,
+    issuer: &str,
+    subject: &str,
+    email: &str,
+    display_name: &str,
+    unusable_password_hash: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    let Some((administrator, _)) = insert_initial_administrator(
+        &mut transaction,
+        email,
+        unusable_password_hash,
+        display_name,
+    )
+    .await?
+    else {
+        transaction.rollback().await?;
+        return Ok(None);
+    };
+
+    sqlx::query(
+        "INSERT INTO oidc_identities (issuer, subject, user_id, created_at) VALUES (?, ?, ?, ?)",
+    )
+    .bind(issuer)
+    .bind(subject)
+    .bind(&administrator.id)
+    .bind(&administrator.created_at)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(Some(administrator.id))
+}
+
+async fn insert_initial_administrator(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    email: &str,
+    password_hash: &str,
+    display_name: &str,
+) -> Result<Option<(User, UserSettings)>, sqlx::Error> {
     let user_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
-    let mut transaction = pool.begin().await?;
     let claim = sqlx::query(
         "INSERT INTO app_metadata (key, value, updated_at) \
          SELECT 'onboarding_complete', 'true', ? \
@@ -3109,10 +3167,9 @@ pub async fn create_initial_administrator(
          ON CONFLICT(key) DO NOTHING",
     )
     .bind(&now)
-    .execute(&mut *transaction)
+    .execute(&mut **transaction)
     .await?;
     if claim.rows_affected() != 1 {
-        transaction.rollback().await?;
         return Ok(None);
     }
 
@@ -3124,7 +3181,7 @@ pub async fn create_initial_administrator(
     .bind(email)
     .bind(password_hash)
     .bind(&now)
-    .execute(&mut *transaction)
+    .execute(&mut **transaction)
     .await?;
     sqlx::query(
         "INSERT INTO user_settings \
@@ -3134,7 +3191,7 @@ pub async fn create_initial_administrator(
     .bind(&user_id)
     .bind(display_name)
     .bind(&now)
-    .execute(&mut *transaction)
+    .execute(&mut **transaction)
     .await?;
 
     for (title, completed, priority) in [
@@ -3154,12 +3211,11 @@ pub async fn create_initial_administrator(
         .bind(&now)
         .bind(&now)
         .bind(&user_id)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await?;
     }
-    insert_default_workspaces(&mut transaction, &user_id, &now).await?;
-    insert_default_widgets(&mut transaction, &user_id, &now).await?;
-    transaction.commit().await?;
+    insert_default_workspaces(transaction, &user_id, &now).await?;
+    insert_default_widgets(transaction, &user_id, &now).await?;
 
     Ok(Some((
         User {
