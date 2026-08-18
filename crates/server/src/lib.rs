@@ -12,10 +12,10 @@ use argon2::{
 };
 use chrono::Datelike;
 use db::entities::{
-    CalendarEvent, CalendarSubscription, CodingProject, Contact, DashboardWidget, FeedItem,
-    JournalNode, ManagedUser, PaymentSubscription, RssItem, RssItemDraft, RssSubscription,
-    RssSubscriptionDraft, SessionAccount, Task, TaskDraft, TaskSubtaskDraft, User, UserAppearance,
-    UserSettings,
+    AuthenticationSettings, CalendarEvent, CalendarSubscription, CodingProject, Contact,
+    DashboardWidget, FeedItem, JournalNode, ManagedUser, PaymentSubscription, RssItem,
+    RssItemDraft, RssSubscription, RssSubscriptionDraft, SessionAccount, Task, TaskDraft,
+    TaskSubtaskDraft, User, UserAppearance, UserSettings,
 };
 use futures_util::future::join_all;
 use rand_core::OsRng;
@@ -63,6 +63,15 @@ struct HealthResponse {
 pub struct OidcConfigResponse {
     pub enabled: bool,
     pub provider_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuthenticationConfigResponse {
+    pub password_login_enabled: bool,
+    pub password_registration_enabled: bool,
+    pub oidc_enabled: bool,
+    pub oidc_registration_enabled: bool,
+    pub oidc_provider_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -118,6 +127,13 @@ pub struct UpdateSettingsRequest {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UpdateUserRoleRequest {
     pub role: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UpdateAuthenticationSettingsRequest {
+    pub password_login_enabled: bool,
+    pub password_registration_enabled: bool,
+    pub oidc_registration_enabled: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -433,6 +449,7 @@ pub enum ApiError {
     Database(sqlx::Error),
     Internal(&'static str),
     OidcUnavailable,
+    AuthenticationDisabled(&'static str),
     SetupRequired,
     Integration(String),
 }
@@ -449,6 +466,7 @@ impl fmt::Display for ApiError {
             Self::Integration(message) => formatter.write_str(message),
             Self::Database(_) => formatter.write_str("database operation failed"),
             Self::OidcUnavailable => formatter.write_str("single sign-on is not configured"),
+            Self::AuthenticationDisabled(message) => formatter.write_str(message),
             Self::SetupRequired => formatter.write_str("complete administrator setup first"),
         }
     }
@@ -459,7 +477,7 @@ impl ResponseError for ApiError {
         match self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::Forbidden => StatusCode::FORBIDDEN,
+            Self::Forbidden | Self::AuthenticationDisabled(_) => StatusCode::FORBIDDEN,
             Self::Conflict(_) | Self::SetupRequired => StatusCode::CONFLICT,
             Self::NotFound(_) | Self::OidcUnavailable => StatusCode::NOT_FOUND,
             Self::Integration(_) => StatusCode::BAD_GATEWAY,
@@ -507,6 +525,26 @@ async fn oidc_config(state: web::Data<AppState>) -> web::Json<OidcConfigResponse
         enabled: state.oidc.is_some(),
         provider_name: state.oidc.as_ref().map(|provider| provider.name.clone()),
     })
+}
+
+fn authentication_config_response(
+    state: &AppState,
+    settings: AuthenticationSettings,
+) -> AuthenticationConfigResponse {
+    AuthenticationConfigResponse {
+        password_login_enabled: settings.password_login_enabled || state.oidc.is_none(),
+        password_registration_enabled: settings.password_registration_enabled,
+        oidc_enabled: state.oidc.is_some(),
+        oidc_registration_enabled: settings.oidc_registration_enabled,
+        oidc_provider_name: state.oidc.as_ref().map(|provider| provider.name.clone()),
+    }
+}
+
+async fn authentication_config(
+    state: web::Data<AppState>,
+) -> Result<web::Json<AuthenticationConfigResponse>, ApiError> {
+    let settings = db::queries::get_authentication_settings(&state.pool).await?;
+    Ok(web::Json(authentication_config_response(&state, settings)))
 }
 
 async fn setup_status(
@@ -592,7 +630,12 @@ async fn oidc_callback(
             .finish(),
         Err(error) => {
             tracing::warn!(%error, "OIDC callback failed");
-            oidc_error_redirect("failed", state.cookie_secure)
+            let reason = if error == "OIDC registration is disabled" {
+                "registration_disabled"
+            } else {
+                "failed"
+            };
+            oidc_error_redirect(reason, state.cookie_secure)
         }
     }
 }
@@ -639,6 +682,9 @@ async fn complete_oidc_callback(
         .map_err(|error| error.to_string())?;
     let email = normalize_email(&identity.email).map_err(|error| error.to_string())?;
     let display_name: String = identity.display_name.chars().take(60).collect();
+    let authentication_settings = db::queries::get_authentication_settings(&state.pool)
+        .await
+        .map_err(|error| format!("failed to load authentication settings: {error}"))?;
     let random_password = uuid::Uuid::new_v4().to_string();
     let unusable_password_hash = web::block(move || hash_password(&random_password))
         .await
@@ -651,9 +697,11 @@ async fn complete_oidc_callback(
         &email,
         &display_name,
         &unusable_password_hash,
+        authentication_settings.oidc_registration_enabled,
     )
     .await
-    .map_err(|error| format!("failed to link OIDC identity: {error}"))?;
+    .map_err(|error| format!("failed to link OIDC identity: {error}"))?
+    .ok_or_else(|| "OIDC registration is disabled".to_owned())?;
     issue_session(state, &user_id)
         .await
         .map_err(|error| error.to_string())
@@ -681,6 +729,14 @@ async fn register(
     payload: web::Json<RegisterRequest>,
 ) -> Result<HttpResponse, ApiError> {
     ensure_onboarding_complete(&state).await?;
+    if !db::queries::get_authentication_settings(&state.pool)
+        .await?
+        .password_registration_enabled
+    {
+        return Err(ApiError::AuthenticationDisabled(
+            "password registration is disabled",
+        ));
+    }
     let email = normalize_email(&payload.email)?;
     let display_name = validate_short_text(&payload.display_name, "display name is required", 60)?;
     validate_password(&payload.password)?;
@@ -715,6 +771,12 @@ async fn login(
     state: web::Data<AppState>,
     payload: web::Json<LoginRequest>,
 ) -> Result<HttpResponse, ApiError> {
+    let authentication_settings = db::queries::get_authentication_settings(&state.pool).await?;
+    if !authentication_settings.password_login_enabled && state.oidc.is_some() {
+        return Err(ApiError::AuthenticationDisabled(
+            "password login is disabled",
+        ));
+    }
     let email = normalize_email(&payload.email)?;
     let credentials = db::queries::find_user_credentials(&state.pool, &email)
         .await?
@@ -1944,6 +2006,36 @@ async fn list_users(
     ))
 }
 
+async fn get_authentication_settings(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+) -> Result<web::Json<AuthenticationConfigResponse>, ApiError> {
+    authenticated_administrator(&state, &request).await?;
+    let settings = db::queries::get_authentication_settings(&state.pool).await?;
+    Ok(web::Json(authentication_config_response(&state, settings)))
+}
+
+async fn update_authentication_settings(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    payload: web::Json<UpdateAuthenticationSettingsRequest>,
+) -> Result<web::Json<AuthenticationConfigResponse>, ApiError> {
+    authenticated_administrator(&state, &request).await?;
+    if !payload.password_login_enabled && state.oidc.is_none() {
+        return Err(ApiError::BadRequest(
+            "password login cannot be disabled unless OIDC is configured",
+        ));
+    }
+    let settings = db::queries::update_authentication_settings(
+        &state.pool,
+        payload.password_login_enabled,
+        payload.password_registration_enabled,
+        payload.oidc_registration_enabled,
+    )
+    .await?;
+    Ok(web::Json(authentication_config_response(&state, settings)))
+}
+
 async fn update_user_role(
     state: web::Data<AppState>,
     request: HttpRequest,
@@ -2712,6 +2804,7 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
             .route("/health", web::get().to(health))
             .route("/setup", web::get().to(setup_status))
             .route("/setup", web::post().to(setup))
+            .route("/auth/config", web::get().to(authentication_config))
             .route("/auth/oidc/config", web::get().to(oidc_config))
             .route("/auth/oidc/start", web::get().to(oidc_start))
             .route("/auth/oidc/callback", web::get().to(oidc_callback))
@@ -2761,6 +2854,14 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
                     .route(web::delete().to(delete_wallpaper)),
             )
             .route("/admin/users", web::get().to(list_users))
+            .route(
+                "/admin/authentication",
+                web::get().to(get_authentication_settings),
+            )
+            .route(
+                "/admin/authentication",
+                web::put().to(update_authentication_settings),
+            )
             .route("/admin/users/{user_id}", web::patch().to(update_user_role))
             .route("/admin/users/{user_id}", web::delete().to(delete_user))
             .route("/tasks", web::post().to(create_task))
@@ -3176,6 +3277,18 @@ mod tests {
         assert!(!config.enabled);
         assert!(config.provider_name.is_none());
 
+        let authentication: AuthenticationConfigResponse = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/auth/config")
+                .to_request(),
+        )
+        .await;
+        assert!(authentication.password_login_enabled);
+        assert!(authentication.password_registration_enabled);
+        assert!(!authentication.oidc_enabled);
+        assert!(authentication.oidc_registration_enabled);
+
         let start_response = test::call_service(
             &app,
             test::TestRequest::get()
@@ -3200,6 +3313,88 @@ mod tests {
                 .expect("redirect location"),
             "/?auth_error=oidc_access_denied"
         );
+    }
+
+    #[actix_web::test]
+    async fn administrator_controls_password_and_oidc_registration_policy() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state(test_pool().await))
+                .configure(configure_api),
+        )
+        .await;
+        let setup_response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/setup")
+                .set_json(RegisterRequest {
+                    email: "admin@example.com".to_owned(),
+                    password: "correct horse battery staple".to_owned(),
+                    display_name: "Admin".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        let cookie = session_cookie(&setup_response);
+
+        let updated: AuthenticationConfigResponse = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::put()
+                .uri("/api/admin/authentication")
+                .cookie(cookie.clone())
+                .set_json(UpdateAuthenticationSettingsRequest {
+                    password_login_enabled: true,
+                    password_registration_enabled: false,
+                    oidc_registration_enabled: false,
+                })
+                .to_request(),
+        )
+        .await;
+        assert!(updated.password_login_enabled);
+        assert!(!updated.password_registration_enabled);
+        assert!(!updated.oidc_registration_enabled);
+
+        let registration = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/auth/register")
+                .set_json(RegisterRequest {
+                    email: "member@example.com".to_owned(),
+                    password: "another secure password".to_owned(),
+                    display_name: "Member".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        assert_eq!(registration.status(), StatusCode::FORBIDDEN);
+
+        let login = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/auth/login")
+                .set_json(LoginRequest {
+                    email: "admin@example.com".to_owned(),
+                    password: "correct horse battery staple".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        assert_eq!(login.status(), StatusCode::OK);
+
+        let lockout_attempt = test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri("/api/admin/authentication")
+                .cookie(cookie)
+                .set_json(UpdateAuthenticationSettingsRequest {
+                    password_login_enabled: false,
+                    password_registration_enabled: false,
+                    oidc_registration_enabled: false,
+                })
+                .to_request(),
+        )
+        .await;
+        assert_eq!(lockout_attempt.status(), StatusCode::BAD_REQUEST);
     }
 
     #[actix_web::test]

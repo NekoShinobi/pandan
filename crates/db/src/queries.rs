@@ -1,9 +1,9 @@
 use crate::entities::{
-    AppMetadata, CalendarEvent, CalendarEventDraft, CalendarSubscription, CodingCredential,
-    CodingProject, DashboardWidget, FeedItem, JournalNode, ManagedUser, OidcAuthorization,
-    PaymentSubscription, RssItem, RssItemDraft, RssSubscription, RssSubscriptionDraft,
-    SessionAccount, Task, TaskAttachment, TaskDraft, TaskSubtask, User, UserAppearance, UserAvatar,
-    UserBackground, UserCredentials, UserSettings, Workspace,
+    AppMetadata, AuthenticationSettings, CalendarEvent, CalendarEventDraft, CalendarSubscription,
+    CodingCredential, CodingProject, DashboardWidget, FeedItem, JournalNode, ManagedUser,
+    OidcAuthorization, PaymentSubscription, RssItem, RssItemDraft, RssSubscription,
+    RssSubscriptionDraft, SessionAccount, Task, TaskAttachment, TaskDraft, TaskSubtask, User,
+    UserAppearance, UserAvatar, UserBackground, UserCredentials, UserSettings, Workspace,
 };
 pub use crate::youtube_queries::*;
 use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
@@ -2777,6 +2777,50 @@ pub async fn list_managed_users(pool: &SqlitePool) -> Result<Vec<ManagedUser>, s
     .await
 }
 
+/// Loads the singleton administrator-controlled authentication policy.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the settings cannot be loaded.
+pub async fn get_authentication_settings(
+    pool: &SqlitePool,
+) -> Result<AuthenticationSettings, sqlx::Error> {
+    sqlx::query_as::<_, AuthenticationSettings>(
+        "SELECT password_login_enabled, password_registration_enabled, \
+                oidc_registration_enabled, updated_at \
+         FROM authentication_settings WHERE id = 1",
+    )
+    .fetch_one(pool)
+    .await
+}
+
+/// Replaces the singleton authentication policy.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the settings cannot be updated or reloaded.
+pub async fn update_authentication_settings(
+    pool: &SqlitePool,
+    password_login_enabled: bool,
+    password_registration_enabled: bool,
+    oidc_registration_enabled: bool,
+) -> Result<AuthenticationSettings, sqlx::Error> {
+    let updated_at = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE authentication_settings \
+         SET password_login_enabled = ?, password_registration_enabled = ?, \
+             oidc_registration_enabled = ?, updated_at = ? \
+         WHERE id = 1",
+    )
+    .bind(password_login_enabled)
+    .bind(password_registration_enabled)
+    .bind(oidc_registration_enabled)
+    .bind(updated_at)
+    .execute(pool)
+    .await?;
+    get_authentication_settings(pool).await
+}
+
 /// Changes another user's role while preserving at least one administrator.
 ///
 /// The conditional update keeps the final-administrator check atomic with the write.
@@ -2939,7 +2983,8 @@ pub async fn find_or_create_oidc_user(
     email: &str,
     display_name: &str,
     unusable_password_hash: &str,
-) -> Result<String, sqlx::Error> {
+    registration_enabled: bool,
+) -> Result<Option<String>, sqlx::Error> {
     let mut transaction = pool.begin().await?;
 
     if let Some(user_id) = sqlx::query_scalar::<_, String>(
@@ -2951,7 +2996,7 @@ pub async fn find_or_create_oidc_user(
     .await?
     {
         transaction.commit().await?;
-        return Ok(user_id);
+        return Ok(Some(user_id));
     }
 
     let existing_user_id = sqlx::query_scalar::<_, String>("SELECT id FROM users WHERE email = ?")
@@ -2964,6 +3009,10 @@ pub async fn find_or_create_oidc_user(
     let now = chrono::Utc::now().to_rfc3339();
 
     if existing_user_id.is_none() {
+        if !registration_enabled {
+            transaction.commit().await?;
+            return Ok(None);
+        }
         sqlx::query(
             "INSERT INTO users (id, email, password_hash, role, created_at) \
              VALUES (?, ?, ?, 'member', ?)",
@@ -3019,7 +3068,7 @@ pub async fn find_or_create_oidc_user(
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
-    Ok(user_id)
+    Ok(Some(user_id))
 }
 
 /// Reports whether the one-time administrator setup has been completed.

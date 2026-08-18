@@ -85,6 +85,14 @@ pub struct ManagedUser {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct AuthenticationSettings {
+    pub password_login_enabled: bool,
+    pub password_registration_enabled: bool,
+    pub oidc_registration_enabled: bool,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, FromRow, PartialEq, Eq)]
 pub struct UserCredentials {
     pub id: String,

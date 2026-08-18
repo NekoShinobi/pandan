@@ -29,6 +29,21 @@ introduced in later numbered migrations.
 | `value`      | TEXT | Required                     |
 | `updated_at` | TEXT | Required, RFC 3339 timestamp |
 
+## `authentication_settings`
+
+Singleton administrator-controlled authentication policy. All switches default to enabled for
+compatibility with existing installations. Password login remains available as a runtime safety
+fallback when OIDC is not configured, and new OIDC identities are rejected when OIDC registration
+is disabled while known identities and verified-email links to existing users remain eligible.
+
+| Column                          | Type    | Constraints                          |
+| ------------------------------- | ------- | ------------------------------------ |
+| `id`                            | INTEGER | Primary key; singleton value `1`     |
+| `password_login_enabled`        | INTEGER | Boolean `0` or `1`; defaults to `1`  |
+| `password_registration_enabled` | INTEGER | Boolean `0` or `1`; defaults to `1`  |
+| `oidc_registration_enabled`     | INTEGER | Boolean `0` or `1`; defaults to `1`  |
+| `updated_at`                    | TEXT    | Required, RFC 3339 timestamp         |
+
 ## `users`
 
 Private dashboard accounts. Passwords are stored only as Argon2id PHC strings.

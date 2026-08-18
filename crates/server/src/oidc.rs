@@ -7,6 +7,8 @@ use openidconnect::{
 };
 use std::fmt;
 
+const OIDC_CALLBACK_PATH: &str = "api/auth/oidc/callback";
+
 type DiscoveredClient = CoreClient<
     EndpointSet,
     EndpointNotSet,
@@ -59,22 +61,23 @@ impl OidcProvider {
         let issuer = optional_env("OIDC_ISSUER");
         let client_id = optional_env("OIDC_CLIENT_ID");
         let client_secret = optional_env("OIDC_CLIENT_SECRET");
-        let redirect_url = optional_env("OIDC_REDIRECT_URL");
-        let (issuer, client_id, client_secret, redirect_url) = match (
+        let base_url = optional_env("PANDAN_BASE_URL");
+        let (issuer, client_id, client_secret, base_url) = match (
             issuer,
             client_id,
             client_secret,
-            redirect_url,
+            base_url,
         ) {
-            (None, None, None, None) => return Ok(None),
-            (Some(issuer), Some(client_id), Some(client_secret), Some(redirect_url)) => {
-                (issuer, client_id, client_secret, redirect_url)
+            (None, None, None, _) => return Ok(None),
+            (Some(issuer), Some(client_id), Some(client_secret), Some(base_url)) => {
+                (issuer, client_id, client_secret, base_url)
             }
             _ => return Err(OidcError(
-                "OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, and OIDC_REDIRECT_URL must be set together"
+                "OIDC_ISSUER, OIDC_CLIENT_ID, and OIDC_CLIENT_SECRET must be set together, and PANDAN_BASE_URL is required when OIDC is enabled"
                     .to_owned(),
             )),
         };
+        let redirect_url = oidc_redirect_url(&base_url)?;
 
         let http_client = reqwest::ClientBuilder::new()
             .redirect(reqwest::redirect::Policy::none())
@@ -201,4 +204,62 @@ fn optional_env(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+fn oidc_redirect_url(base_url: &str) -> Result<String, OidcError> {
+    let parsed = url::Url::parse(base_url)
+        .map_err(|error| OidcError(format!("invalid Pandan base URL: {error}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host().is_none() {
+        return Err(OidcError(
+            "PANDAN_BASE_URL must be an absolute HTTP or HTTPS URL".to_owned(),
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(OidcError(
+            "PANDAN_BASE_URL must not include credentials".to_owned(),
+        ));
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(OidcError(
+            "PANDAN_BASE_URL must not include a query string or fragment".to_owned(),
+        ));
+    }
+
+    Ok(format!(
+        "{}/{OIDC_CALLBACK_PATH}",
+        parsed.as_str().trim_end_matches('/')
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::oidc_redirect_url;
+
+    #[test]
+    fn derives_oidc_redirect_url_from_base_url() {
+        assert_eq!(
+            oidc_redirect_url("https://pandan.example.com").unwrap(),
+            "https://pandan.example.com/api/auth/oidc/callback"
+        );
+        assert_eq!(
+            oidc_redirect_url("https://example.com/pandan/").unwrap(),
+            "https://example.com/pandan/api/auth/oidc/callback"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_base_urls() {
+        for base_url in [
+            "pandan.example.com",
+            "ftp://pandan.example.com",
+            "https://user:secret@pandan.example.com",
+            "https://pandan.example.com?source=oidc",
+            "https://pandan.example.com#login",
+        ] {
+            assert!(
+                oidc_redirect_url(base_url).is_err(),
+                "expected {base_url} to be rejected"
+            );
+        }
+    }
 }

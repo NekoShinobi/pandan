@@ -47,8 +47,9 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 
 - Passwords use Argon2id outside Actix async workers.
 - Sessions are HTTP-only and SameSite Strict. Production HTTPS requires `COOKIE_SECURE=true`.
-- OIDC uses discovery, authorization code flow with PKCE, nonce validation, a browser-bound state cookie, and single-use persisted state.
+- OIDC uses discovery, authorization code flow with PKCE, nonce validation, a browser-bound state cookie, and single-use persisted state. Its callback URL is derived from `PANDAN_BASE_URL`.
 - OIDC is disabled when all required values are absent and rejected when configuration is partial.
+- Authentication policy is administrator-managed. Enforce password login, password registration, and OIDC registration switches on the server; never permit password login to be disabled when OIDC is unavailable.
 - `PANDAN_WIDGET_SECRET_KEY` is optional. When present it must decode from base64 to exactly 32 bytes.
 - Provider credentials use XChaCha20-Poly1305 and must never appear in API responses or logs.
 - If the secret key is absent, anonymous integrations remain available but credential storage stays disabled.

@@ -121,6 +121,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "031_sidebar_timezones",
         include_str!("../migrations/031_sidebar_timezones.sql"),
     ),
+    (
+        "032_authentication_settings",
+        include_str!("../migrations/032_authentication_settings.sql"),
+    ),
 ];
 
 /// Maps migration names used by earlier development builds to their canonical names.
@@ -267,7 +271,26 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("migration count loads");
-        assert_eq!(count, 31);
+        assert_eq!(count, 32);
+    }
+
+    #[tokio::test]
+    async fn authentication_settings_default_to_enabled_and_can_be_updated() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+
+        let defaults = queries::get_authentication_settings(&pool)
+            .await
+            .expect("authentication settings load");
+        assert!(defaults.password_login_enabled);
+        assert!(defaults.password_registration_enabled);
+        assert!(defaults.oidc_registration_enabled);
+
+        let updated = queries::update_authentication_settings(&pool, true, false, false)
+            .await
+            .expect("authentication settings update");
+        assert!(updated.password_login_enabled);
+        assert!(!updated.password_registration_enabled);
+        assert!(!updated.oidc_registration_enabled);
     }
 
     #[tokio::test]
@@ -1230,15 +1253,46 @@ mod tests {
             "linked@example.com",
             "Provider Name",
             "$argon2id$unusable",
+            false,
         )
         .await
-        .expect("OIDC identity links");
+        .expect("OIDC identity links")
+        .expect("existing account is eligible");
         assert_eq!(linked_user_id, user.id);
+
+        assert!(
+            queries::find_or_create_oidc_user(
+                &pool,
+                "https://issuer.example",
+                "subject-2",
+                "new@example.com",
+                "New User",
+                "$argon2id$unusable",
+                false,
+            )
+            .await
+            .expect("disabled OIDC registration resolves")
+            .is_none()
+        );
+
+        let new_user_id = queries::find_or_create_oidc_user(
+            &pool,
+            "https://issuer.example",
+            "subject-3",
+            "new@example.com",
+            "New User",
+            "$argon2id$unusable",
+            true,
+        )
+        .await
+        .expect("enabled OIDC registration resolves")
+        .expect("new OIDC account is created");
+        assert!(!new_user_id.is_empty());
 
         let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
             .fetch_one(&pool)
             .await
             .expect("user count loads");
-        assert_eq!(user_count, 1);
+        assert_eq!(user_count, 2);
     }
 }

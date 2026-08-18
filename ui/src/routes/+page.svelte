@@ -59,6 +59,7 @@
     deleteTaskAttachment,
     deleteUserContent,
     deleteWallpaper,
+    fetchAuthenticationSettings,
     fetchArchivedTasks,
     fetchDashboard,
     fetchManagedUsers,
@@ -70,12 +71,14 @@
     taskAttachmentUrl,
     updateTask,
     updateAppearance,
+    updateAuthenticationSettings,
     updateAvatar,
     updateDashboardWidgetLayout,
     updateManagedUserRole,
     updateUserSettings,
     updateWallpaper,
     uploadTaskAttachment,
+    type AuthenticationConfig,
     type DashboardWidget,
     type FeedItem,
     type ManagedUser,
@@ -403,7 +406,10 @@
   let burstHoverDampness = $state(0.2);
   let burstRayCount = $state(18);
   let burstPaused = $state(false);
-  let authMode = $state<AuthMode>("login");
+  let authConfig = $derived<AuthenticationConfig>(data.auth);
+  let authMode = $derived<AuthMode>(
+    authConfig.password_login_enabled ? "login" : "register",
+  );
   let authEmail = $state("");
   let authPassword = $state("");
   let authDisplayName = $state("");
@@ -433,6 +439,10 @@
   let mutatingUserId = $state("");
   let pendingRemovalId = $state("");
   let adminError = $state("");
+  let passwordLoginEnabled = $state(true);
+  let passwordRegistrationEnabled = $state(true);
+  let oidcRegistrationEnabled = $state(true);
+  let savingAuthenticationSettings = $state(false);
   let commandDialog = $state<HTMLDialogElement>();
   let commandSearchInput = $state<HTMLInputElement>();
   let commandQuery = $state("");
@@ -554,6 +564,10 @@
   let administratorCount = $derived(
     managedUsers.filter((user) => user.role === "administrator").length,
   );
+  let passwordAccessEnabled = $derived(
+    authConfig.password_login_enabled ||
+      authConfig.password_registration_enabled,
+  );
   let activeSectionLabel = $derived(
     productPages.find((item) => item.id === activeSection)?.label ??
       "Dashboard",
@@ -648,7 +662,9 @@
       authError =
         oidcError === "oidc_access_denied"
           ? "Single sign-on was cancelled."
-          : "Single sign-on could not be completed. Please try again.";
+          : oidcError === "oidc_registration_disabled"
+            ? "New accounts cannot be created with single sign-on."
+            : "Single sign-on could not be completed. Please try again.";
       currentUrl.searchParams.delete("auth_error");
       window.history.replaceState(
         {},
@@ -1716,6 +1732,12 @@
   }
 
   function setAuthMode(mode: AuthMode) {
+    if (
+      (mode === "login" && !authConfig.password_login_enabled) ||
+      (mode === "register" && !authConfig.password_registration_enabled)
+    ) {
+      return;
+    }
     authMode = mode;
     authError = "";
   }
@@ -2166,15 +2188,60 @@
     if (dashboard?.user.role !== "administrator") return;
     adminError = "";
     pendingRemovalId = "";
+    passwordLoginEnabled = authConfig.password_login_enabled;
+    passwordRegistrationEnabled = authConfig.password_registration_enabled;
+    oidcRegistrationEnabled = authConfig.oidc_registration_enabled;
     adminDialog?.showModal();
     loadingUsers = true;
     try {
-      managedUsers = await fetchManagedUsers();
+      const [users, authentication] = await Promise.all([
+        fetchManagedUsers(),
+        fetchAuthenticationSettings(),
+      ]);
+      managedUsers = users;
+      applyAuthenticationConfig(authentication);
     } catch (reason: unknown) {
       adminError =
         reason instanceof Error ? reason.message : "Unable to load users";
     } finally {
       loadingUsers = false;
+    }
+  }
+
+  function applyAuthenticationConfig(config: AuthenticationConfig) {
+    authConfig = config;
+    passwordLoginEnabled = config.password_login_enabled;
+    passwordRegistrationEnabled = config.password_registration_enabled;
+    oidcRegistrationEnabled = config.oidc_registration_enabled;
+    if (!config.password_login_enabled && authMode === "login") {
+      authMode = config.password_registration_enabled ? "register" : "login";
+    } else if (
+      !config.password_registration_enabled &&
+      authMode === "register"
+    ) {
+      authMode = "login";
+    }
+  }
+
+  async function saveAuthenticationSettings() {
+    if (loadingUsers || savingAuthenticationSettings) return;
+    savingAuthenticationSettings = true;
+    adminError = "";
+    try {
+      const updated = await updateAuthenticationSettings({
+        password_login_enabled: passwordLoginEnabled,
+        password_registration_enabled: passwordRegistrationEnabled,
+        oidc_registration_enabled: oidcRegistrationEnabled,
+      });
+      applyAuthenticationConfig(updated);
+      showToast("Authentication settings saved");
+    } catch (reason: unknown) {
+      adminError =
+        reason instanceof Error
+          ? reason.message
+          : "Unable to save authentication settings";
+    } finally {
+      savingAuthenticationSettings = false;
     }
   }
 
@@ -2599,101 +2666,111 @@
       <div class="auth-copy">
         <p class="widget-kicker">[ ACCOUNT ACCESS ]</p>
         <h1 id="auth-title">
-          {authMode === "login" ? "Welcome back." : "Make it yours."}
+          {!passwordAccessEnabled || authMode === "login"
+            ? "Welcome back."
+            : "Make it yours."}
         </h1>
         <p>
-          {authMode === "login"
-            ? "Sign in to return to your widgets, tasks, and preferences."
-            : "Create an account for a private dashboard that follows your settings."}
+          {!passwordAccessEnabled
+            ? "Continue with your organization’s single sign-on provider."
+            : authMode === "login"
+              ? "Sign in to return to your widgets, tasks, and preferences."
+              : "Create an account for a private dashboard that follows your settings."}
         </p>
       </div>
 
-      <div class="auth-modes" aria-label="Account access mode">
-        <button
-          type="button"
-          aria-pressed={authMode === "login"}
-          onclick={() => setAuthMode("login")}>Sign in</button
-        >
-        <button
-          type="button"
-          aria-pressed={authMode === "register"}
-          onclick={() => setAuthMode("register")}>Create account</button
-        >
-      </div>
-
-      <form
-        class="auth-form"
-        onsubmit={authenticate}
-        data-od-id="account-access-form"
-      >
-        {#if authMode === "register"}
-          <label for="display-name">Display name</label>
-          <input
-            id="display-name"
-            class="text-input"
-            bind:value={authDisplayName}
-            autocomplete="name"
-            maxlength="60"
-            required
-          />
-        {/if}
-
-        <label for="email">Email</label>
-        <input
-          id="email"
-          class="text-input"
-          type="email"
-          bind:value={authEmail}
-          autocomplete="email"
-          maxlength="254"
-          required
-        />
-
-        <div class="password-label">
-          <label for="password">Password</label><span
-            >10 characters minimum</span
+      {#if authConfig.password_login_enabled && authConfig.password_registration_enabled}
+        <div class="auth-modes" aria-label="Account access mode">
+          <button
+            type="button"
+            aria-pressed={authMode === "login"}
+            onclick={() => setAuthMode("login")}>Sign in</button
+          >
+          <button
+            type="button"
+            aria-pressed={authMode === "register"}
+            onclick={() => setAuthMode("register")}>Create account</button
           >
         </div>
-        <input
-          id="password"
-          class="text-input"
-          type="password"
-          bind:value={authPassword}
-          autocomplete={authMode === "login"
-            ? "current-password"
-            : "new-password"}
-          minlength="10"
-          maxlength="128"
-          required
-        />
+      {/if}
 
-        {#if authError || data.error}
-          <p class="form-error" role="alert">{authError || data.error}</p>
-        {/if}
-
-        <button
-          class="ui-button ui-button--primary primary-btn auth-submit"
-          type="submit"
-          disabled={authenticating}
-          data-od-id="account-submit"
+      {#if (authMode === "login" && authConfig.password_login_enabled) || (authMode === "register" && authConfig.password_registration_enabled)}
+        <form
+          class="auth-form"
+          onsubmit={authenticate}
+          data-od-id="account-access-form"
         >
-          {authenticating
-            ? "One moment…"
-            : authMode === "login"
-              ? "Enter dashboard"
-              : "Create my dashboard"}
-        </button>
-      </form>
+          {#if authMode === "register"}
+            <label for="display-name">Display name</label>
+            <input
+              id="display-name"
+              class="text-input"
+              bind:value={authDisplayName}
+              autocomplete="name"
+              maxlength="60"
+              required
+            />
+          {/if}
 
-      {#if data.oidc.enabled}
-        <div class="auth-divider"><span>or</span></div>
+          <label for="email">Email</label>
+          <input
+            id="email"
+            class="text-input"
+            type="email"
+            bind:value={authEmail}
+            autocomplete="email"
+            maxlength="254"
+            required
+          />
+
+          <div class="password-label">
+            <label for="password">Password</label><span
+              >10 characters minimum</span
+            >
+          </div>
+          <input
+            id="password"
+            class="text-input"
+            type="password"
+            bind:value={authPassword}
+            autocomplete={authMode === "login"
+              ? "current-password"
+              : "new-password"}
+            minlength="10"
+            maxlength="128"
+            required
+          />
+
+          <button
+            class="ui-button ui-button--primary primary-btn auth-submit"
+            type="submit"
+            disabled={authenticating}
+            data-od-id="account-submit"
+          >
+            {authenticating
+              ? "One moment…"
+              : authMode === "login"
+                ? "Enter dashboard"
+                : "Create my dashboard"}
+          </button>
+        </form>
+      {/if}
+
+      {#if authError || data.error}
+        <p class="form-error" role="alert">{authError || data.error}</p>
+      {/if}
+
+      {#if authConfig.oidc_enabled}
+        {#if passwordAccessEnabled}<div class="auth-divider">
+            <span>or</span>
+          </div>{/if}
         <button
           class="ui-button ui-button--secondary oidc-btn"
           type="button"
           onclick={() => window.location.assign("/api/auth/oidc/start")}
           data-od-id="oidc-login"
         >
-          Continue with {data.oidc.provider_name ?? "single sign-on"}
+          Continue with {authConfig.oidc_provider_name ?? "single sign-on"}
           <ArrowRight size={18} strokeWidth={1.8} aria-hidden="true" />
         </button>
       {/if}
@@ -4805,6 +4882,85 @@
     </div>
 
     <div class="admin-directory" data-od-id="user-directory">
+      <section
+        class="authentication-policy"
+        aria-labelledby="authentication-policy-title"
+        data-od-id="authentication-policy"
+      >
+        <div class="authentication-policy-heading">
+          <div>
+            <p class="widget-kicker">[ AUTHENTICATION POLICY ]</p>
+            <h3 id="authentication-policy-title">Account access</h3>
+          </div>
+          <span
+            >{authConfig.oidc_enabled ? "OIDC ready" : "OIDC unavailable"}</span
+          >
+        </div>
+
+        <label class="authentication-policy-row">
+          <span>
+            <strong>Password login</strong>
+            <small
+              >Allow existing accounts to sign in with email and password.</small
+            >
+          </span>
+          <input
+            type="checkbox"
+            bind:checked={passwordLoginEnabled}
+            disabled={loadingUsers ||
+              !authConfig.oidc_enabled ||
+              savingAuthenticationSettings}
+            data-od-id="password-login-enabled"
+          />
+        </label>
+        <label class="authentication-policy-row">
+          <span>
+            <strong>Password registration</strong>
+            <small>Allow visitors to create password-based accounts.</small>
+          </span>
+          <input
+            type="checkbox"
+            bind:checked={passwordRegistrationEnabled}
+            disabled={loadingUsers || savingAuthenticationSettings}
+            data-od-id="password-registration-enabled"
+          />
+        </label>
+        <label class="authentication-policy-row">
+          <span>
+            <strong>OIDC registration</strong>
+            <small
+              >Allow verified OIDC identities to create new accounts. Existing
+              users can still sign in.</small
+            >
+          </span>
+          <input
+            type="checkbox"
+            bind:checked={oidcRegistrationEnabled}
+            disabled={loadingUsers ||
+              !authConfig.oidc_enabled ||
+              savingAuthenticationSettings}
+            data-od-id="oidc-registration-enabled"
+          />
+        </label>
+        {#if !authConfig.oidc_enabled}
+          <p class="authentication-policy-help">
+            Configure OIDC before disabling password login or changing OIDC
+            registration.
+          </p>
+        {/if}
+        <div class="authentication-policy-actions">
+          <button
+            class="ui-button ui-button--primary"
+            type="button"
+            disabled={loadingUsers || savingAuthenticationSettings}
+            onclick={() => void saveAuthenticationSettings()}
+            data-od-id="save-authentication-settings"
+          >
+            {savingAuthenticationSettings ? "Saving…" : "Save access settings"}
+          </button>
+        </div>
+      </section>
+
       <div class="admin-directory-note">
         <p>
           Role changes apply immediately. Your own administrator account is

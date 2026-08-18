@@ -72,11 +72,12 @@ Copy `.env.example` with `just init`. The main settings are:
 | `DATABASE_URL`             | SQLite database URL                                                    |
 | `PORT`                     | Rust server port; defaults to `9651`                                   |
 | `COOKIE_SECURE`            | Require HTTPS session cookies                                          |
+| `PANDAN_BASE_URL`          | Public application URL; used to derive the OIDC callback URL           |
 | `OIDC_*`                   | Optional standard OpenID Connect configuration                         |
 | `PANDAN_WIDGET_SECRET_KEY` | Optional base64-encoded 32-byte key for encrypted provider credentials |
 | `INVIDIOUS_BASE_URL`       | Optional public HTTPS instance used before YouTube's uploads feed      |
 
-OIDC is enabled only when all required values are present. Generate the provider-credential key with `openssl rand -base64 32` and keep it stable across restarts.
+OIDC is enabled only when `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `PANDAN_BASE_URL` are present. Register `<PANDAN_BASE_URL>/api/auth/oidc/callback` with the provider. Administrators can control password login, password registration, and new OIDC account registration from **Settings → User administration**. Generate the provider-credential key with `openssl rand -base64 32` and keep it stable across restarts.
 
 When `INVIDIOUS_BASE_URL` is configured, YouTube channels are checked through that instance first and fall back to YouTube's public uploads feed. Channel video metadata is refreshed every two hours and shared across users; channel portraits are stored locally and refreshed at most every 24 hours. Failed portrait responses are never cached.
 

@@ -504,6 +504,14 @@ export interface OidcConfig {
   provider_name: string | null;
 }
 
+export interface AuthenticationConfig {
+  password_login_enabled: boolean;
+  password_registration_enabled: boolean;
+  oidc_enabled: boolean;
+  oidc_registration_enabled: boolean;
+  oidc_provider_name: string | null;
+}
+
 export interface SetupStatus {
   required: boolean;
 }
@@ -658,6 +666,16 @@ export function fetchOidcConfig(
   fetcher: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<OidcConfig> {
   return requestJson<OidcConfig>("/api/auth/oidc/config", undefined, fetcher);
+}
+
+export function fetchAuthenticationConfig(
+  fetcher: typeof globalThis.fetch = globalThis.fetch,
+): Promise<AuthenticationConfig> {
+  return requestJson<AuthenticationConfig>(
+    "/api/auth/config",
+    undefined,
+    fetcher,
+  );
 }
 
 export function fetchSetupStatus(
@@ -826,6 +844,25 @@ export async function deleteWallpaper(slot: WallpaperSlot): Promise<void> {
 export function fetchManagedUsers(): Promise<ManagedUser[]> {
   return requestJson<ManagedUser[]>("/api/admin/users", {
     credentials: "same-origin",
+  });
+}
+
+export function fetchAuthenticationSettings(): Promise<AuthenticationConfig> {
+  return requestJson<AuthenticationConfig>("/api/admin/authentication", {
+    credentials: "same-origin",
+  });
+}
+
+export function updateAuthenticationSettings(input: {
+  password_login_enabled: boolean;
+  password_registration_enabled: boolean;
+  oidc_registration_enabled: boolean;
+}): Promise<AuthenticationConfig> {
+  return requestJson<AuthenticationConfig>("/api/admin/authentication", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
   });
 }
 
