@@ -1,0 +1,14 @@
+target/
+*.profraw
+*.db
+*.db-shm
+*.db-wal
+ui/node_modules/
+ui/.svelte-kit/
+ui/build/
+.env
+data/*
+!data/english-revised-version.json
+.devdata/
+dist/
+.od-skills/

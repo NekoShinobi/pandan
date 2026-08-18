@@ -1,0 +1,14 @@
+.git/
+.env
+.devdata/
+data/*
+!data/english-revised-version.json
+dist/
+target/
+*.db
+*.db-shm
+*.db-wal
+ui/node_modules/
+ui/.svelte-kit/
+ui/build/
+.od-skills/

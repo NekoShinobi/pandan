@@ -1,0 +1,39 @@
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "pandan"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+miette = { workspace = true }
+sqlx = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+db = { path = "../db" }
+
+actix-web = "4.13.0"
+actix-files = "0.6.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-actix-web = "0.7"
+argon2 = { version = "0.5.3", features = ["rand"] }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+openidconnect = "4.0.1"
+base64 = "0.22"
+chacha20poly1305 = "0.10"
+feed-rs = "2.3"
+icalendar = { version = "0.17.13", features = ["recurrence"] }
+futures-util = "0.3"
+quick-xml = { version = "0.38", features = ["serialize"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+url = "2.5"
+
+[lints]
+workspace = true

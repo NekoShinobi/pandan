@@ -1,0 +1,14 @@
+default_job = "check"
+
+[jobs.check]
+command = ["cargo", "check", "--workspace"]
+need_stdout = false
+
+[jobs.run]
+command = ["cargo", "run", "-p", "server"]
+need_stdout = true
+background = false
+allow_warnings = true
+on_change_strategy = "kill_then_restart"
+ignore = ["data/**", "ui/**", "**/*.md", "**/*.db", "**/*.db-shm", "**/*.db-wal"]
+

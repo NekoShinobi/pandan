@@ -1,0 +1,34 @@
+services:
+  app:
+    image: pandan:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-9651}:9651"
+    volumes:
+      - pandan-data:/app/data
+    environment:
+      DATABASE_URL: sqlite:///app/data/pandan.db
+      PORT: 9651
+      RUST_LOG: ${RUST_LOG:-info}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URL: ${OIDC_REDIRECT_URL:-}
+      OIDC_PROVIDER_NAME: ${OIDC_PROVIDER_NAME:-}
+      PANDAN_WIDGET_SECRET_KEY: ${PANDAN_WIDGET_SECRET_KEY:-}
+      INVIDIOUS_BASE_URL: ${INVIDIOUS_BASE_URL:-}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  pandan-data:

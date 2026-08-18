@@ -1,0 +1,4914 @@
+<script lang="ts">
+  import { GridStack, type GridItemHTMLElement } from "gridstack";
+  import "gridstack/dist/gridstack.min.css";
+  import ArrowRight from "lucide-svelte/icons/arrow-right";
+  import ArchiveIcon from "lucide-svelte/icons/archive";
+  import Bell from "lucide-svelte/icons/bell";
+  import BookOpen from "lucide-svelte/icons/book-open";
+  import CalendarDays from "lucide-svelte/icons/calendar-days";
+  import ChartCandlestick from "lucide-svelte/icons/chart-candlestick";
+  import CheckSquare2 from "lucide-svelte/icons/square-check-big";
+  import ChevronDown from "lucide-svelte/icons/chevron-down";
+  import ChevronLeft from "lucide-svelte/icons/chevron-left";
+  import Code2 from "lucide-svelte/icons/code-xml";
+  import ContactRound from "lucide-svelte/icons/contact-round";
+  import Ellipsis from "lucide-svelte/icons/ellipsis";
+  import Home from "lucide-svelte/icons/house";
+  import ImageIcon from "lucide-svelte/icons/image";
+  import Menu from "lucide-svelte/icons/menu";
+  import Paperclip from "lucide-svelte/icons/paperclip";
+  import Pause from "lucide-svelte/icons/pause";
+  import Pencil from "lucide-svelte/icons/pencil";
+  import Play from "lucide-svelte/icons/play";
+  import Plus from "lucide-svelte/icons/plus";
+  import Repeat2 from "lucide-svelte/icons/repeat-2";
+  import RotateCcw from "lucide-svelte/icons/rotate-ccw";
+  import ReceiptText from "lucide-svelte/icons/receipt-text";
+  import Rss from "lucide-svelte/icons/rss";
+  import Search from "lucide-svelte/icons/search";
+  import Settings from "lucide-svelte/icons/settings";
+  import SlidersHorizontal from "lucide-svelte/icons/sliders-horizontal";
+  import Tag from "lucide-svelte/icons/tag";
+  import Trash2 from "lucide-svelte/icons/trash-2";
+  import X from "lucide-svelte/icons/x";
+  import Youtube from "lucide-svelte/icons/circle-play";
+  import { onDestroy, onMount, tick } from "svelte";
+  import { MediaQuery, SvelteMap, SvelteSet } from "svelte/reactivity";
+  import AnimatedList from "$lib/components/AnimatedList.svelte";
+  import BlurText from "$lib/components/BlurText.svelte";
+  import PrismaticBurst from "$lib/components/PrismaticBurst.svelte";
+  import CalendarPage from "$lib/CalendarPage.svelte";
+  import CodingPage from "$lib/CodingPage.svelte";
+  import ContactsPage from "$lib/ContactsPage.svelte";
+  import DashboardWidgetCard from "$lib/DashboardWidgetCard.svelte";
+  import JournalPage from "$lib/JournalPage.svelte";
+  import RssReaderPage from "$lib/RssReaderPage.svelte";
+  import SidebarUtilities from "$lib/SidebarUtilities.svelte";
+  import SubscriptionsPage from "$lib/SubscriptionsPage.svelte";
+  import YoutubePage from "$lib/YoutubePage.svelte";
+  import {
+    archiveTask,
+    clearCompletedTasks,
+    createAdministrator,
+    createDashboardWidget,
+    createTask,
+    deleteAvatar,
+    deleteDashboardWidget,
+    deleteManagedUser,
+    deleteTask,
+    deleteTaskAttachment,
+    deleteUserContent,
+    deleteWallpaper,
+    fetchArchivedTasks,
+    fetchDashboard,
+    fetchManagedUsers,
+    loginAccount,
+    logoutAccount,
+    registerAccount,
+    restoreTask,
+    setTaskCompleted,
+    taskAttachmentUrl,
+    updateTask,
+    updateAppearance,
+    updateAvatar,
+    updateDashboardWidgetLayout,
+    updateManagedUserRole,
+    updateUserSettings,
+    updateWallpaper,
+    uploadTaskAttachment,
+    type DashboardWidget,
+    type FeedItem,
+    type ManagedUser,
+    type Task,
+    type TaskAttachment,
+    type TaskInput,
+    type UserSettings,
+    type UserContentScope,
+    type WallpaperSlot,
+    type WidgetKind,
+    type WidgetSize,
+  } from "$lib/api";
+  import type { PageData } from "./$types";
+
+  type AuthMode = "login" | "register";
+  type WallpaperDraft = {
+    file: File | null;
+    preview: string;
+    reset: boolean;
+  };
+  type ProductPage =
+    | "dashboard"
+    | "tasks"
+    | "contacts"
+    | "calendar"
+    | "rss"
+    | "journal"
+    | "youtube"
+    | "coding"
+    | "subscriptions"
+    | "trading";
+  type TaskView = "active" | "archived";
+  type TaskDueGroup = {
+    id: "today" | "this-week" | "next-week" | "later" | "never";
+    label: string;
+    range: string;
+    tasks: Task[];
+  };
+  type DashboardCalendarDay = {
+    key: string;
+    day: number;
+    currentMonth: boolean;
+    today: boolean;
+  };
+
+  const appearanceWallpaperOptions: Array<{
+    id: WallpaperSlot;
+    code: string;
+    title: string;
+    description: string;
+    adminOnly: boolean;
+  }> = [
+    {
+      id: "login",
+      code: "PUBLIC SURFACE",
+      title: "Login",
+      description: "The global pre-authentication image for every visitor.",
+      adminOnly: true,
+    },
+  ];
+
+  const userWallpaperOptions: Array<{
+    id: WallpaperSlot;
+    code: string;
+    title: string;
+    description: string;
+  }> = [
+    {
+      id: "welcome",
+      code: "WELCOME",
+      title: "Welcome background",
+      description:
+        "Shown behind welcome:{user} and throughout your authenticated pages.",
+    },
+    {
+      id: "loading",
+      code: "LOADING",
+      title: "Loading background",
+      description: "Shown while your account and dashboard are loading.",
+    },
+  ];
+
+  const allWallpaperSlots: WallpaperSlot[] = [
+    "dashboard",
+    "welcome",
+    "loading",
+    "login",
+  ];
+
+  const destructiveContentActions: Array<{
+    scope: UserContentScope;
+    title: string;
+    description: string;
+  }> = [
+    {
+      scope: "contacts",
+      title: "All contacts",
+      description: "Contacts, profile pictures, and CardDAV sources.",
+    },
+    {
+      scope: "tasks",
+      title: "All tasks",
+      description:
+        "Active and archived tasks, subtasks, labels, and attachments.",
+    },
+    {
+      scope: "calendar",
+      title: "All calendars",
+      description: "Calendar subscriptions and their cached events.",
+    },
+    {
+      scope: "rss",
+      title: "All RSS feeds",
+      description: "Feed subscriptions, articles, categories, and read state.",
+    },
+    {
+      scope: "journal",
+      title: "All journal entries",
+      description: "Every journal document and nested entry.",
+    },
+    {
+      scope: "youtube",
+      title: "All YouTube data",
+      description: "Your channel subscriptions, groups, and display settings.",
+    },
+    {
+      scope: "coding",
+      title: "All coding projects",
+      description: "Tracked repositories and saved provider credentials.",
+    },
+    {
+      scope: "subscriptions",
+      title: "All paid subscriptions",
+      description: "Every recurring service and its cost history.",
+    },
+  ];
+
+  let { data }: { data: PageData } = $props();
+
+  const widgetCatalog: Array<{
+    kind: WidgetKind;
+    title: string;
+    description: string;
+    size: WidgetSize;
+  }> = [
+    {
+      kind: "weather",
+      title: "Weather",
+      description: "Local conditions with an adaptive forecast.",
+      size: "wide",
+    },
+    {
+      kind: "bible-verse",
+      title: "Bible Verse",
+      description: "A new passage from the English Revised Version each day.",
+      size: "standard",
+    },
+    {
+      kind: "task-summary",
+      title: "Today",
+      description: "Tasks due today with a compact completion overview.",
+      size: "compact",
+    },
+    {
+      kind: "search",
+      title: "Search",
+      description: "Search the web with your preferred engine.",
+      size: "standard",
+    },
+    {
+      kind: "focus",
+      title: "Next focus",
+      description: "Set a goal and launch a custom focus timer.",
+      size: "standard",
+    },
+    {
+      kind: "task-list",
+      title: "Task list",
+      description: "Create, complete, and clear personal tasks.",
+      size: "wide",
+    },
+    {
+      kind: "task-progress",
+      title: "Task progress",
+      description: "A focused completion readout.",
+      size: "compact",
+    },
+    {
+      kind: "feed-list",
+      title: "Feed",
+      description: "Filter and read the curated feed.",
+      size: "wide",
+    },
+    {
+      kind: "feed-sources",
+      title: "Feed sources",
+      description: "A compact source breakdown.",
+      size: "compact",
+    },
+    {
+      kind: "youtube",
+      title: "YouTube uploads",
+      description: "Channel and playlist uploads using feed-based discovery.",
+      size: "wide",
+    },
+    {
+      kind: "rss",
+      title: "RSS feeds",
+      description: "Combine RSS and Atom sources into one reading list.",
+      size: "wide",
+    },
+    {
+      kind: "reddit",
+      title: "Reddit",
+      description: "Follow a subreddit with optional app authentication.",
+      size: "standard",
+    },
+    {
+      kind: "stocks",
+      title: "Stock tickers",
+      description: "Track equities, funds, and crypto market symbols.",
+      size: "wide",
+    },
+    {
+      kind: "calendar",
+      title: "Calendar",
+      description: "A personal date card with upcoming events.",
+      size: "standard",
+    },
+    {
+      kind: "clock",
+      title: "World clock",
+      description: "Show one or several IANA timezones.",
+      size: "compact",
+    },
+    {
+      kind: "iframe",
+      title: "Custom iframe",
+      description: "Embed a sandboxed HTTPS dashboard surface.",
+      size: "full",
+    },
+    {
+      kind: "html",
+      title: "Custom HTML",
+      description: "Render static HTML inside an isolated sandbox.",
+      size: "standard",
+    },
+    {
+      kind: "releases",
+      title: "Code releases",
+      description: "GitHub, GitLab, Codeberg, Gitea, and Forgejo releases.",
+      size: "wide",
+    },
+    {
+      kind: "streams",
+      title: "Live channels",
+      description: "Twitch or Kick channel availability.",
+      size: "standard",
+    },
+  ];
+
+  const clockMarks = Array.from({ length: 12 }, (_, index) => index);
+  const dashboardCalendarWeekdays = ["M", "T", "W", "T", "F", "S", "S"];
+  const focusDurations = [15, 25, 45] as const;
+
+  const productPages = [
+    { id: "dashboard", label: "Dashboard", code: "01", icon: Home },
+    { id: "tasks", label: "Tasks", code: "02", icon: CheckSquare2 },
+    { id: "contacts", label: "Contacts", code: "03", icon: ContactRound },
+    { id: "calendar", label: "Calendar", code: "04", icon: CalendarDays },
+    { id: "rss", label: "RSS", code: "05", icon: Rss },
+    { id: "journal", label: "Journal", code: "06", icon: BookOpen },
+    { id: "youtube", label: "YouTube", code: "07", icon: Youtube },
+    { id: "coding", label: "Coding", code: "08", icon: Code2 },
+    {
+      id: "subscriptions",
+      label: "Subscriptions",
+      code: "09",
+      icon: ReceiptText,
+    },
+    { id: "trading", label: "Trading", code: "10", icon: ChartCandlestick },
+  ] as const;
+
+  const placeholderPages = {
+    trading: {
+      description:
+        "A focused market workspace for watchlists and trade planning.",
+      primaryTitle: "Create a watchlist",
+      primaryCopy:
+        "Selected tickers, market notes, and position planning will be available here.",
+      modules: ["Watchlist", "Market notes", "Trade plan"],
+    },
+  } as const;
+
+  let activeSection = $state<ProductPage>("dashboard");
+  let sidebarOpen = $state(false);
+  let sidebarCollapsed = $state(false);
+  let welcomeVisible = $state(false);
+  let welcomeLeaving = $state(false);
+  let dashboard = $derived(data.dashboard);
+  let setupRequired = $derived(data.setup.required);
+  let tasks = $derived<Task[]>(dashboard?.tasks ?? []);
+  let archivedTasks = $state.raw<Task[]>([]);
+  let taskView = $state<TaskView>("active");
+  let taskLabelFilter = $state("");
+  let archivedTasksLoaded = $state(false);
+  let loadingArchivedTasks = $state(false);
+  let archivedTasksError = $state("");
+  let feeds = $derived<FeedItem[]>(dashboard?.feeds ?? []);
+  let widgets = $derived<DashboardWidget[]>(dashboard?.widgets ?? []);
+  let savingLayout = $state(false);
+  let layoutEditing = $state(false);
+  let addingWidgetKind = $state<WidgetKind | "">("");
+  let draggedWidgetId = $state("");
+  let toastMessage = $state("");
+  let currentTime = $state(new Date());
+  let focusSubject = $state("");
+  let focusDurationMinutes = $state(25);
+  let focusRemainingSeconds = $state(25 * 60);
+  let focusRunning = $state(false);
+  let focusLeaving = $state(false);
+  let burstIntensity = $state(1.7);
+  let burstSpeed = $state(0.34);
+  let burstDistort = $state(0.35);
+  let burstHoverDampness = $state(0.2);
+  let burstRayCount = $state(18);
+  let burstPaused = $state(false);
+  let authMode = $state<AuthMode>("login");
+  let authEmail = $state("");
+  let authPassword = $state("");
+  let authDisplayName = $state("");
+  let authError = $state("");
+  let authenticating = $state(false);
+  let loadingScreenReady = $state(false);
+  let settingsDisplayName = $state("");
+  let settingsLocation = $state("");
+  let settingsTimezone = $state("");
+  let settingsTemperatureUnit =
+    $state<UserSettings["temperature_unit"]>("celsius");
+  let avatarRevision = $state(Date.now());
+  let avatarAvailable = $state(true);
+  let avatarFile = $state<File | null>(null);
+  let avatarPreview = $state("");
+  let avatarReset = $state(false);
+  let wallpaperRevisions = $state<Record<WallpaperSlot, number>>({
+    dashboard: 0,
+    welcome: 0,
+    loading: 0,
+    login: 0,
+  });
+  let settingsError = $state("");
+  let savingSettings = $state(false);
+  let managedUsers = $state.raw<ManagedUser[]>([]);
+  let loadingUsers = $state(false);
+  let mutatingUserId = $state("");
+  let pendingRemovalId = $state("");
+  let adminError = $state("");
+  let commandDialog = $state<HTMLDialogElement>();
+  let commandSearchInput = $state<HTMLInputElement>();
+  let commandQuery = $state("");
+  let settingsDialog = $state<HTMLDialogElement>();
+  let destructiveDialog = $state<HTMLDialogElement>();
+  let adminDialog = $state<HTMLDialogElement>();
+  let widgetLibraryDialog = $state<HTMLDialogElement>();
+  let appearanceDialog = $state<HTMLDialogElement>();
+  let pendingContentDeletion = $state<UserContentScope | null>(null);
+  let deletingContentScope = $state<UserContentScope | null>(null);
+  let destructiveError = $state("");
+  let taskEditorDialog = $state<HTMLDialogElement>();
+  let focusDialog = $state<HTMLDialogElement>();
+  let wallpaperDrafts = $state<Record<WallpaperSlot, WallpaperDraft>>({
+    dashboard: { file: null, preview: "", reset: false },
+    welcome: { file: null, preview: "", reset: false },
+    loading: { file: null, preview: "", reset: false },
+    login: { file: null, preview: "", reset: false },
+  });
+  let backgroundBlur = $state(0);
+  let backgroundBrightness = $state(78);
+  let backgroundContrast = $state(108);
+  let backgroundSaturation = $state(72);
+  let appearanceError = $state("");
+  let savingAppearance = $state(false);
+  let editingTaskId = $state<string | null>(null);
+  let taskName = $state("");
+  let taskDescription = $state("");
+  let taskPriority = $state<Task["priority"]>("none");
+  let taskDueDate = $state("");
+  let taskLabels = $state("");
+  let taskRepeatRule = $state<Task["repeat_rule"]>("none");
+  let taskRepeatInterval = $state(1);
+  let taskRepeatUnit = $state<Task["repeat_unit"]>("days");
+  let taskRescheduleFrom = $state<Task["reschedule_from"]>("due_date");
+  let taskSubtasks = $state<
+    Array<{ id?: string; title: string; completed: boolean }>
+  >([]);
+  let taskAttachments = $state.raw<TaskAttachment[]>([]);
+  let pendingTaskFiles = $state.raw<File[]>([]);
+  let taskEditorError = $state("");
+  let savingTask = $state(false);
+  let taskActionId = $state("");
+  let subtaskActionId = $state("");
+  let pendingTaskDeleteId = $state("");
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  let clockTimer: ReturnType<typeof setInterval> | undefined;
+  let focusTimer: ReturnType<typeof setInterval> | undefined;
+  let focusExitTimer: ReturnType<typeof setTimeout> | undefined;
+  let welcomeExitTimer: ReturnType<typeof setTimeout> | undefined;
+  let welcomeRemoveTimer: ReturnType<typeof setTimeout> | undefined;
+  let loadingAnimationMinimumTimer: ReturnType<typeof setTimeout> | undefined;
+  let loadingAnimationFallbackTimer: ReturnType<typeof setTimeout> | undefined;
+  let loadingAnimationResolver: (() => void) | undefined;
+  let dragSnapshot: DashboardWidget[] = [];
+  const gridInstances = new SvelteMap<number, GridStack>();
+  const expandedTaskIds = new SvelteSet<string>();
+  const mobileNavigation = new MediaQuery("max-width: 720px", false);
+
+  let completedCount = $derived(tasks.filter((task) => task.completed).length);
+  let taskProgress = $derived(
+    tasks.length === 0 ? 0 : Math.round((completedCount / tasks.length) * 100),
+  );
+  let todayTasks = $derived(
+    tasks.filter(
+      (task) =>
+        task.due_date !== null &&
+        taskDayDistance(
+          task.due_date,
+          currentTime,
+          dashboard?.settings.timezone || "UTC",
+        ) === 0,
+    ),
+  );
+  let todayCompletedCount = $derived(
+    todayTasks.filter((task) => task.completed).length,
+  );
+  let todayTaskProgress = $derived(
+    todayTasks.length === 0
+      ? 0
+      : Math.round((todayCompletedCount / todayTasks.length) * 100),
+  );
+  let taskLabelOptions = $derived.by(() => {
+    const visibleTasks = taskView === "active" ? tasks : archivedTasks;
+    const labels = visibleTasks
+      .flatMap((task) =>
+        task.labels.map((label) => label.trim()).filter(Boolean),
+      )
+      .filter((label, index, allLabels) => allLabels.indexOf(label) === index);
+    if (taskLabelFilter && !labels.includes(taskLabelFilter)) {
+      labels.push(taskLabelFilter);
+    }
+    return labels.sort((left, right) => left.localeCompare(right));
+  });
+  let filteredActiveTasks = $derived(
+    taskLabelFilter
+      ? tasks.filter((task) => task.labels.includes(taskLabelFilter))
+      : tasks,
+  );
+  let filteredArchivedTasks = $derived(
+    taskLabelFilter
+      ? archivedTasks.filter((task) => task.labels.includes(taskLabelFilter))
+      : archivedTasks,
+  );
+  let taskDueGroups = $derived(
+    groupTasksByDueDate(
+      filteredActiveTasks,
+      currentTime,
+      dashboard?.settings.timezone || "UTC",
+    ),
+  );
+  let profileInitials = $derived(
+    dashboard?.settings.display_name
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase())
+      .join("") || "ME",
+  );
+  let administratorCount = $derived(
+    managedUsers.filter((user) => user.role === "administrator").length,
+  );
+  let activeSectionLabel = $derived(
+    productPages.find((item) => item.id === activeSection)?.label ??
+      "Dashboard",
+  );
+  let firstName = $derived(
+    dashboard?.settings.display_name.trim().split(/\s+/)[0] || "there",
+  );
+  let placeholderPage = $derived(
+    activeSection in placeholderPages
+      ? placeholderPages[activeSection as keyof typeof placeholderPages]
+      : null,
+  );
+  let filteredProductPages = $derived.by(() => {
+    const query = commandQuery.trim().toLowerCase();
+    if (!query) return productPages;
+    return productPages.filter(
+      (page) =>
+        page.label.toLowerCase().includes(query) || page.code.includes(query),
+    );
+  });
+  let dashboardClock = $derived(
+    clockDisplay(currentTime, dashboard?.settings.timezone || "UTC"),
+  );
+  let dashboardTimezone = $derived(
+    normalizeTimezone(dashboard?.settings.timezone || "UTC"),
+  );
+  let dashboardCalendarDate = $derived(
+    dateInTimezone(currentTime, dashboardTimezone),
+  );
+  let dateLabel = $derived(
+    new Intl.DateTimeFormat("en", {
+      timeZone: dashboardTimezone,
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    }).format(currentTime),
+  );
+  let dashboardCalendarMonthLabel = $derived(
+    new Intl.DateTimeFormat("en", {
+      timeZone: dashboardTimezone,
+      month: "long",
+      year: "numeric",
+    }).format(currentTime),
+  );
+  let dashboardCalendarDays = $derived(
+    buildDashboardCalendarMonth(dashboardCalendarDate),
+  );
+  let focusTimeLabel = $derived(formatFocusTime(focusRemainingSeconds));
+  let focusProgress = $derived(
+    focusDurationMinutes === 0
+      ? 0
+      : Math.max(
+          0,
+          Math.min(
+            100,
+            ((focusDurationMinutes * 60 - focusRemainingSeconds) /
+              (focusDurationMinutes * 60)) *
+              100,
+          ),
+        ),
+  );
+  let focusSessionStatus = $derived(
+    focusRemainingSeconds <= 0
+      ? "COMPLETE"
+      : focusRunning
+        ? "IN FOCUS"
+        : "PAUSED",
+  );
+
+  onMount(() => {
+    sidebarCollapsed =
+      localStorage.getItem("pandan-sidebar-collapsed") === "true";
+    const savedSection = localStorage.getItem("pandan-active-section");
+    if (productPages.some((item) => item.id === savedSection)) {
+      activeSection = savedSection as ProductPage;
+    }
+    clockTimer = setInterval(() => (currentTime = new Date()), 1_000);
+    const savedFocusDuration = Number(
+      localStorage.getItem("pandan-focus-duration"),
+    );
+    if (
+      Number.isInteger(savedFocusDuration) &&
+      savedFocusDuration >= 1 &&
+      savedFocusDuration <= 240
+    ) {
+      focusDurationMinutes = savedFocusDuration;
+      focusRemainingSeconds = savedFocusDuration * 60;
+    }
+    const currentUrl = new URL(window.location.href);
+    const oidcError = currentUrl.searchParams.get("auth_error");
+    if (oidcError) {
+      authError =
+        oidcError === "oidc_access_denied"
+          ? "Single sign-on was cancelled."
+          : "Single sign-on could not be completed. Please try again.";
+      currentUrl.searchParams.delete("auth_error");
+      window.history.replaceState(
+        {},
+        "",
+        `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`,
+      );
+    }
+    if (dashboard) {
+      refreshPrivateWallpaperRevisions();
+      resetAppearanceDraft();
+      void showInitialLoadingScreen();
+    }
+  });
+
+  onDestroy(() => {
+    clearAvatarDraft();
+    clearWallpaperDrafts();
+    clearTimeout(toastTimer);
+    clearTimeout(welcomeExitTimer);
+    clearTimeout(welcomeRemoveTimer);
+    clearTimeout(loadingAnimationMinimumTimer);
+    clearTimeout(loadingAnimationFallbackTimer);
+    clearInterval(clockTimer);
+    clearInterval(focusTimer);
+    clearTimeout(focusExitTimer);
+  });
+
+  function clockDisplay(date: Date, timezone: string) {
+    let formatter: Intl.DateTimeFormat;
+    try {
+      formatter = new Intl.DateTimeFormat("en", {
+        timeZone: timezone,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      });
+    } catch {
+      return clockDisplay(date, "UTC");
+    }
+    const parts = formatter.formatToParts(date);
+    const value = (type: Intl.DateTimeFormatPartTypes) =>
+      Number(parts.find((part) => part.type === type)?.value ?? 0);
+    const hour = value("hour") % 12;
+    const minute = value("minute");
+    const second = value("second");
+    return {
+      hourAngle: hour * 30 + minute * 0.5,
+      minuteAngle: minute * 6 + second * 0.1,
+      secondAngle: second * 6,
+      label: new Intl.DateTimeFormat("en", {
+        timeZone: timezone,
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).format(date),
+      zone: timezone.split("/").at(-1)?.replaceAll("_", " ") ?? timezone,
+    };
+  }
+
+  function normalizeTimezone(timezone: string) {
+    try {
+      new Intl.DateTimeFormat("en", { timeZone: timezone }).format();
+      return timezone;
+    } catch {
+      return "UTC";
+    }
+  }
+
+  function dateInTimezone(date: Date, timezone: string) {
+    const parts = new Intl.DateTimeFormat("en", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+    }).formatToParts(date);
+    const value = (type: Intl.DateTimeFormatPartTypes) =>
+      Number(parts.find((part) => part.type === type)?.value ?? 0);
+    return new Date(value("year"), value("month") - 1, value("day"));
+  }
+
+  function dashboardCalendarDateKey(date: Date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  function buildDashboardCalendarMonth(
+    reference: Date,
+  ): DashboardCalendarDay[] {
+    const first = new Date(reference.getFullYear(), reference.getMonth(), 1);
+    const mondayOffset = (first.getDay() + 6) % 7;
+    const start = new Date(
+      reference.getFullYear(),
+      reference.getMonth(),
+      1 - mondayOffset,
+    );
+    const today = dashboardCalendarDateKey(reference);
+
+    return Array.from({ length: 42 }, (_, index) => {
+      const date = new Date(
+        start.getFullYear(),
+        start.getMonth(),
+        start.getDate() + index,
+      );
+      const key = dashboardCalendarDateKey(date);
+      return {
+        key,
+        day: date.getDate(),
+        currentMonth: date.getMonth() === reference.getMonth(),
+        today: key === today,
+      };
+    });
+  }
+
+  function taskDayDistance(dueDate: string, reference: Date, timezone: string) {
+    const [year, month, day] = dueDate.split("-").map(Number);
+    const dueDay = Date.UTC(year, month - 1, day);
+    let referenceParts: Intl.DateTimeFormatPart[];
+    try {
+      referenceParts = new Intl.DateTimeFormat("en", {
+        timeZone: timezone,
+        year: "numeric",
+        month: "numeric",
+        day: "numeric",
+      }).formatToParts(reference);
+    } catch {
+      return taskDayDistance(dueDate, reference, "UTC");
+    }
+    const referenceValue = (type: Intl.DateTimeFormatPartTypes) =>
+      Number(referenceParts.find((part) => part.type === type)?.value ?? 0);
+    const referenceDay = Date.UTC(
+      referenceValue("year"),
+      referenceValue("month") - 1,
+      referenceValue("day"),
+    );
+    return Math.round((dueDay - referenceDay) / 86_400_000);
+  }
+
+  function groupTasksByDueDate(
+    items: Task[],
+    reference: Date,
+    timezone: string,
+  ): TaskDueGroup[] {
+    const groups: TaskDueGroup[] = [
+      {
+        id: "today",
+        label: "Due today",
+        range: "Today and earlier",
+        tasks: [],
+      },
+      {
+        id: "this-week",
+        label: "Due in less than a week",
+        range: "Tomorrow through day 6",
+        tasks: [],
+      },
+      {
+        id: "next-week",
+        label: "Due next week",
+        range: "7–13 days away",
+        tasks: [],
+      },
+      {
+        id: "later",
+        label: "Due later",
+        range: "14 or more days away",
+        tasks: [],
+      },
+      {
+        id: "never",
+        label: "Never due",
+        range: "No due date",
+        tasks: [],
+      },
+    ];
+
+    for (const task of items) {
+      if (!task.due_date) {
+        groups[4].tasks.push(task);
+        continue;
+      }
+      const daysAway = taskDayDistance(task.due_date, reference, timezone);
+      const groupIndex =
+        daysAway <= 0 ? 0 : daysAway < 7 ? 1 : daysAway < 14 ? 2 : 3;
+      groups[groupIndex].tasks.push(task);
+    }
+
+    return groups;
+  }
+
+  function formatFocusTime(totalSeconds: number) {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  function stopFocusTimer() {
+    focusRunning = false;
+    clearInterval(focusTimer);
+    focusTimer = undefined;
+  }
+
+  function setFocusDuration(minutes: number) {
+    if (focusRunning) return;
+    const duration = Math.min(240, Math.max(1, Math.round(minutes || 1)));
+    focusDurationMinutes = duration;
+    focusRemainingSeconds = duration * 60;
+    localStorage.setItem("pandan-focus-duration", String(duration));
+  }
+
+  function toggleFocusTimer() {
+    if (focusRunning) {
+      stopFocusTimer();
+      return;
+    }
+    if (focusRemainingSeconds <= 0) {
+      focusRemainingSeconds = focusDurationMinutes * 60;
+    }
+    focusRunning = true;
+    focusTimer = setInterval(() => {
+      if (focusRemainingSeconds <= 1) {
+        focusRemainingSeconds = 0;
+        stopFocusTimer();
+        showToast(
+          focusSubject.trim()
+            ? `Focus complete: ${focusSubject.trim()}`
+            : "Focus session complete",
+        );
+        return;
+      }
+      focusRemainingSeconds -= 1;
+    }, 1_000);
+  }
+
+  function resetFocusTimer() {
+    stopFocusTimer();
+    focusRemainingSeconds = focusDurationMinutes * 60;
+  }
+
+  function resetBurstControls() {
+    burstIntensity = 1.7;
+    burstSpeed = 0.34;
+    burstDistort = 0.35;
+    burstHoverDampness = 0.2;
+    burstRayCount = 18;
+    burstPaused = false;
+  }
+
+  function captureFocusDialog(node: HTMLDialogElement) {
+    focusDialog = node;
+    return () => {
+      focusDialog = undefined;
+    };
+  }
+
+  function startFocusSession() {
+    focusSubject = focusSubject.trim() || "Deep work";
+    focusRemainingSeconds = focusDurationMinutes * 60;
+    focusLeaving = false;
+    if (!focusDialog?.open) focusDialog?.showModal();
+    toggleFocusTimer();
+  }
+
+  function startDashboardFocusSession(subject: string, minutes: number) {
+    focusSubject = subject;
+    setFocusDuration(minutes);
+    startFocusSession();
+  }
+
+  function endFocusSession() {
+    const sessionWasOpen = focusDialog?.open ?? false;
+    if (!sessionWasOpen || focusLeaving) return;
+
+    stopFocusTimer();
+    const closeSession = () => {
+      clearTimeout(focusExitTimer);
+      focusExitTimer = undefined;
+      focusDialog?.close();
+      focusLeaving = false;
+      focusRemainingSeconds = focusDurationMinutes * 60;
+      showToast("Focus session ended");
+    };
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      closeSession();
+      return;
+    }
+
+    focusLeaving = true;
+    focusExitTimer = setTimeout(closeSession, 420);
+  }
+
+  function startWelcome() {
+    clearTimeout(welcomeExitTimer);
+    clearTimeout(welcomeRemoveTimer);
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      welcomeVisible = false;
+      welcomeLeaving = false;
+      return;
+    }
+    welcomeVisible = true;
+    welcomeLeaving = false;
+    welcomeExitTimer = setTimeout(() => (welcomeLeaving = true), 950);
+    welcomeRemoveTimer = setTimeout(() => (welcomeVisible = false), 1550);
+  }
+
+  function completeLoadingTextAnimation() {
+    loadingAnimationResolver?.();
+  }
+
+  async function showInitialLoadingScreen() {
+    authenticating = true;
+    loadingScreenReady = false;
+    try {
+      await prepareLoadingWallpaper();
+      loadingScreenReady = true;
+      await tick();
+      await waitForLoadingScreen();
+    } finally {
+      loadingScreenReady = false;
+      authenticating = false;
+      startWelcome();
+    }
+  }
+
+  function waitForLoadingScreen() {
+    clearTimeout(loadingAnimationMinimumTimer);
+    clearTimeout(loadingAnimationFallbackTimer);
+
+    return new Promise<void>((resolve) => {
+      let minimumElapsed = false;
+      let textComplete = false;
+      let settled = false;
+
+      const settle = () => {
+        if (settled || !minimumElapsed || !textComplete) return;
+        settled = true;
+        clearTimeout(loadingAnimationMinimumTimer);
+        clearTimeout(loadingAnimationFallbackTimer);
+        loadingAnimationResolver = undefined;
+        resolve();
+      };
+
+      loadingAnimationResolver = () => {
+        textComplete = true;
+        settle();
+      };
+      loadingAnimationMinimumTimer = setTimeout(() => {
+        minimumElapsed = true;
+        settle();
+      }, 1_750);
+      loadingAnimationFallbackTimer = setTimeout(() => {
+        minimumElapsed = true;
+        textComplete = true;
+        settle();
+      }, 3_600);
+    });
+  }
+
+  function preloadImage(source: string) {
+    return new Promise<boolean>((resolve) => {
+      const image = new Image();
+      let settled = false;
+      const finish = (loaded: boolean) => {
+        if (settled) return;
+        settled = true;
+        image.onload = null;
+        image.onerror = null;
+        resolve(loaded);
+      };
+      image.decoding = "async";
+      image.onload = () => {
+        void image
+          .decode()
+          .catch(() => undefined)
+          .finally(() => finish(true));
+      };
+      image.onerror = () => finish(false);
+      image.src = source;
+    });
+  }
+
+  async function prepareLoadingWallpaper() {
+    const fallback = "/wired-terminal-wallpaper.png";
+    const source = wallpaperSource("loading");
+    const loaded = await preloadImage(source);
+    if (!loaded && source !== fallback) {
+      await preloadImage(fallback);
+    }
+  }
+
+  function refreshPrivateWallpaperRevisions() {
+    const revision = Date.now();
+    wallpaperRevisions.dashboard = revision;
+    wallpaperRevisions.welcome = revision;
+    wallpaperRevisions.loading = revision;
+  }
+
+  function openProductPage(page: ProductPage) {
+    activeSection = page;
+    sidebarOpen = false;
+    pendingTaskDeleteId = "";
+    localStorage.setItem("pandan-active-section", page);
+  }
+
+  function toggleSidebar() {
+    if (mobileNavigation.current) {
+      sidebarOpen = !sidebarOpen;
+      return;
+    }
+    sidebarOpen = false;
+    sidebarCollapsed = !sidebarCollapsed;
+    localStorage.setItem("pandan-sidebar-collapsed", String(sidebarCollapsed));
+  }
+
+  function showToast(message: string) {
+    toastMessage = message;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (toastMessage = ""), 1800);
+  }
+
+  async function openCommand() {
+    commandQuery = "";
+    commandDialog?.showModal();
+    await tick();
+    commandSearchInput?.focus();
+  }
+
+  function captureCommandDialog(node: HTMLDialogElement) {
+    commandDialog = node;
+    return () => {
+      commandDialog = undefined;
+    };
+  }
+
+  function captureCommandSearchInput(node: HTMLInputElement) {
+    commandSearchInput = node;
+    return () => {
+      commandSearchInput = undefined;
+    };
+  }
+
+  function handleCommandSearchKeydown(event: KeyboardEvent) {
+    if (event.key !== "Enter" || filteredProductPages.length === 0) return;
+    event.preventDefault();
+    jumpFromCommand(filteredProductPages[0].id);
+  }
+
+  function captureSettingsDialog(node: HTMLDialogElement) {
+    settingsDialog = node;
+    return () => {
+      settingsDialog = undefined;
+    };
+  }
+
+  function captureDestructiveDialog(node: HTMLDialogElement) {
+    destructiveDialog = node;
+    return () => {
+      destructiveDialog = undefined;
+    };
+  }
+
+  function captureAdminDialog(node: HTMLDialogElement) {
+    adminDialog = node;
+    return () => {
+      adminDialog = undefined;
+    };
+  }
+
+  function captureWidgetLibraryDialog(node: HTMLDialogElement) {
+    widgetLibraryDialog = node;
+    return () => {
+      widgetLibraryDialog = undefined;
+    };
+  }
+
+  function captureAppearanceDialog(node: HTMLDialogElement) {
+    appearanceDialog = node;
+    return () => {
+      appearanceDialog = undefined;
+    };
+  }
+
+  function captureTaskEditorDialog(node: HTMLDialogElement) {
+    taskEditorDialog = node;
+    return () => {
+      taskEditorDialog = undefined;
+    };
+  }
+
+  function resetTaskEditor() {
+    editingTaskId = null;
+    taskName = "";
+    taskDescription = "";
+    taskPriority = "none";
+    taskDueDate = "";
+    taskLabels = "";
+    taskRepeatRule = "none";
+    taskRepeatInterval = 1;
+    taskRepeatUnit = "days";
+    taskRescheduleFrom = "due_date";
+    taskSubtasks = [];
+    taskAttachments = [];
+    pendingTaskFiles = [];
+    taskEditorError = "";
+  }
+
+  function openTaskEditor(task?: Task) {
+    resetTaskEditor();
+    pendingTaskDeleteId = "";
+    if (task) {
+      editingTaskId = task.id;
+      taskName = task.title;
+      taskDescription = task.description;
+      taskPriority = task.priority;
+      taskDueDate = task.due_date ?? "";
+      taskLabels = task.labels.join(", ");
+      taskRepeatRule = task.repeat_rule;
+      taskRepeatInterval = task.repeat_interval;
+      taskRepeatUnit = task.repeat_unit;
+      taskRescheduleFrom = task.reschedule_from;
+      taskSubtasks = task.subtasks.map((subtask) => ({
+        id: subtask.id,
+        title: subtask.title,
+        completed: subtask.completed,
+      }));
+      taskAttachments = task.attachments;
+    }
+    taskEditorDialog?.showModal();
+  }
+
+  function addSubtaskDraft() {
+    taskSubtasks = [...taskSubtasks, { title: "", completed: false }];
+  }
+
+  function removeSubtaskDraft(index: number) {
+    taskSubtasks = taskSubtasks.filter((_, itemIndex) => itemIndex !== index);
+  }
+
+  function selectTaskAttachments(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    pendingTaskFiles = Array.from(input.files ?? []);
+  }
+
+  async function saveTask(event: SubmitEvent) {
+    event.preventDefault();
+    if (savingTask) return;
+    savingTask = true;
+    taskEditorError = "";
+
+    const input: TaskInput = {
+      title: taskName,
+      description: taskDescription,
+      priority: taskPriority,
+      due_date: taskDueDate || null,
+      labels: taskLabels
+        .split(",")
+        .map((label) => label.trim())
+        .filter(Boolean),
+      subtasks: taskSubtasks
+        .map((subtask) => ({ ...subtask, title: subtask.title.trim() }))
+        .filter((subtask) => subtask.title),
+      repeat_rule: taskRepeatRule,
+      repeat_interval: taskRepeatInterval,
+      repeat_unit: taskRepeatUnit,
+      reschedule_from: taskRescheduleFrom,
+    };
+
+    try {
+      let saved = editingTaskId
+        ? await updateTask(editingTaskId, input)
+        : await createTask(input);
+      const uploaded = [];
+      for (const file of pendingTaskFiles) {
+        uploaded.push(await uploadTaskAttachment(saved.id, file));
+      }
+      if (uploaded.length) {
+        saved = {
+          ...saved,
+          attachments: [...saved.attachments, ...uploaded],
+        };
+      }
+      tasks = editingTaskId
+        ? tasks.map((task) => (task.id === saved.id ? saved : task))
+        : [...tasks, saved];
+      taskEditorDialog?.close();
+      showToast(editingTaskId ? "Task updated" : "Task created");
+    } catch (reason: unknown) {
+      taskEditorError =
+        reason instanceof Error ? reason.message : "Unable to save task";
+    } finally {
+      savingTask = false;
+    }
+  }
+
+  async function removeCurrentTask() {
+    if (!editingTaskId || savingTask) return;
+    if (!window.confirm("Delete this task and its attachments?")) return;
+    savingTask = true;
+    taskEditorError = "";
+    try {
+      await deleteTask(editingTaskId);
+      tasks = tasks.filter((task) => task.id !== editingTaskId);
+      taskEditorDialog?.close();
+      showToast("Task deleted");
+    } catch (reason: unknown) {
+      taskEditorError =
+        reason instanceof Error ? reason.message : "Unable to delete task";
+    } finally {
+      savingTask = false;
+    }
+  }
+
+  function resetTaskArchiveView() {
+    taskView = "active";
+    taskLabelFilter = "";
+    archivedTasks = [];
+    archivedTasksLoaded = false;
+    loadingArchivedTasks = false;
+    archivedTasksError = "";
+    pendingTaskDeleteId = "";
+  }
+
+  async function loadArchivedTasks() {
+    if (loadingArchivedTasks) return;
+    loadingArchivedTasks = true;
+    archivedTasksError = "";
+    try {
+      archivedTasks = await fetchArchivedTasks();
+      archivedTasksLoaded = true;
+    } catch (reason: unknown) {
+      archivedTasksError =
+        reason instanceof Error
+          ? reason.message
+          : "Unable to load archived tasks";
+    } finally {
+      loadingArchivedTasks = false;
+    }
+  }
+
+  async function selectTaskView(view: TaskView) {
+    taskView = view;
+    taskLabelFilter = "";
+    pendingTaskDeleteId = "";
+    if (view === "archived") {
+      await loadArchivedTasks();
+    }
+  }
+
+  async function archiveTaskFromList(task: Task) {
+    if (taskActionId) return;
+    const previousTasks = tasks;
+    taskActionId = task.id;
+    pendingTaskDeleteId = "";
+    tasks = tasks.filter((item) => item.id !== task.id);
+    try {
+      await archiveTask(task.id);
+      expandedTaskIds.delete(task.id);
+      if (archivedTasksLoaded) {
+        archivedTasks = [
+          task,
+          ...archivedTasks.filter((item) => item.id !== task.id),
+        ];
+      }
+      showToast(`Archived ${task.title}`);
+    } catch (reason: unknown) {
+      tasks = previousTasks;
+      showToast(
+        reason instanceof Error ? reason.message : "Unable to archive task",
+      );
+    } finally {
+      taskActionId = "";
+    }
+  }
+
+  async function restoreTaskFromArchive(task: Task) {
+    if (taskActionId) return;
+    const previousArchivedTasks = archivedTasks;
+    taskActionId = task.id;
+    pendingTaskDeleteId = "";
+    archivedTasks = archivedTasks.filter((item) => item.id !== task.id);
+    try {
+      await restoreTask(task.id);
+      tasks = [...tasks.filter((item) => item.id !== task.id), task];
+      expandedTaskIds.delete(task.id);
+      showToast(`Restored ${task.title}`);
+    } catch (reason: unknown) {
+      archivedTasks = previousArchivedTasks;
+      showToast(
+        reason instanceof Error ? reason.message : "Unable to restore task",
+      );
+    } finally {
+      taskActionId = "";
+    }
+  }
+
+  async function deleteArchivedTaskFromList(task: Task) {
+    if (taskActionId) return;
+    if (pendingTaskDeleteId !== task.id) {
+      pendingTaskDeleteId = task.id;
+      showToast(`Select delete again to remove ${task.title}`);
+      return;
+    }
+
+    const previousArchivedTasks = archivedTasks;
+    taskActionId = task.id;
+    archivedTasks = archivedTasks.filter((item) => item.id !== task.id);
+    try {
+      await deleteTask(task.id);
+      expandedTaskIds.delete(task.id);
+      showToast(`Deleted ${task.title}`);
+    } catch (reason: unknown) {
+      archivedTasks = previousArchivedTasks;
+      showToast(
+        reason instanceof Error ? reason.message : "Unable to delete task",
+      );
+    } finally {
+      taskActionId = "";
+      pendingTaskDeleteId = "";
+    }
+  }
+
+  async function deleteTaskFromList(task: Task) {
+    if (taskActionId) return;
+    if (pendingTaskDeleteId !== task.id) {
+      pendingTaskDeleteId = task.id;
+      showToast(`Select delete again to remove ${task.title}`);
+      return;
+    }
+
+    const previousTasks = tasks;
+    taskActionId = task.id;
+    tasks = tasks.filter((item) => item.id !== task.id);
+    try {
+      await deleteTask(task.id);
+      showToast(`Deleted ${task.title}`);
+    } catch (reason: unknown) {
+      tasks = previousTasks;
+      showToast(
+        reason instanceof Error ? reason.message : "Unable to delete task",
+      );
+    } finally {
+      taskActionId = "";
+      pendingTaskDeleteId = "";
+    }
+  }
+
+  async function removeTaskAttachment(attachment: TaskAttachment) {
+    if (!editingTaskId || savingTask) return;
+    taskEditorError = "";
+    try {
+      await deleteTaskAttachment(editingTaskId, attachment.id);
+      taskAttachments = taskAttachments.filter(
+        (item) => item.id !== attachment.id,
+      );
+      tasks = tasks.map((task) =>
+        task.id === editingTaskId
+          ? {
+              ...task,
+              attachments: task.attachments.filter(
+                (item) => item.id !== attachment.id,
+              ),
+            }
+          : task,
+      );
+    } catch (reason: unknown) {
+      taskEditorError =
+        reason instanceof Error
+          ? reason.message
+          : "Unable to remove attachment";
+    }
+  }
+
+  function downloadTaskAttachment(attachment: TaskAttachment) {
+    if (!editingTaskId) return;
+    const link = document.createElement("a");
+    link.href = taskAttachmentUrl(editingTaskId, attachment.id);
+    link.download = attachment.file_name;
+    link.click();
+  }
+
+  function openWidgetLibrary() {
+    widgetLibraryDialog?.showModal();
+  }
+
+  function toggleLayoutEditing() {
+    if (draggedWidgetId || savingLayout) return;
+    layoutEditing = !layoutEditing;
+    for (const grid of gridInstances.values()) {
+      grid.enableMove(layoutEditing);
+      grid.enableResize(layoutEditing);
+    }
+    showToast(layoutEditing ? "Layout editing enabled" : "Layout saved");
+  }
+
+  function dashboardWidgets() {
+    return [...widgets].sort(
+      (a, b) =>
+        a.grid_y - b.grid_y || a.grid_x - b.grid_x || a.position - b.position,
+    );
+  }
+
+  function normalizeWidgetLayout(items: DashboardWidget[]) {
+    return items
+      .sort(
+        (a, b) =>
+          a.grid_y - b.grid_y || a.grid_x - b.grid_x || a.position - b.position,
+      )
+      .map((widget, position) => ({ ...widget, position }));
+  }
+
+  function widgetSizeForWidth(width: number): WidgetSize {
+    if (width <= 4) return "compact";
+    if (width <= 6) return "standard";
+    if (width <= 9) return "wide";
+    return "full";
+  }
+
+  function gridAttributes(widget: DashboardWidget) {
+    return {
+      "gs-id": widget.id,
+      "gs-x": widget.grid_x,
+      "gs-y": widget.grid_y,
+      "gs-w": widget.grid_w,
+      "gs-h": widget.grid_h,
+    };
+  }
+
+  function gridCoordinates(grid: GridStack, element: GridItemHTMLElement) {
+    const node = element.gridstackNode;
+    if (!node) return null;
+    const columns = grid.getColumn();
+    const ratio = 12 / columns;
+    const grid_w = Math.max(1, Math.min(12, Math.round((node.w ?? 1) * ratio)));
+    const grid_x = Math.max(
+      0,
+      Math.min(12 - grid_w, Math.round((node.x ?? 0) * ratio)),
+    );
+    return {
+      grid_x,
+      grid_y: Math.max(0, node.y ?? 0),
+      grid_w,
+      grid_h: Math.max(1, node.h ?? 1),
+    };
+  }
+
+  function layoutFromGrid() {
+    const next = widgets.map((widget) => ({ ...widget }));
+    for (const grid of gridInstances.values()) {
+      for (const element of grid.getGridItems()) {
+        const id = element.dataset.widgetId;
+        const coordinates = gridCoordinates(grid, element);
+        const index = next.findIndex((widget) => widget.id === id);
+        if (index < 0 || !coordinates) continue;
+        next[index] = {
+          ...next[index],
+          ...coordinates,
+          size: widgetSizeForWidth(coordinates.grid_w),
+        };
+      }
+    }
+    return normalizeWidgetLayout(next);
+  }
+
+  async function synchronizeGridFromState() {
+    await tick();
+    for (const grid of gridInstances.values()) {
+      const gridElement = grid.el;
+      for (const widget of dashboardWidgets()) {
+        const element = gridElement.querySelector<GridItemHTMLElement>(
+          `[data-widget-id="${widget.id}"]`,
+        );
+        if (!element) continue;
+        if (!element.gridstackNode) grid.makeWidget(element);
+        grid.update(element, {
+          x: widget.grid_x,
+          y: widget.grid_y,
+          w: widget.grid_w,
+          h: widget.grid_h,
+        });
+      }
+    }
+  }
+
+  async function persistWidgetLayout(
+    next: DashboardWidget[],
+    previous: DashboardWidget[],
+  ) {
+    if (savingLayout) return;
+    widgets = next;
+    savingLayout = true;
+    try {
+      widgets = await updateDashboardWidgetLayout(
+        next.map(
+          ({
+            id,
+            workspace,
+            position,
+            size,
+            grid_x,
+            grid_y,
+            grid_w,
+            grid_h,
+          }) => ({
+            id,
+            workspace,
+            position,
+            size,
+            grid_x,
+            grid_y,
+            grid_w,
+            grid_h,
+          }),
+        ),
+      );
+    } catch (reason: unknown) {
+      widgets = previous;
+      await synchronizeGridFromState();
+      showToast(
+        reason instanceof Error
+          ? reason.message
+          : "Widget layout was not saved",
+      );
+    } finally {
+      savingLayout = false;
+    }
+  }
+
+  function layoutsMatch(first: DashboardWidget[], second: DashboardWidget[]) {
+    return first.every((widget) => {
+      const candidate = second.find((item) => item.id === widget.id);
+      return (
+        candidate?.workspace === widget.workspace &&
+        candidate.position === widget.position &&
+        candidate.size === widget.size &&
+        candidate.grid_x === widget.grid_x &&
+        candidate.grid_y === widget.grid_y &&
+        candidate.grid_w === widget.grid_w &&
+        candidate.grid_h === widget.grid_h
+      );
+    });
+  }
+
+  function startGridDrag(element: GridItemHTMLElement) {
+    if (!layoutEditing || savingLayout) return;
+    draggedWidgetId = element.dataset.widgetId ?? "";
+    dragSnapshot = widgets.map((item) => ({ ...item }));
+  }
+
+  function finishGridInteraction() {
+    if (!draggedWidgetId) return;
+
+    const previous = dragSnapshot.map((item) => ({ ...item }));
+    const next = layoutFromGrid();
+    widgets = next;
+    if (!layoutsMatch(next, previous)) void persistWidgetLayout(next, previous);
+
+    draggedWidgetId = "";
+    dragSnapshot = [];
+  }
+
+  function finishGridResize() {
+    const previous = widgets.map((item) => ({ ...item }));
+    const next = layoutFromGrid();
+    widgets = next;
+    if (!layoutsMatch(next, previous)) void persistWidgetLayout(next, previous);
+  }
+
+  function gridAttachment(workspace: number) {
+    return (node: HTMLElement) => {
+      const grid = GridStack.init(
+        {
+          column: 12,
+          columnOpts: {
+            breakpoints: [
+              { w: 720, c: 1, layout: "list" },
+              { w: 1040, c: 6, layout: "moveScale" },
+            ],
+            layout: "moveScale",
+          },
+          cellHeight: 76,
+          margin: 8,
+          animate: true,
+          float: false,
+          disableDrag: true,
+          disableResize: true,
+          handle: ".widget-drag-handle",
+          draggable: {
+            handle: ".widget-drag-handle",
+            appendTo: "body",
+            helper: "clone",
+            scroll: true,
+          },
+          resizable: { handles: "e,se,s,sw,w" },
+        },
+        node,
+      );
+      if (!grid)
+        throw new Error("GridStack could not initialize this workspace");
+      gridInstances.set(workspace, grid);
+      grid.on("dragstart", (_event, element) => startGridDrag(element));
+      grid.on("dragstop", finishGridInteraction);
+      grid.on("resizestop", finishGridResize);
+      return () => {
+        grid.offAll();
+        grid.destroy(false);
+        gridInstances.delete(workspace);
+      };
+    };
+  }
+
+  async function addWidget(kind: WidgetKind, size: WidgetSize) {
+    if (addingWidgetKind || savingLayout) return;
+    addingWidgetKind = kind;
+    try {
+      const widget = await createDashboardWidget({
+        kind,
+        workspace: 0,
+        size,
+      });
+      widgets = normalizeWidgetLayout([...widgets, widget]);
+      await synchronizeGridFromState();
+      widgetLibraryDialog?.close();
+      showToast(
+        `${widgetCatalog.find((item) => item.kind === kind)?.title ?? "Widget"} added`,
+      );
+    } catch (reason: unknown) {
+      showToast(
+        reason instanceof Error ? reason.message : "Unable to add widget",
+      );
+    } finally {
+      addingWidgetKind = "";
+    }
+  }
+
+  async function removeWidget(widget: DashboardWidget) {
+    if (savingLayout) return;
+    const previous = widgets.map((item) => ({ ...item }));
+    const grid = gridInstances.get(0);
+    const element = grid?.el.querySelector<GridItemHTMLElement>(
+      `[data-widget-id="${widget.id}"]`,
+    );
+    if (grid && element) grid.removeWidget(element, false, false);
+    widgets = normalizeWidgetLayout(
+      widgets.filter((item) => item.id !== widget.id),
+    );
+    try {
+      await deleteDashboardWidget(widget.id);
+      showToast("Widget removed");
+    } catch (reason: unknown) {
+      widgets = previous;
+      await synchronizeGridFromState();
+      showToast(
+        reason instanceof Error ? reason.message : "Unable to remove widget",
+      );
+    }
+  }
+
+  function updateWidgetInstance(updated: DashboardWidget) {
+    widgets = widgets.map((widget) =>
+      widget.id === updated.id ? updated : widget,
+    );
+  }
+
+  function setAuthMode(mode: AuthMode) {
+    authMode = mode;
+    authError = "";
+  }
+
+  async function authenticate(event: SubmitEvent) {
+    event.preventDefault();
+    if (authenticating) return;
+
+    authenticating = true;
+    loadingScreenReady = false;
+    authError = "";
+    try {
+      if (authMode === "register") {
+        await registerAccount({
+          email: authEmail,
+          password: authPassword,
+          display_name: authDisplayName,
+        });
+      } else {
+        await loginAccount({ email: authEmail, password: authPassword });
+      }
+      refreshPrivateWallpaperRevisions();
+      const loadingScreen = prepareLoadingWallpaper().then(async () => {
+        loadingScreenReady = true;
+        await tick();
+        await waitForLoadingScreen();
+      });
+      const [nextDashboard] = await Promise.all([
+        fetchDashboard(),
+        loadingScreen,
+      ]);
+      dashboard = nextDashboard;
+      resetTaskArchiveView();
+      avatarRevision = Date.now();
+      avatarAvailable = true;
+      resetAppearanceDraft();
+      authPassword = "";
+      activeSection = "dashboard";
+      startWelcome();
+    } catch (reason: unknown) {
+      authError =
+        reason instanceof Error ? reason.message : "Unable to continue";
+    } finally {
+      loadingScreenReady = false;
+      authenticating = false;
+    }
+  }
+
+  async function completeSetup(event: SubmitEvent) {
+    event.preventDefault();
+    if (authenticating) return;
+
+    authenticating = true;
+    loadingScreenReady = false;
+    authError = "";
+    try {
+      await createAdministrator({
+        email: authEmail,
+        password: authPassword,
+        display_name: authDisplayName,
+      });
+      refreshPrivateWallpaperRevisions();
+      const loadingScreen = prepareLoadingWallpaper().then(async () => {
+        loadingScreenReady = true;
+        await tick();
+        await waitForLoadingScreen();
+      });
+      const [nextDashboard] = await Promise.all([
+        fetchDashboard(),
+        loadingScreen,
+      ]);
+      dashboard = nextDashboard;
+      resetTaskArchiveView();
+      avatarRevision = Date.now();
+      avatarAvailable = true;
+      resetAppearanceDraft();
+      setupRequired = false;
+      authPassword = "";
+      activeSection = "dashboard";
+      startWelcome();
+    } catch (reason: unknown) {
+      authError =
+        reason instanceof Error ? reason.message : "Unable to complete setup";
+    } finally {
+      loadingScreenReady = false;
+      authenticating = false;
+    }
+  }
+
+  function openSettings() {
+    if (!dashboard) return;
+    clearUserSettingsDrafts();
+    settingsDisplayName = dashboard.settings.display_name;
+    settingsLocation = dashboard.settings.location;
+    settingsTimezone = dashboard.settings.timezone;
+    settingsTemperatureUnit = dashboard.settings.temperature_unit;
+    settingsError = "";
+    settingsDialog?.showModal();
+  }
+
+  function applySidebarSettings(settings: UserSettings) {
+    if (!dashboard) return;
+    dashboard = { ...dashboard, settings };
+  }
+
+  function avatarUrl() {
+    return `/api/settings/avatar?v=${avatarRevision}`;
+  }
+
+  function avatarPreviewSource() {
+    if (avatarReset) return "";
+    return avatarPreview || (avatarAvailable ? avatarUrl() : "");
+  }
+
+  function clearAvatarDraft() {
+    if (avatarPreview.startsWith("blob:")) {
+      URL.revokeObjectURL(avatarPreview);
+    }
+    avatarFile = null;
+    avatarPreview = "";
+    avatarReset = false;
+  }
+
+  function selectAvatar(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    if (
+      !["image/jpeg", "image/png", "image/webp", "image/avif"].includes(
+        file.type,
+      )
+    ) {
+      settingsError = "Choose a JPEG, PNG, WebP, or AVIF image.";
+      input.value = "";
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      settingsError = "Avatar images must be 10 MB or smaller.";
+      input.value = "";
+      return;
+    }
+    if (avatarPreview.startsWith("blob:")) {
+      URL.revokeObjectURL(avatarPreview);
+    }
+    avatarFile = file;
+    avatarPreview = URL.createObjectURL(file);
+    avatarReset = false;
+    settingsError = "";
+  }
+
+  function resetAvatar() {
+    if (avatarPreview.startsWith("blob:")) {
+      URL.revokeObjectURL(avatarPreview);
+    }
+    avatarFile = null;
+    avatarPreview = "";
+    avatarReset = true;
+    settingsError = "";
+  }
+
+  function wallpaperEndpoint(slot: WallpaperSlot) {
+    return slot === "login"
+      ? "/api/appearance/login-wallpaper"
+      : `/api/settings/wallpapers/${slot}`;
+  }
+
+  function wallpaperSource(slot: WallpaperSlot) {
+    const draft = wallpaperDrafts[slot];
+    if (draft.reset) return "/wired-terminal-wallpaper.png";
+    return (
+      draft.preview ||
+      `${wallpaperEndpoint(slot)}?v=${wallpaperRevisions[slot]}`
+    );
+  }
+
+  function wallpaperBackground(slot: WallpaperSlot) {
+    const source = wallpaperSource(slot);
+    if (source === "/wired-terminal-wallpaper.png") {
+      return 'url("/wired-terminal-wallpaper.png")';
+    }
+    return `url("${source}"), url("/wired-terminal-wallpaper.png")`;
+  }
+
+  function wallpaperHasCustom(slot: WallpaperSlot) {
+    const appearance = dashboard?.appearance;
+    if (!appearance) return false;
+    if (slot === "dashboard") return appearance.has_dashboard_wallpaper;
+    if (slot === "welcome") return appearance.has_welcome_wallpaper;
+    if (slot === "loading") return appearance.has_loading_wallpaper;
+    return appearance.has_login_wallpaper;
+  }
+
+  function wallpaperFileLabel(slot: WallpaperSlot) {
+    const draft = wallpaperDrafts[slot];
+    if (draft.file) return draft.file.name;
+    if (draft.reset) return "Wired terminal default";
+    return wallpaperHasCustom(slot) ? "Custom image" : "Wired terminal default";
+  }
+
+  function clearWallpaperDraft(slot: WallpaperSlot) {
+    const draft = wallpaperDrafts[slot];
+    if (draft.preview.startsWith("blob:")) {
+      URL.revokeObjectURL(draft.preview);
+    }
+    wallpaperDrafts[slot] = { file: null, preview: "", reset: false };
+  }
+
+  function clearWallpaperDrafts(slots: WallpaperSlot[] = allWallpaperSlots) {
+    for (const slot of slots) clearWallpaperDraft(slot);
+  }
+
+  function clearUserSettingsWallpaperDrafts() {
+    clearWallpaperDrafts(userWallpaperOptions.map((option) => option.id));
+  }
+
+  function clearUserSettingsDrafts() {
+    clearAvatarDraft();
+    clearUserSettingsWallpaperDrafts();
+  }
+
+  function resetAppearanceDraft() {
+    clearWallpaperDrafts(appearanceWallpaperOptions.map((option) => option.id));
+    const appearance = dashboard?.appearance;
+    backgroundBlur = appearance?.background_blur ?? 0;
+    backgroundBrightness = appearance?.background_brightness ?? 78;
+    backgroundContrast = appearance?.background_contrast ?? 108;
+    backgroundSaturation = appearance?.background_saturation ?? 72;
+    appearanceError = "";
+  }
+
+  function selectWallpaper(slot: WallpaperSlot, event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    if (
+      !["image/jpeg", "image/png", "image/webp", "image/avif"].includes(
+        file.type,
+      )
+    ) {
+      setWallpaperError(slot, "Choose a JPEG, PNG, WebP, or AVIF image.");
+      input.value = "";
+      return;
+    }
+    if (file.size > 30 * 1024 * 1024) {
+      setWallpaperError(slot, "Wallpaper images must be 30 MB or smaller.");
+      input.value = "";
+      return;
+    }
+    const draft = wallpaperDrafts[slot];
+    if (draft.preview.startsWith("blob:")) {
+      URL.revokeObjectURL(draft.preview);
+    }
+    wallpaperDrafts[slot] = {
+      file,
+      preview: URL.createObjectURL(file),
+      reset: false,
+    };
+    setWallpaperError(slot, "");
+  }
+
+  function resetWallpaper(slot: WallpaperSlot) {
+    const draft = wallpaperDrafts[slot];
+    if (draft.preview.startsWith("blob:")) {
+      URL.revokeObjectURL(draft.preview);
+    }
+    wallpaperDrafts[slot] = { file: null, preview: "", reset: true };
+    setWallpaperError(slot, "");
+  }
+
+  function setWallpaperError(slot: WallpaperSlot, message: string) {
+    if (slot === "welcome" || slot === "loading") {
+      settingsError = message;
+    } else {
+      appearanceError = message;
+    }
+  }
+
+  function resetBackgroundFilters() {
+    backgroundBlur = 0;
+    backgroundBrightness = 78;
+    backgroundContrast = 108;
+    backgroundSaturation = 72;
+  }
+
+  function openAppearance() {
+    if (!dashboard) return;
+    resetAppearanceDraft();
+    settingsDialog?.close();
+    appearanceDialog?.showModal();
+  }
+
+  function openDestructiveActions() {
+    destructiveError = "";
+    pendingContentDeletion = null;
+    settingsDialog?.close();
+    destructiveDialog?.showModal();
+  }
+
+  async function closeDestructiveActions(reopenSettings = false) {
+    destructiveError = "";
+    pendingContentDeletion = null;
+    destructiveDialog?.close();
+    if (reopenSettings) {
+      await tick();
+      openSettings();
+    }
+  }
+
+  async function removeContentArea(action: {
+    scope: UserContentScope;
+    title: string;
+  }) {
+    if (deletingContentScope) return;
+    if (pendingContentDeletion !== action.scope) {
+      pendingContentDeletion = action.scope;
+      destructiveError = "";
+      return;
+    }
+    deletingContentScope = action.scope;
+    destructiveError = "";
+    try {
+      const result = await deleteUserContent(action.scope);
+      if (action.scope === "tasks" && dashboard) {
+        dashboard = { ...dashboard, tasks: [] };
+        resetTaskArchiveView();
+      }
+      if (activeSection === action.scope) {
+        activeSection = "dashboard";
+      }
+      pendingContentDeletion = null;
+      showToast(
+        result.deleted === 1
+          ? `Deleted 1 record from ${action.title.toLowerCase()}`
+          : `Deleted ${result.deleted} records from ${action.title.toLowerCase()}`,
+      );
+    } catch (reason: unknown) {
+      destructiveError =
+        reason instanceof Error
+          ? reason.message
+          : `Unable to delete ${action.title.toLowerCase()}`;
+    } finally {
+      deletingContentScope = null;
+    }
+  }
+
+  async function closeAppearance(reopenSettings = false) {
+    resetAppearanceDraft();
+    appearanceDialog?.close();
+    if (reopenSettings) {
+      await tick();
+      openSettings();
+    }
+  }
+
+  async function saveAppearance(event: SubmitEvent) {
+    event.preventDefault();
+    if (!dashboard || savingAppearance) return;
+    savingAppearance = true;
+    appearanceError = "";
+    try {
+      for (const option of appearanceWallpaperOptions) {
+        if (option.adminOnly && dashboard.user.role !== "administrator") {
+          continue;
+        }
+        const draft = wallpaperDrafts[option.id];
+        if (draft.file) {
+          await updateWallpaper(option.id, draft.file);
+        } else if (draft.reset) {
+          await deleteWallpaper(option.id);
+        }
+        wallpaperRevisions[option.id] = Date.now();
+      }
+      const appearance = await updateAppearance({
+        background_blur: backgroundBlur,
+        background_brightness: backgroundBrightness,
+        background_contrast: backgroundContrast,
+        background_saturation: backgroundSaturation,
+      });
+      dashboard = {
+        ...dashboard,
+        appearance,
+      };
+      clearWallpaperDrafts(
+        appearanceWallpaperOptions.map((option) => option.id),
+      );
+      appearanceDialog?.close();
+      showToast("Appearance saved");
+    } catch (reason: unknown) {
+      appearanceError =
+        reason instanceof Error ? reason.message : "Unable to save appearance";
+    } finally {
+      savingAppearance = false;
+    }
+  }
+
+  async function saveSettings(event: SubmitEvent) {
+    event.preventDefault();
+    if (!dashboard || savingSettings) return;
+
+    savingSettings = true;
+    settingsError = "";
+    try {
+      let appearance = dashboard.appearance;
+      if (avatarFile) {
+        await updateAvatar(avatarFile);
+        avatarRevision = Date.now();
+        avatarAvailable = true;
+      } else if (avatarReset) {
+        await deleteAvatar();
+        avatarRevision = Date.now();
+        avatarAvailable = false;
+      }
+      for (const option of userWallpaperOptions) {
+        const draft = wallpaperDrafts[option.id];
+        if (draft.file) {
+          await updateWallpaper(option.id, draft.file);
+        } else if (draft.reset) {
+          await deleteWallpaper(option.id);
+        } else {
+          continue;
+        }
+        const hasWallpaper = Boolean(draft.file);
+        appearance =
+          option.id === "welcome"
+            ? { ...appearance, has_welcome_wallpaper: hasWallpaper }
+            : { ...appearance, has_loading_wallpaper: hasWallpaper };
+        wallpaperRevisions[option.id] = Date.now();
+      }
+      const settings = await updateUserSettings({
+        display_name: settingsDisplayName,
+        location: settingsLocation,
+        timezone: settingsTimezone,
+        temperature_unit: settingsTemperatureUnit,
+      });
+      dashboard = { ...dashboard, settings, appearance };
+      clearUserSettingsDrafts();
+      settingsDialog?.close();
+      showToast("Settings saved");
+    } catch (reason: unknown) {
+      settingsError =
+        reason instanceof Error ? reason.message : "Unable to save settings";
+    } finally {
+      savingSettings = false;
+    }
+  }
+
+  async function openAdministration() {
+    if (dashboard?.user.role !== "administrator") return;
+    adminError = "";
+    pendingRemovalId = "";
+    adminDialog?.showModal();
+    loadingUsers = true;
+    try {
+      managedUsers = await fetchManagedUsers();
+    } catch (reason: unknown) {
+      adminError =
+        reason instanceof Error ? reason.message : "Unable to load users";
+    } finally {
+      loadingUsers = false;
+    }
+  }
+
+  function handleRoleChange(event: Event, user: ManagedUser) {
+    const role = (event.currentTarget as HTMLSelectElement)
+      .value as ManagedUser["role"];
+    void changeManagedUserRole(user, role);
+  }
+
+  async function changeManagedUserRole(
+    user: ManagedUser,
+    role: ManagedUser["role"],
+  ) {
+    if (user.role === role || mutatingUserId) return;
+    mutatingUserId = user.id;
+    adminError = "";
+    try {
+      const updated = await updateManagedUserRole(user.id, role);
+      managedUsers = managedUsers.map((candidate) =>
+        candidate.id === updated.id ? updated : candidate,
+      );
+      showToast(
+        `${updated.display_name} is now ${role === "administrator" ? "an administrator" : "a member"}`,
+      );
+    } catch (reason: unknown) {
+      adminError =
+        reason instanceof Error ? reason.message : "Unable to update role";
+    } finally {
+      mutatingUserId = "";
+    }
+  }
+
+  async function removeManagedUser(user: ManagedUser) {
+    if (user.id === dashboard?.user.id || mutatingUserId) return;
+
+    mutatingUserId = user.id;
+    adminError = "";
+    try {
+      await deleteManagedUser(user.id);
+      managedUsers = managedUsers.filter(
+        (candidate) => candidate.id !== user.id,
+      );
+      pendingRemovalId = "";
+      showToast(`${user.display_name} was removed`);
+    } catch (reason: unknown) {
+      adminError =
+        reason instanceof Error ? reason.message : "Unable to remove user";
+    } finally {
+      mutatingUserId = "";
+    }
+  }
+
+  function memberInitials(user: ManagedUser) {
+    return user.display_name
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase())
+      .join("");
+  }
+
+  function memberSince(createdAt: string) {
+    return new Intl.DateTimeFormat("en", {
+      month: "short",
+      year: "numeric",
+    }).format(new Date(createdAt));
+  }
+
+  async function signOut() {
+    try {
+      await logoutAccount();
+      settingsDialog?.close();
+      dashboard = null;
+      resetTaskArchiveView();
+      clearAvatarDraft();
+      avatarAvailable = true;
+      avatarRevision = Date.now();
+      activeSection = "dashboard";
+      welcomeVisible = false;
+      authPassword = "";
+      authError = "";
+    } catch (reason: unknown) {
+      showToast(
+        reason instanceof Error ? reason.message : "Unable to sign out",
+      );
+    }
+  }
+
+  function jumpFromCommand(page: ProductPage) {
+    commandDialog?.close();
+    openProductPage(page);
+  }
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (focusDialog?.open) return;
+    const target = event.target as HTMLElement;
+    const isTyping =
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement;
+
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      openCommand();
+      return;
+    }
+    if (event.key === "/" && !isTyping) {
+      event.preventDefault();
+      openCommand();
+      return;
+    }
+    if (
+      /^[1-9]$/.test(event.key) &&
+      !commandDialog?.open &&
+      !isTyping &&
+      !layoutEditing
+    ) {
+      openProductPage(productPages[Number(event.key) - 1].id);
+    }
+  }
+
+  async function toggleTask(task: Task) {
+    pendingTaskDeleteId = "";
+    const optimistic = { ...task, completed: !task.completed };
+    tasks = tasks.map((item) => (item.id === task.id ? optimistic : item));
+    try {
+      const updated = await setTaskCompleted(task.id, optimistic.completed);
+      tasks = tasks.map((item) => (item.id === task.id ? updated : item));
+    } catch (reason: unknown) {
+      tasks = tasks.map((item) => (item.id === task.id ? task : item));
+      showToast(
+        reason instanceof Error ? reason.message : "Task update failed",
+      );
+    }
+  }
+
+  function toggleTaskDetails(taskId: string) {
+    pendingTaskDeleteId = "";
+    if (expandedTaskIds.has(taskId)) {
+      expandedTaskIds.delete(taskId);
+    } else {
+      expandedTaskIds.add(taskId);
+    }
+  }
+
+  async function toggleSubtask(task: Task, subtaskId: string) {
+    const actionId = `${task.id}:${subtaskId}`;
+    if (subtaskActionId) return;
+    pendingTaskDeleteId = "";
+    subtaskActionId = actionId;
+    const optimistic = {
+      ...task,
+      subtasks: task.subtasks.map((subtask) =>
+        subtask.id === subtaskId
+          ? { ...subtask, completed: !subtask.completed }
+          : subtask,
+      ),
+    };
+    tasks = tasks.map((item) => (item.id === task.id ? optimistic : item));
+
+    try {
+      const updated = await updateTask(task.id, {
+        subtasks: optimistic.subtasks.map(({ id, title, completed }) => ({
+          id,
+          title,
+          completed,
+        })),
+      });
+      tasks = tasks.map((item) => (item.id === task.id ? updated : item));
+    } catch (reason: unknown) {
+      tasks = tasks.map((item) => (item.id === task.id ? task : item));
+      showToast(
+        reason instanceof Error ? reason.message : "Subtask update failed",
+      );
+    } finally {
+      subtaskActionId = "";
+    }
+  }
+
+  async function addTask(title: string) {
+    try {
+      const task = await createTask(title);
+      tasks = [...tasks, task];
+      showToast("Task added");
+    } catch (reason: unknown) {
+      showToast(
+        reason instanceof Error ? reason.message : "Task creation failed",
+      );
+      throw reason;
+    }
+  }
+
+  async function clearCompleted() {
+    const previousTasks = tasks;
+    tasks = tasks.filter((task) => !task.completed);
+    try {
+      const { deleted } = await clearCompletedTasks();
+      showToast(
+        `${deleted} completed ${deleted === 1 ? "task" : "tasks"} cleared`,
+      );
+    } catch (reason: unknown) {
+      tasks = previousTasks;
+      showToast(
+        reason instanceof Error ? reason.message : "Unable to clear tasks",
+      );
+    }
+  }
+
+  function taskPriorityLabel(priority: Task["priority"]) {
+    return priority.toUpperCase();
+  }
+
+  function taskRepeatLabel(task: Task) {
+    if (task.repeat_rule === "none") return "";
+    if (task.repeat_rule !== "custom") return task.repeat_rule;
+    return `every ${task.repeat_interval} ${task.repeat_unit}`;
+  }
+
+  function formatTaskDate(value: string) {
+    return new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }).format(new Date(`${value}T12:00:00`));
+  }
+</script>
+
+<svelte:head>
+  <title>Pandan: Personal dashboard</title>
+  <meta
+    name="description"
+    content="A personal dashboard for tasks, preferences, and curated feeds."
+  />
+</svelte:head>
+
+<svelte:window onkeydown={handleKeydown} />
+
+{#if authenticating && loadingScreenReady}
+  <div
+    class="loading-overlay"
+    style:--loading-background={wallpaperBackground("loading")}
+    role="status"
+    aria-live="polite"
+    data-od-id="account-loading-screen"
+  >
+    <div class="loading-copy">
+      <span>[ SESSION / SYNC ]</span>
+      <BlurText
+        class="loading-blur-text"
+        text={`loading:${authDisplayName.trim().split(/\s+/)[0] || dashboard?.settings.display_name.trim().split(/\s+/)[0] || authEmail.split("@")[0] || "user"}`}
+        delay={56}
+        animateBy="letters"
+        direction="top"
+        threshold={0}
+        stepDuration={0.48}
+        animationFrom={{ filter: "blur(18px)", opacity: 0, y: -30 }}
+        animationTo={[
+          { filter: "blur(8px)", opacity: 0.48, y: 5 },
+          { filter: "blur(0px)", opacity: 1, y: 0 },
+        ]}
+        onAnimationComplete={completeLoadingTextAnimation}
+      />
+      <samp>mounting personal workspace</samp>
+      <i aria-hidden="true"></i>
+    </div>
+  </div>
+{/if}
+
+{#if setupRequired}
+  <main
+    class="auth-shell"
+    style:--login-background={wallpaperBackground("login")}
+    data-od-id="administrator-onboarding"
+  >
+    <div class="auth-brand" aria-label="Pandan">
+      <span class="auth-brand-glyph" aria-hidden="true">P&gt;</span>
+      <span>PANDAN</span>
+    </div>
+    <aside class="auth-context" aria-labelledby="setup-context-title">
+      <div class="auth-context-copy">
+        <span>[ FIRST RUN ]</span>
+        <h2 id="setup-context-title">Initialize your workspace.</h2>
+        <p>
+          Claim the administrator account, then configure dashboards, users, and
+          connected services from one control surface.
+        </p>
+      </div>
+      <dl class="auth-capabilities">
+        <div>
+          <dt>Administration</dt>
+          <dd>User roles and account access</dd>
+        </div>
+        <div>
+          <dt>Personalization</dt>
+          <dd>Widgets, wallpaper, and display tuning</dd>
+        </div>
+        <div>
+          <dt>Providers</dt>
+          <dd>Encrypted service credentials</dd>
+        </div>
+      </dl>
+    </aside>
+    <section
+      class="auth-card setup-card"
+      aria-labelledby="setup-title"
+      data-od-id="administrator-setup-card"
+    >
+      <div class="setup-badge">Setup required</div>
+      <div class="auth-copy">
+        <p class="widget-kicker">[ INSTALLATION OWNER ]</p>
+        <h1 id="setup-title">Create your administrator.</h1>
+        <p>
+          This first account owns the workspace and can manage every user who
+          joins later.
+        </p>
+      </div>
+
+      <form
+        class="auth-form setup-form"
+        onsubmit={completeSetup}
+        data-od-id="administrator-setup-form"
+      >
+        <label for="setup-name">Display name</label>
+        <input
+          id="setup-name"
+          class="text-input"
+          bind:value={authDisplayName}
+          autocomplete="name"
+          maxlength="60"
+          required
+        />
+
+        <label for="setup-email">Administrator email</label>
+        <input
+          id="setup-email"
+          class="text-input"
+          type="email"
+          bind:value={authEmail}
+          autocomplete="email"
+          maxlength="254"
+          required
+        />
+
+        <div class="password-label">
+          <label for="setup-password">Password</label><span
+            >10 characters minimum</span
+          >
+        </div>
+        <input
+          id="setup-password"
+          class="text-input"
+          type="password"
+          bind:value={authPassword}
+          autocomplete="new-password"
+          minlength="10"
+          maxlength="128"
+          required
+        />
+
+        {#if authError || data.error}
+          <p class="form-error" role="alert">{authError || data.error}</p>
+        {/if}
+
+        <button
+          class="ui-button ui-button--primary primary-btn auth-submit"
+          type="submit"
+          disabled={authenticating}
+          data-od-id="create-administrator"
+        >
+          {authenticating ? "Securing workspace…" : "Create administrator"}
+        </button>
+      </form>
+
+      <div class="setup-note">
+        <p>
+          Only one initial administrator can be created. This setup closes
+          permanently after success.
+        </p>
+      </div>
+    </section>
+    <p class="auth-footnote">
+      One-time setup. Encrypted password. Private dashboard.
+    </p>
+  </main>
+{:else if !dashboard}
+  <main
+    class="auth-shell"
+    style:--login-background={wallpaperBackground("login")}
+    data-od-id="login-page"
+  >
+    <div class="auth-brand" aria-label="Pandan">
+      <span class="auth-brand-glyph" aria-hidden="true">P&gt;</span>
+      <span>PANDAN</span>
+    </div>
+    <aside class="auth-context" aria-labelledby="auth-context-title">
+      <div class="auth-context-copy">
+        <span>[ PRIVATE WORKSPACE ]</span>
+        <h2 id="auth-context-title">Your private workspace.</h2>
+        <p>
+          Return to your dashboards, tasks, calendars, feeds, journal, and
+          release activity.
+        </p>
+      </div>
+      <dl class="auth-capabilities">
+        <div>
+          <dt>Dashboard</dt>
+          <dd>Configurable widgets and appearance</dd>
+        </div>
+        <div>
+          <dt>Planning</dt>
+          <dd>Tasks, calendars, and journal</dd>
+        </div>
+        <div>
+          <dt>Sources</dt>
+          <dd>Feeds, video, and release activity</dd>
+        </div>
+      </dl>
+    </aside>
+    <section
+      class="auth-card"
+      aria-labelledby="auth-title"
+      data-od-id="account-access-card"
+    >
+      <div class="auth-copy">
+        <p class="widget-kicker">[ ACCOUNT ACCESS ]</p>
+        <h1 id="auth-title">
+          {authMode === "login" ? "Welcome back." : "Make it yours."}
+        </h1>
+        <p>
+          {authMode === "login"
+            ? "Sign in to return to your widgets, tasks, and preferences."
+            : "Create an account for a private dashboard that follows your settings."}
+        </p>
+      </div>
+
+      <div class="auth-modes" aria-label="Account access mode">
+        <button
+          type="button"
+          aria-pressed={authMode === "login"}
+          onclick={() => setAuthMode("login")}>Sign in</button
+        >
+        <button
+          type="button"
+          aria-pressed={authMode === "register"}
+          onclick={() => setAuthMode("register")}>Create account</button
+        >
+      </div>
+
+      <form
+        class="auth-form"
+        onsubmit={authenticate}
+        data-od-id="account-access-form"
+      >
+        {#if authMode === "register"}
+          <label for="display-name">Display name</label>
+          <input
+            id="display-name"
+            class="text-input"
+            bind:value={authDisplayName}
+            autocomplete="name"
+            maxlength="60"
+            required
+          />
+        {/if}
+
+        <label for="email">Email</label>
+        <input
+          id="email"
+          class="text-input"
+          type="email"
+          bind:value={authEmail}
+          autocomplete="email"
+          maxlength="254"
+          required
+        />
+
+        <div class="password-label">
+          <label for="password">Password</label><span
+            >10 characters minimum</span
+          >
+        </div>
+        <input
+          id="password"
+          class="text-input"
+          type="password"
+          bind:value={authPassword}
+          autocomplete={authMode === "login"
+            ? "current-password"
+            : "new-password"}
+          minlength="10"
+          maxlength="128"
+          required
+        />
+
+        {#if authError || data.error}
+          <p class="form-error" role="alert">{authError || data.error}</p>
+        {/if}
+
+        <button
+          class="ui-button ui-button--primary primary-btn auth-submit"
+          type="submit"
+          disabled={authenticating}
+          data-od-id="account-submit"
+        >
+          {authenticating
+            ? "One moment…"
+            : authMode === "login"
+              ? "Enter dashboard"
+              : "Create my dashboard"}
+        </button>
+      </form>
+
+      {#if data.oidc.enabled}
+        <div class="auth-divider"><span>or</span></div>
+        <button
+          class="ui-button ui-button--secondary oidc-btn"
+          type="button"
+          onclick={() => window.location.assign("/api/auth/oidc/start")}
+          data-od-id="oidc-login"
+        >
+          Continue with {data.oidc.provider_name ?? "single sign-on"}
+          <ArrowRight size={18} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+      {/if}
+    </section>
+    <p class="auth-footnote">
+      Secure sessions. Personal settings. Private tasks.
+    </p>
+  </main>
+{:else}
+  {#if welcomeVisible}
+    <div
+      class={["welcome-overlay", welcomeLeaving && "is-leaving"]}
+      style:--welcome-background={wallpaperBackground("welcome")}
+      role="status"
+      aria-live="polite"
+      data-od-id="welcome-transition"
+    >
+      <div class="welcome-monogram" aria-hidden="true">P&gt;</div>
+      <div class="welcome-copy">
+        <span>[ SESSION AUTHENTICATED ]</span>
+        <strong>{firstName}@pandan</strong>
+        <samp>dashboard.init --profile={firstName.toLowerCase()}</samp>
+      </div>
+    </div>
+  {/if}
+
+  <div
+    class={[
+      "dashboard-app",
+      layoutEditing && "is-editing",
+      sidebarOpen && "sidebar-is-open",
+      sidebarCollapsed && "sidebar-is-collapsed",
+    ]}
+    style:--dashboard-background={wallpaperBackground("welcome")}
+    style:--wallpaper-blur={`${backgroundBlur}px`}
+    style:--wallpaper-brightness={`${backgroundBrightness}%`}
+    style:--wallpaper-contrast={`${backgroundContrast}%`}
+    style:--wallpaper-saturation={`${backgroundSaturation}%`}
+    data-od-id="dashboard-shell"
+  >
+    <aside
+      id="primary-sidebar"
+      class="dashboard-sidebar"
+      inert={mobileNavigation.current && !sidebarOpen}
+      data-od-id="primary-sidebar"
+    >
+      <button
+        class="sidebar-brand"
+        type="button"
+        onclick={() => openProductPage("dashboard")}
+        aria-label="Open dashboard"
+        title="Dashboard"
+      >
+        <span class="brand-glyph">P&gt;</span>
+        <span class="brand-word">PANDAN / OS</span>
+      </button>
+
+      <nav class="sidebar-nav" aria-label="Primary navigation">
+        {#each productPages as item (item.id)}
+          {@const PageIcon = item.icon}
+          <button
+            class="sidebar-link"
+            type="button"
+            aria-current={activeSection === item.id ? "page" : undefined}
+            onclick={() => openProductPage(item.id)}
+            title={item.label}
+            data-od-id={`nav-${item.id}`}
+          >
+            <span class="sidebar-index">{item.code}</span>
+            <PageIcon size={19} strokeWidth={1.7} aria-hidden="true" />
+            <span>{item.label}</span>
+          </button>
+        {/each}
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="sidebar-utilities-shell">
+          {#key `${dashboard.settings.location}:${dashboard.settings.timezone}:${dashboard.settings.temperature_unit}:${dashboard.settings.sidebar_timezones.join("|")}`}
+            <SidebarUtilities
+              settings={dashboard.settings}
+              onToast={showToast}
+              onSettingsChange={applySidebarSettings}
+            />
+          {/key}
+        </div>
+        <button
+          class="sidebar-link"
+          type="button"
+          onclick={openSettings}
+          title="Settings"
+          data-od-id="open-user-settings"
+        >
+          <span class="sidebar-index">11</span>
+          <Settings size={19} strokeWidth={1.7} aria-hidden="true" />
+          <span>Settings</span>
+        </button>
+        <button
+          class="sidebar-profile"
+          type="button"
+          onclick={openSettings}
+          aria-label="Open account settings"
+          title="Account settings"
+        >
+          <span class="sidebar-avatar">
+            {#if avatarAvailable}
+              <img
+                src={avatarUrl()}
+                alt=""
+                onload={() => (avatarAvailable = true)}
+                onerror={() => (avatarAvailable = false)}
+              />
+            {:else}
+              {profileInitials}
+            {/if}
+          </span>
+          <span class="sidebar-profile-copy">
+            <strong>{dashboard.settings.display_name}</strong>
+            <small>{dashboard.user.role}</small>
+          </span>
+          <Ellipsis size={18} strokeWidth={1.7} aria-hidden="true" />
+        </button>
+      </div>
+    </aside>
+
+    <button
+      class="sidebar-scrim"
+      type="button"
+      aria-label="Close navigation"
+      onclick={() => (sidebarOpen = false)}
+    ></button>
+
+    <main class="dashboard-main" data-od-id="dashboard-main">
+      <header class="dashboard-header">
+        <div class="dashboard-title-group">
+          <button
+            class="ui-button ui-button--ghost ui-button--icon mobile-menu-button"
+            type="button"
+            aria-label={mobileNavigation.current
+              ? sidebarOpen
+                ? "Close navigation"
+                : "Open navigation"
+              : sidebarCollapsed
+                ? "Expand sidebar"
+                : "Collapse sidebar"}
+            aria-controls="primary-sidebar"
+            aria-expanded={mobileNavigation.current
+              ? sidebarOpen
+              : !sidebarCollapsed}
+            title={mobileNavigation.current
+              ? sidebarOpen
+                ? "Close navigation"
+                : "Open navigation"
+              : sidebarCollapsed
+                ? "Expand sidebar"
+                : "Collapse sidebar"}
+            onclick={toggleSidebar}
+            data-od-id="toggle-sidebar"
+          >
+            <Menu size={20} strokeWidth={1.7} aria-hidden="true" />
+          </button>
+          <div>
+            <h1>$ {activeSectionLabel.toLowerCase()}</h1>
+            <p>SYS.DATE / {dateLabel}</p>
+          </div>
+        </div>
+
+        <div class="dashboard-header-actions">
+          <button
+            class="ui-button ui-button--ghost ui-button--icon header-icon-button"
+            type="button"
+            aria-label="Search"
+            onclick={openCommand}
+          >
+            <Search size={19} strokeWidth={1.7} aria-hidden="true" />
+          </button>
+          <button
+            class="ui-button ui-button--ghost ui-button--icon header-icon-button"
+            type="button"
+            aria-label="Notifications"
+            onclick={() => showToast("No new notifications")}
+          >
+            <Bell size={19} strokeWidth={1.7} aria-hidden="true" />
+          </button>
+          {#if activeSection === "dashboard"}
+            <button
+              class={["dashboard-edit-button", layoutEditing && "is-active"]}
+              type="button"
+              aria-pressed={layoutEditing}
+              disabled={savingLayout}
+              onclick={toggleLayoutEditing}
+              data-od-id="edit-dashboard-layout"
+            >
+              <SlidersHorizontal
+                size={18}
+                strokeWidth={1.7}
+                aria-hidden="true"
+              />
+              <span>{layoutEditing ? "Done" : "Edit layout"}</span>
+            </button>
+            <button
+              class="ui-button ui-button--primary dashboard-add-button"
+              type="button"
+              onclick={openWidgetLibrary}
+              data-od-id="open-widget-library"
+            >
+              <Plus size={18} strokeWidth={1.8} aria-hidden="true" />
+              <span>Add widget</span>
+            </button>
+          {/if}
+        </div>
+      </header>
+
+      {#key activeSection}
+        <div
+          class={[
+            "product-view",
+            activeSection !== "youtube" && "is-translucent",
+          ]}
+        >
+          {#if activeSection === "dashboard"}
+            <section class="dashboard-home" data-od-id="dashboard-overview">
+              {#if data.error}
+                <div class="api-notice" role="status">
+                  {data.error}. Start the Rust API to load persisted widgets.
+                </div>
+              {/if}
+
+              <div class="dashboard-composition">
+                <div class="dashboard-primary-column">
+                  <section class="dashboard-intro" data-od-id="daily-overview">
+                    <div>
+                      <p>[ SESSION / READY ]</p>
+                      <h2>welcome:{firstName}</h2>
+                      <span>$ dashboard status --widgets --utilities</span>
+                    </div>
+                    <button type="button" onclick={openCommand}>
+                      &gt; search
+                      <Search size={17} strokeWidth={1.7} aria-hidden="true" />
+                    </button>
+                  </section>
+
+                  <section
+                    class="custom-widget-section"
+                    data-od-id="custom-widgets"
+                  >
+                    <div class="custom-widget-heading">
+                      <div>
+                        <h3>[ MODULES / USER ]</h3>
+                        <p>
+                          Move and resize these modules when layout editing is
+                          enabled.
+                        </p>
+                      </div>
+                    </div>
+                    <div
+                      class={[
+                        "grid-stack",
+                        "widget-canvas",
+                        draggedWidgetId && "is-dragging",
+                      ]}
+                      role="list"
+                      aria-label="Dashboard widgets"
+                      data-od-id="widget-grid-dashboard"
+                      {@attach gridAttachment(0)}
+                    >
+                      {#each dashboardWidgets() as widget (widget.id)}
+                        <div
+                          class="grid-stack-item"
+                          {...gridAttributes(widget)}
+                          data-widget-id={widget.id}
+                        >
+                          <div class="grid-stack-item-content">
+                            <DashboardWidgetCard
+                              {widget}
+                              editing={layoutEditing}
+                              {tasks}
+                              {feeds}
+                              settings={dashboard.settings}
+                              {completedCount}
+                              {taskProgress}
+                              {todayTasks}
+                              {todayCompletedCount}
+                              {todayTaskProgress}
+                              {savingLayout}
+                              onToggleTask={toggleTask}
+                              onCreateTask={addTask}
+                              onClearCompleted={clearCompleted}
+                              onStartFocus={startDashboardFocusSession}
+                              onToast={showToast}
+                              onRemove={removeWidget}
+                              onUpdateWidget={updateWidgetInstance}
+                            />
+                          </div>
+                        </div>
+                      {/each}
+                    </div>
+                    {#if dashboardWidgets().length === 0}
+                      <button
+                        class="empty-workspace"
+                        type="button"
+                        onclick={openWidgetLibrary}
+                      >
+                        Add the first widget to your dashboard
+                      </button>
+                    {/if}
+                  </section>
+                </div>
+
+                <aside
+                  class="dashboard-utility-rail"
+                  aria-label="Dashboard shortcuts"
+                >
+                  <section
+                    class="utility-box utility-analog-clock"
+                    data-od-id="dashboard-analog-clock"
+                  >
+                    <p>[ LOCAL.TIME ]</p>
+                    <div
+                      class="analog-clock"
+                      role="img"
+                      aria-label={`${dashboardClock.label} in ${dashboardClock.zone}`}
+                    >
+                      {#each clockMarks as mark (mark)}
+                        <i
+                          class="analog-clock-mark"
+                          style:--mark-angle={`${mark * 30}deg`}
+                        ></i>
+                      {/each}
+                      <i
+                        class="analog-clock-hand is-hour"
+                        style:--hand-angle={`${dashboardClock.hourAngle}deg`}
+                      ></i>
+                      <i
+                        class="analog-clock-hand is-minute"
+                        style:--hand-angle={`${dashboardClock.minuteAngle}deg`}
+                      ></i>
+                      <i
+                        class="analog-clock-hand is-second"
+                        style:--hand-angle={`${dashboardClock.secondAngle}deg`}
+                      ></i>
+                      <i class="analog-clock-pin"></i>
+                    </div>
+                    <span>{dashboardClock.label} / {dashboardClock.zone}</span>
+                  </section>
+                  <section
+                    class="utility-box utility-calendar"
+                    data-od-id="dashboard-calendar"
+                  >
+                    <p>[ CALENDAR ]</p>
+                    <div class="utility-calendar-date">
+                      <strong>{dateLabel}</strong>
+                      <span>{dashboardCalendarMonthLabel}</span>
+                    </div>
+                    <div
+                      class="utility-calendar-grid"
+                      aria-label={`${dashboardCalendarMonthLabel} calendar`}
+                      data-od-id="dashboard-calendar-month"
+                    >
+                      {#each dashboardCalendarWeekdays as weekday, index (`${weekday}-${index}`)}
+                        <span class="utility-calendar-weekday" aria-hidden="true"
+                          >{weekday}</span
+                        >
+                      {/each}
+                      {#each dashboardCalendarDays as day (day.key)}
+                        <time
+                          class={[
+                            "utility-calendar-day",
+                            !day.currentMonth && "is-outside",
+                            day.today && "is-today",
+                          ]}
+                          datetime={day.key}
+                          aria-label={day.key}
+                          aria-current={day.today ? "date" : undefined}
+                        >
+                          {day.day}
+                        </time>
+                      {/each}
+                    </div>
+                  </section>
+                  <section class="utility-box utility-progress">
+                    <p>[ TASK.PROGRESS ]</p>
+                    <strong
+                      >{completedCount}<span> / {tasks.length}</span></strong
+                    >
+                    <span>Completed tasks</span>
+                  </section>
+                  <section class="utility-box utility-shortcuts">
+                    <p>[ COMMANDS ]</p>
+                    <button type="button" onclick={openCommand}
+                      >&gt; open command menu</button
+                    >
+                    <button type="button" onclick={openWidgetLibrary}
+                      >&gt; add widget</button
+                    >
+                  </section>
+                </aside>
+              </div>
+            </section>
+          {:else if activeSection === "tasks"}
+            <section class="feature-page product-page" data-od-id="tasks-page">
+              <div class="feature-page-intro task-page-intro page-header">
+                <div>
+                  <h2>
+                    $ tasks --{taskView === "active" ? "active" : "archived"}
+                  </h2>
+                  <p>
+                    {taskView === "active"
+                      ? "Plan work with due dates, priorities, labels, recurring schedules, and subtasks."
+                      : "Review tasks removed from the active plan, restore what matters, or delete them permanently."}
+                  </p>
+                </div>
+                <div class="task-page-actions">
+                  <label class="task-label-filter">
+                    <span>
+                      <Tag size={14} strokeWidth={1.8} aria-hidden="true" />
+                      Label
+                    </span>
+                    <select
+                      bind:value={taskLabelFilter}
+                      disabled={!taskLabelOptions.length}
+                      aria-label="Filter tasks by label"
+                      data-od-id="filter-tasks-by-label"
+                    >
+                      <option value="">All labels</option>
+                      {#each taskLabelOptions as label (label)}
+                        <option value={label}>{label}</option>
+                      {/each}
+                    </select>
+                  </label>
+                  <nav class="task-view-menu" aria-label="Task views">
+                    <button
+                      class={[
+                        "ui-button",
+                        "ui-button--secondary",
+                        "task-view-menu-button",
+                        taskView === "active" && "is-active",
+                      ]}
+                      type="button"
+                      aria-pressed={taskView === "active"}
+                      onclick={() => selectTaskView("active")}
+                      data-od-id="view-active-tasks"
+                    >
+                      Active
+                      <span>{tasks.length}</span>
+                    </button>
+                    <button
+                      class={[
+                        "ui-button",
+                        "ui-button--secondary",
+                        "task-view-menu-button",
+                        taskView === "archived" && "is-active",
+                      ]}
+                      type="button"
+                      aria-pressed={taskView === "archived"}
+                      onclick={() => selectTaskView("archived")}
+                      data-od-id="view-archived-tasks"
+                    >
+                      Archived
+                      {#if archivedTasksLoaded}
+                        <span>{archivedTasks.length}</span>
+                      {/if}
+                    </button>
+                  </nav>
+                  {#if taskView === "active"}
+                    <button
+                      class="ui-button ui-button--primary primary-btn task-create-button"
+                      type="button"
+                      onclick={() => openTaskEditor()}
+                      data-od-id="create-task"
+                    >
+                      <Plus size={17} strokeWidth={1.8} aria-hidden="true" />
+                      New task
+                    </button>
+                  {/if}
+                </div>
+              </div>
+              <div
+                class={[
+                  "tasks-page-layout",
+                  taskView === "archived" && "is-archive-view",
+                ]}
+              >
+                <section
+                  class="tasks-worklist"
+                  data-od-id={taskView === "active"
+                    ? "task-due-groups"
+                    : "archived-task-list"}
+                >
+                  {#snippet taskRow(task: Task, archived: boolean)}
+                    <article
+                      class={[
+                        "task-page-row",
+                        task.completed && "is-complete",
+                        archived && "is-archived",
+                      ]}
+                      data-od-id={`task-row-${task.id}`}
+                    >
+                      <div class="task-row-main">
+                        {#if archived}
+                          <span class="task-archive-marker" aria-hidden="true">
+                            <ArchiveIcon size={16} strokeWidth={1.8} />
+                          </span>
+                        {:else}
+                          <button
+                            class="task-complete-button"
+                            type="button"
+                            aria-label={task.completed
+                              ? `Mark ${task.title} incomplete`
+                              : `Complete ${task.title}`}
+                            onclick={() => toggleTask(task)}
+                          >
+                            <span class="focus-check" aria-hidden="true"></span>
+                          </button>
+                        {/if}
+                        <button
+                          class="task-row-content"
+                          type="button"
+                          aria-expanded={expandedTaskIds.has(task.id)}
+                          aria-controls={`task-details-${task.id}`}
+                          onclick={() => toggleTaskDetails(task.id)}
+                          data-od-id={`expand-task-${task.id}`}
+                        >
+                          <span class="task-row-heading">
+                            {#if task.priority !== "none"}
+                              <span
+                                class={[
+                                  "task-priority",
+                                  `priority-${task.priority}`,
+                                ]}
+                              >
+                                {taskPriorityLabel(task.priority)}
+                              </span>
+                            {/if}
+                            <strong>{task.title}</strong>
+                            <ChevronDown
+                              class={expandedTaskIds.has(task.id)
+                                ? "is-expanded"
+                                : ""}
+                              size={16}
+                              strokeWidth={1.8}
+                              aria-hidden="true"
+                            />
+                          </span>
+                          <span class="task-row-metadata">
+                            {#if task.due_date}
+                              <span>
+                                <CalendarDays
+                                  size={13}
+                                  strokeWidth={1.8}
+                                  aria-hidden="true"
+                                />
+                                {formatTaskDate(task.due_date)}
+                              </span>
+                            {/if}
+                            {#if task.repeat_rule !== "none"}
+                              <span>
+                                <Repeat2
+                                  size={13}
+                                  strokeWidth={1.8}
+                                  aria-hidden="true"
+                                />
+                                {taskRepeatLabel(task)}
+                              </span>
+                            {/if}
+                            {#if task.subtasks.length}
+                              <span>
+                                <CheckSquare2
+                                  size={13}
+                                  strokeWidth={1.8}
+                                  aria-hidden="true"
+                                />
+                                {task.subtasks.filter((item) => item.completed)
+                                  .length}/{task.subtasks.length}
+                              </span>
+                            {/if}
+                            {#if task.attachments.length}
+                              <span>
+                                <Paperclip
+                                  size={13}
+                                  strokeWidth={1.8}
+                                  aria-hidden="true"
+                                />
+                                {task.attachments.length}
+                              </span>
+                            {/if}
+                          </span>
+                          {#if task.labels.length}
+                            <span class="task-label-list">
+                              {#each task.labels as label (label)}
+                                <span>{label}</span>
+                              {/each}
+                            </span>
+                          {/if}
+                        </button>
+                        <div
+                          class="task-row-actions"
+                          role="group"
+                          aria-label={`Actions for ${task.title}`}
+                        >
+                          {#if archived}
+                            <button
+                              class="ui-button ui-button--secondary task-row-action task-row-restore-action"
+                              type="button"
+                              disabled={taskActionId === task.id}
+                              aria-label={`Restore ${task.title}`}
+                              title="Restore task"
+                              data-od-id={`restore-task-${task.id}`}
+                              onclick={() => restoreTaskFromArchive(task)}
+                            >
+                              <RotateCcw
+                                size={15}
+                                strokeWidth={1.8}
+                                aria-hidden="true"
+                              />
+                              <span>Restore</span>
+                            </button>
+                          {:else}
+                            <button
+                              class="ui-button ui-button--secondary task-row-action task-row-edit-action"
+                              type="button"
+                              disabled={taskActionId === task.id}
+                              aria-label={`Edit ${task.title}`}
+                              title="Edit task"
+                              data-od-id={`edit-task-${task.id}`}
+                              onclick={() => openTaskEditor(task)}
+                            >
+                              <Pencil
+                                size={15}
+                                strokeWidth={1.8}
+                                aria-hidden="true"
+                              />
+                              <span>Edit</span>
+                            </button>
+                            <button
+                              class="ui-button ui-button--danger task-row-action task-row-archive-action"
+                              type="button"
+                              disabled={taskActionId === task.id}
+                              aria-label={`Archive ${task.title}`}
+                              title="Archive task"
+                              data-od-id={`archive-task-${task.id}`}
+                              onclick={() => archiveTaskFromList(task)}
+                            >
+                              <ArchiveIcon
+                                size={15}
+                                strokeWidth={1.8}
+                                aria-hidden="true"
+                              />
+                              <span>Archive</span>
+                            </button>
+                          {/if}
+                          <button
+                            class={[
+                              "ui-button",
+                              "ui-button--danger",
+                              "task-row-action",
+                              "task-row-delete-action",
+                              pendingTaskDeleteId === task.id && "is-armed",
+                            ]}
+                            type="button"
+                            disabled={taskActionId === task.id}
+                            aria-label={pendingTaskDeleteId === task.id
+                              ? `Confirm deletion of ${task.title}`
+                              : `Delete ${task.title}`}
+                            title={pendingTaskDeleteId === task.id
+                              ? "Select again to confirm deletion"
+                              : "Delete task"}
+                            data-od-id={`delete-task-${task.id}`}
+                            onclick={() =>
+                              archived
+                                ? deleteArchivedTaskFromList(task)
+                                : deleteTaskFromList(task)}
+                          >
+                            <Trash2
+                              size={15}
+                              strokeWidth={1.8}
+                              aria-hidden="true"
+                            />
+                            <span
+                              >{pendingTaskDeleteId === task.id
+                                ? "Confirm"
+                                : "Delete"}</span
+                            >
+                          </button>
+                        </div>
+                      </div>
+
+                      {#if expandedTaskIds.has(task.id)}
+                        <div
+                          class="task-row-details"
+                          id={`task-details-${task.id}`}
+                          data-od-id={`task-details-${task.id}`}
+                        >
+                          {#if task.description}
+                            <div class="task-description-block">
+                              <span>Description</span>
+                              <p>{task.description}</p>
+                            </div>
+                          {/if}
+                          {#if task.subtasks.length}
+                            <div class="task-subtask-block">
+                              <div class="task-subtask-heading">
+                                <span>Subtasks</span>
+                                <small>
+                                  {task.subtasks.filter(
+                                    (item) => item.completed,
+                                  ).length} / {task.subtasks.length} done
+                                </small>
+                              </div>
+                              <div class="task-subtask-list">
+                                {#each task.subtasks as subtask (subtask.id)}
+                                  <label
+                                    class={[
+                                      "task-subtask-row",
+                                      subtask.completed && "is-complete",
+                                    ]}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={subtask.completed}
+                                      disabled={archived ||
+                                        subtaskActionId ===
+                                          `${task.id}:${subtask.id}`}
+                                      aria-label={subtask.completed
+                                        ? `Mark ${subtask.title} incomplete`
+                                        : `Complete ${subtask.title}`}
+                                      onchange={() =>
+                                        !archived &&
+                                        toggleSubtask(task, subtask.id)}
+                                    />
+                                    <span>{subtask.title}</span>
+                                    <small
+                                      >{subtask.completed
+                                        ? "Done"
+                                        : "Open"}</small
+                                    >
+                                  </label>
+                                {/each}
+                              </div>
+                            </div>
+                          {/if}
+                          {#if !task.description && !task.subtasks.length}
+                            <p class="task-detail-empty">
+                              No description or subtasks yet.
+                            </p>
+                          {/if}
+                        </div>
+                      {/if}
+                    </article>
+                  {/snippet}
+
+                  {#if taskView === "active"}
+                    {#if filteredActiveTasks.length}
+                      {#each taskDueGroups as group (group.id)}
+                        <section
+                          class="task-due-group"
+                          data-od-id={`task-group-${group.id}`}
+                        >
+                          <header class="task-due-group-heading">
+                            <div>
+                              <h3>{group.label}</h3>
+                              <span>{group.range}</span>
+                            </div>
+                            <strong>{group.tasks.length}</strong>
+                          </header>
+                          {#if group.tasks.length}
+                            <AnimatedList
+                              items={group.tasks}
+                              getKey={(task) => task.id}
+                              showGradients={false}
+                              enableArrowNavigation={false}
+                              displayScrollbar={false}
+                              class="tasks-animated-list"
+                            >
+                              {#snippet children(task)}
+                                {@render taskRow(task, false)}
+                              {/snippet}
+                            </AnimatedList>
+                          {:else}
+                            <p class="task-group-empty">
+                              No tasks in this range.
+                            </p>
+                          {/if}
+                        </section>
+                      {/each}
+                    {:else if tasks.length && taskLabelFilter}
+                      <div class="large-empty-state">
+                        <Tag size={32} strokeWidth={1.5} aria-hidden="true" />
+                        <h3>No tasks labelled {taskLabelFilter}</h3>
+                        <p>Choose another label or show the complete list.</p>
+                        <button
+                          class="ui-button ui-button--secondary"
+                          type="button"
+                          onclick={() => (taskLabelFilter = "")}
+                        >
+                          Show all labels
+                        </button>
+                      </div>
+                    {:else}
+                      <div class="large-empty-state">
+                        <CheckSquare2
+                          size={32}
+                          strokeWidth={1.5}
+                          aria-hidden="true"
+                        />
+                        <h3>Your task list is clear</h3>
+                        <p>
+                          Create a task here or use the dashboard quick add.
+                        </p>
+                        <button
+                          class="ui-button ui-button--secondary secondary-btn"
+                          type="button"
+                          onclick={() => openTaskEditor()}
+                          >Create your first task</button
+                        >
+                      </div>
+                    {/if}
+                  {:else if loadingArchivedTasks}
+                    <div class="large-empty-state" role="status">
+                      <ArchiveIcon
+                        size={32}
+                        strokeWidth={1.5}
+                        aria-hidden="true"
+                      />
+                      <h3>Loading archived tasks</h3>
+                      <p>Retrieving tasks stored outside the active plan.</p>
+                    </div>
+                  {:else if archivedTasksError}
+                    <div class="large-empty-state" role="alert">
+                      <ArchiveIcon
+                        size={32}
+                        strokeWidth={1.5}
+                        aria-hidden="true"
+                      />
+                      <h3>Archive unavailable</h3>
+                      <p>{archivedTasksError}</p>
+                      <button
+                        class="ui-button ui-button--secondary"
+                        type="button"
+                        onclick={loadArchivedTasks}
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  {:else if filteredArchivedTasks.length}
+                    <section
+                      class="task-due-group task-archive-group"
+                      data-od-id="archived-tasks"
+                    >
+                      <header class="task-due-group-heading">
+                        <div>
+                          <h3>Archived tasks</h3>
+                          <span>Newest archived first</span>
+                        </div>
+                        <strong>{filteredArchivedTasks.length}</strong>
+                      </header>
+                      <AnimatedList
+                        items={filteredArchivedTasks}
+                        getKey={(task) => task.id}
+                        showGradients={false}
+                        enableArrowNavigation={false}
+                        displayScrollbar={false}
+                        class="tasks-animated-list"
+                      >
+                        {#snippet children(task)}
+                          {@render taskRow(task, true)}
+                        {/snippet}
+                      </AnimatedList>
+                    </section>
+                  {:else if archivedTasks.length && taskLabelFilter}
+                    <div class="large-empty-state">
+                      <Tag size={32} strokeWidth={1.5} aria-hidden="true" />
+                      <h3>No archived tasks labelled {taskLabelFilter}</h3>
+                      <p>Choose another label or show the complete archive.</p>
+                      <button
+                        class="ui-button ui-button--secondary"
+                        type="button"
+                        onclick={() => (taskLabelFilter = "")}
+                      >
+                        Show all labels
+                      </button>
+                    </div>
+                  {:else}
+                    <div class="large-empty-state">
+                      <ArchiveIcon
+                        size={32}
+                        strokeWidth={1.5}
+                        aria-hidden="true"
+                      />
+                      <h3>No archived tasks</h3>
+                      <p>
+                        Archived tasks will appear here until restored or
+                        deleted.
+                      </p>
+                      <button
+                        class="ui-button ui-button--secondary"
+                        type="button"
+                        onclick={() => selectTaskView("active")}
+                      >
+                        Return to active tasks
+                      </button>
+                    </div>
+                  {/if}
+                </section>
+                {#if taskView === "active"}
+                  <aside
+                    class="tasks-summary-box tasks-focus-panel"
+                    data-od-id="tasks-focus-timer"
+                  >
+                    <div class="focus-timer-heading">
+                      <span>[ FOCUS.MODE ]</span>
+                      <small>{focusRunning ? "RUNNING" : "READY"}</small>
+                    </div>
+                    <label for="focus-subject">Focus target</label>
+                    <input
+                      id="focus-subject"
+                      class="text-input focus-subject-input"
+                      bind:value={focusSubject}
+                      placeholder="What needs your attention?"
+                      maxlength="120"
+                    />
+                    <time
+                      class="focus-timer-readout"
+                      datetime={`PT${focusRemainingSeconds}S`}
+                      aria-live="polite">{focusTimeLabel}</time
+                    >
+                    <div
+                      class="focus-timer-track"
+                      aria-hidden="true"
+                      style:--focus-progress={`${focusProgress}%`}
+                    >
+                      <i></i>
+                    </div>
+                    <div
+                      class="focus-duration-options"
+                      aria-label="Focus length"
+                    >
+                      {#each focusDurations as minutes (minutes)}
+                        <button
+                          type="button"
+                          class:active={focusDurationMinutes === minutes}
+                          aria-pressed={focusDurationMinutes === minutes}
+                          disabled={focusRunning}
+                          onclick={() => setFocusDuration(minutes)}
+                          >{minutes}m</button
+                        >
+                      {/each}
+                      <label class="focus-custom-duration">
+                        <span class="sr-only">Custom focus duration</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max="240"
+                          step="1"
+                          value={focusDurationMinutes}
+                          style:--focus-duration-digits={Math.max(
+                            2,
+                            String(focusDurationMinutes).length,
+                          )}
+                          disabled={focusRunning}
+                          aria-label="Custom focus duration in minutes"
+                          oninput={(event) =>
+                            setFocusDuration(event.currentTarget.valueAsNumber)}
+                        />
+                        <span>min</span>
+                      </label>
+                    </div>
+                    <div class="focus-timer-actions">
+                      <button
+                        class="ui-button ui-button--primary primary-btn"
+                        type="button"
+                        onclick={startFocusSession}
+                      >
+                        <Play size={15} strokeWidth={1.8} aria-hidden="true" />
+                        Start focus
+                      </button>
+                      <button
+                        class="ui-button ui-button--secondary secondary-btn"
+                        type="button"
+                        onclick={resetFocusTimer}
+                      >
+                        <RotateCcw
+                          size={15}
+                          strokeWidth={1.8}
+                          aria-hidden="true"
+                        />
+                        Reset
+                      </button>
+                    </div>
+                    <dl>
+                      <div>
+                        <dt>Open</dt>
+                        <dd>{tasks.length - completedCount}</dd>
+                      </div>
+                      <div>
+                        <dt>Completed</dt>
+                        <dd>{completedCount}</dd>
+                      </div>
+                    </dl>
+                  </aside>
+                {/if}
+              </div>
+            </section>
+          {:else if activeSection === "calendar"}
+            <CalendarPage />
+          {:else if activeSection === "contacts"}
+            <ContactsPage />
+          {:else if activeSection === "rss"}
+            <RssReaderPage />
+          {:else if activeSection === "journal"}
+            <JournalPage />
+          {:else if activeSection === "youtube"}
+            <YoutubePage />
+          {:else if activeSection === "coding"}
+            <CodingPage />
+          {:else if activeSection === "subscriptions"}
+            <SubscriptionsPage />
+          {:else if placeholderPage}
+            <section
+              class="feature-page placeholder-page product-page"
+              data-od-id={`${activeSection}-page`}
+            >
+              <div class="feature-page-intro page-header">
+                <h2>$ {activeSection} --init</h2>
+                <p>{placeholderPage.description}</p>
+              </div>
+              <div class="placeholder-page-layout">
+                <section class="placeholder-primary-panel">
+                  <div class="placeholder-page-icon" aria-hidden="true">
+                    <ChartCandlestick size={28} strokeWidth={1.5} />
+                  </div>
+                  <p>{placeholderPage.primaryCopy}</p>
+                  <button
+                    type="button"
+                    onclick={() =>
+                      showToast("This page is ready for its next iteration")}
+                    >Set up this page</button
+                  >
+                </section>
+                <div class="placeholder-module-grid">
+                  {#each placeholderPage.modules as module (module)}
+                    <section>
+                      <span>{module}</span>
+                      <div class="placeholder-lines" aria-hidden="true">
+                        <i></i><i></i><i></i>
+                      </div>
+                    </section>
+                  {/each}
+                </div>
+              </div>
+            </section>
+          {/if}
+        </div>
+      {/key}
+    </main>
+  </div>
+
+  <div
+    class={["toast", toastMessage && "show"]}
+    role="status"
+    aria-live="polite"
+  >
+    {toastMessage}
+  </div>
+
+  <dialog
+    class={["focus-session-dialog", focusLeaving && "is-leaving"]}
+    {@attach captureFocusDialog}
+    aria-labelledby="focus-session-target"
+    oncancel={(event) => {
+      event.preventDefault();
+      endFocusSession();
+    }}
+    data-od-id="focus-session-overlay"
+  >
+    <div class="focus-session-shell">
+      <div class="focus-session-burst" aria-hidden="true">
+        <PrismaticBurst
+          intensity={burstIntensity}
+          speed={burstSpeed}
+          animationType="hover"
+          colors={["#07140f", "#47dba2", "#9af7d6", "#395fff", "#c87dff"]}
+          distort={burstDistort}
+          paused={burstPaused}
+          hoverDampness={burstHoverDampness}
+          rayCount={burstRayCount}
+          mixBlendMode="screen"
+        />
+      </div>
+      <header class="focus-session-header">
+        <div>
+          <span>[ FOCUS.SESSION ]</span>
+          <small>{focusSessionStatus}</small>
+        </div>
+        <button
+          type="button"
+          aria-label="End focus session"
+          onclick={endFocusSession}
+        >
+          <X size={18} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+      </header>
+
+      <main class="focus-session-content">
+        <p>Focus target</p>
+        <h2 id="focus-session-target">{focusSubject}</h2>
+        <time
+          datetime={`PT${focusRemainingSeconds}S`}
+          aria-live="polite"
+          aria-atomic="true">{focusTimeLabel}</time
+        >
+        <div
+          class="focus-session-progress"
+          aria-label={`${Math.round(focusProgress)} percent complete`}
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow={Math.round(focusProgress)}
+          style:--focus-progress={`${focusProgress}%`}
+        >
+          <i></i>
+        </div>
+        <span>{focusDurationMinutes} minute session</span>
+      </main>
+
+      <section
+        class="focus-burst-customizer"
+        aria-label="Prismatic Burst customization"
+      >
+        <div class="focus-burst-customizer-heading">
+          <span>Visual controls</span>
+          <button type="button" onclick={resetBurstControls}>Reset</button>
+        </div>
+
+        <label>
+          <span>Intensity <output>{burstIntensity.toFixed(1)}</output></span>
+          <input
+            type="range"
+            min="0.5"
+            max="4"
+            step="0.1"
+            bind:value={burstIntensity}
+          />
+        </label>
+
+        <label>
+          <span>Speed <output>{burstSpeed.toFixed(2)}</output></span>
+          <input
+            type="range"
+            min="0"
+            max="1.5"
+            step="0.05"
+            bind:value={burstSpeed}
+          />
+        </label>
+
+        <label>
+          <span>Distort <output>{burstDistort.toFixed(1)}</output></span>
+          <input
+            type="range"
+            min="0"
+            max="10"
+            step="0.1"
+            bind:value={burstDistort}
+          />
+        </label>
+
+        <label>
+          <span
+            >Hover dampness
+            <output>{burstHoverDampness.toFixed(2)}</output></span
+          >
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            bind:value={burstHoverDampness}
+          />
+        </label>
+
+        <label>
+          <span>Ray count <output>{burstRayCount}</output></span>
+          <input
+            type="range"
+            min="0"
+            max="48"
+            step="1"
+            bind:value={burstRayCount}
+          />
+        </label>
+
+        <label class="focus-burst-pause">
+          <span>Paused</span>
+          <input type="checkbox" bind:checked={burstPaused} />
+          <i aria-hidden="true"></i>
+        </label>
+      </section>
+
+      <footer class="focus-session-footer">
+        <span>Esc ends session</span>
+        <div>
+          <button
+            class="ui-button ui-button--primary focus-session-primary"
+            type="button"
+            onclick={toggleFocusTimer}
+          >
+            {#if focusRemainingSeconds <= 0}
+              <RotateCcw size={17} strokeWidth={1.8} aria-hidden="true" />
+              Restart
+            {:else if focusRunning}
+              <Pause size={17} strokeWidth={1.8} aria-hidden="true" />
+              Pause
+            {:else}
+              <Play size={17} strokeWidth={1.8} aria-hidden="true" />
+              Resume
+            {/if}
+          </button>
+          <button
+            class="ui-button ui-button--secondary focus-session-secondary"
+            type="button"
+            onclick={endFocusSession}
+          >
+            End session
+          </button>
+        </div>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog
+    class="command-dialog"
+    {@attach captureCommandDialog}
+    onclose={() => (commandQuery = "")}
+    onclick={(event) => event.target === commandDialog && commandDialog.close()}
+    data-od-id="command-dialog"
+  >
+    <div class="dialog-head">
+      <Search size={19} strokeWidth={1.8} aria-hidden="true" />
+      <label class="sr-only" for="command-search">Filter pages</label>
+      <input
+        id="command-search"
+        class="command-search-input"
+        type="search"
+        placeholder="Type a page or command..."
+        autocomplete="off"
+        spellcheck="false"
+        bind:value={commandQuery}
+        onkeydown={handleCommandSearchKeydown}
+        {@attach captureCommandSearchInput}
+        data-od-id="command-search-input"
+      />
+      <button
+        class="ui-button ui-button--ghost ui-button--icon dialog-close"
+        aria-label="Close command menu"
+        onclick={() => commandDialog?.close()}
+        ><X size={18} strokeWidth={1.8} aria-hidden="true" /></button
+      >
+    </div>
+    <div class="command-list">
+      {#each filteredProductPages as page (page.id)}
+        <button class="command-option" onclick={() => jumpFromCommand(page.id)}
+          ><span>{page.label}</span><span class="keycap">{page.code}</span
+          ></button
+        >
+      {:else}
+        <div class="command-empty" role="status">
+          <span>[ NO MATCHES ]</span>
+          <p>Try Dashboard, Tasks, RSS, or another page name.</p>
+        </div>
+      {/each}
+    </div>
+  </dialog>
+
+  <dialog
+    class="settings-dialog task-editor-dialog"
+    {@attach captureTaskEditorDialog}
+    onclose={resetTaskEditor}
+    onclick={(event) =>
+      event.target === taskEditorDialog && taskEditorDialog.close()}
+    data-od-id="task-editor-dialog"
+  >
+    <div class="settings-heading task-editor-heading">
+      <div>
+        <span>[ TASK.EDITOR ]</span>
+        <h2>{editingTaskId ? "Edit task" : "New task"}</h2>
+        <p>
+          {editingTaskId
+            ? "Update the task details and schedule."
+            : "Capture the work, then add only the structure it needs."}
+        </p>
+      </div>
+      <button
+        class="ui-button ui-button--ghost ui-button--icon dialog-close"
+        type="button"
+        aria-label="Close task editor"
+        onclick={() => taskEditorDialog?.close()}
+      >
+        <X size={18} strokeWidth={1.8} aria-hidden="true" />
+      </button>
+    </div>
+
+    <form
+      class="task-editor-form"
+      onsubmit={saveTask}
+      data-od-id="task-editor-form"
+    >
+      <div class="task-editor-scroll">
+        <div class="task-field task-field-wide">
+          <label for="task-name">Name</label>
+          <input
+            id="task-name"
+            class="text-input"
+            bind:value={taskName}
+            maxlength="180"
+            placeholder="What needs to be done?"
+            required
+          />
+        </div>
+
+        <div class="task-field task-field-wide">
+          <label for="task-description">Description</label>
+          <textarea
+            id="task-description"
+            class="text-input task-description-input"
+            bind:value={taskDescription}
+            maxlength="4000"
+            rows="4"
+            placeholder="Add context, links, or a clear definition of done."
+          ></textarea>
+        </div>
+
+        <div class="task-field">
+          <label for="task-priority">Priority</label>
+          <select
+            id="task-priority"
+            class="select-input"
+            bind:value={taskPriority}
+          >
+            <option value="none">No priority</option>
+            <option value="p1">P1 — Urgent</option>
+            <option value="p2">P2 — High</option>
+            <option value="p3">P3 — Medium</option>
+            <option value="p4">P4 — Low</option>
+          </select>
+        </div>
+
+        <div class="task-field">
+          <label for="task-due-date">Due date</label>
+          <div class="input-with-icon">
+            <CalendarDays size={16} strokeWidth={1.8} aria-hidden="true" />
+            <input
+              id="task-due-date"
+              class="text-input"
+              type="date"
+              bind:value={taskDueDate}
+            />
+          </div>
+        </div>
+
+        <div class="task-field task-field-wide">
+          <label for="task-labels">Labels</label>
+          <div class="input-with-icon">
+            <Tag size={16} strokeWidth={1.8} aria-hidden="true" />
+            <input
+              id="task-labels"
+              class="text-input"
+              bind:value={taskLabels}
+              placeholder="design, planning, personal"
+            />
+          </div>
+          <small>Separate labels with commas. Up to 12 labels.</small>
+        </div>
+
+        <fieldset class="task-fieldset task-field-wide">
+          <legend>
+            <Repeat2 size={16} strokeWidth={1.8} aria-hidden="true" />
+            Repeat
+          </legend>
+          <div class="task-repeat-grid">
+            <div class="task-field">
+              <label for="task-repeat-rule">Schedule</label>
+              <select
+                id="task-repeat-rule"
+                class="select-input"
+                bind:value={taskRepeatRule}
+              >
+                <option value="none">Does not repeat</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+                <option value="yearly">Yearly</option>
+                <option value="custom">Custom</option>
+              </select>
+            </div>
+            {#if taskRepeatRule === "custom"}
+              <div class="task-field">
+                <label for="task-repeat-interval">Every</label>
+                <div class="repeat-interval-row">
+                  <input
+                    id="task-repeat-interval"
+                    class="text-input"
+                    type="number"
+                    min="1"
+                    max="365"
+                    bind:value={taskRepeatInterval}
+                  />
+                  <select
+                    class="select-input"
+                    bind:value={taskRepeatUnit}
+                    aria-label="Repeat unit"
+                  >
+                    <option value="days">Days</option>
+                    <option value="weeks">Weeks</option>
+                    <option value="months">Months</option>
+                    <option value="years">Years</option>
+                  </select>
+                </div>
+              </div>
+            {/if}
+            {#if taskRepeatRule !== "none"}
+              <div class="task-field task-repeat-basis">
+                <label for="task-reschedule-from">Reschedule from</label>
+                <select
+                  id="task-reschedule-from"
+                  class="select-input"
+                  bind:value={taskRescheduleFrom}
+                >
+                  <option value="due_date">Previous due date</option>
+                  <option value="completion_date">Completion date</option>
+                </select>
+              </div>
+            {/if}
+          </div>
+        </fieldset>
+
+        <fieldset class="task-fieldset task-field-wide">
+          <legend>
+            <CheckSquare2 size={16} strokeWidth={1.8} aria-hidden="true" />
+            Subtasks
+          </legend>
+          <div class="subtask-editor-list">
+            {#each taskSubtasks as subtask, index (subtask.id ?? index)}
+              <div class="subtask-editor-row">
+                <input
+                  type="checkbox"
+                  bind:checked={subtask.completed}
+                  aria-label={`Mark subtask ${index + 1} complete`}
+                />
+                <input
+                  class="text-input"
+                  bind:value={subtask.title}
+                  maxlength="180"
+                  placeholder={`Subtask ${index + 1}`}
+                />
+                <button
+                  class="ui-button ui-button--danger ui-button--icon icon-button"
+                  type="button"
+                  aria-label={`Remove subtask ${index + 1}`}
+                  onclick={() => removeSubtaskDraft(index)}
+                >
+                  <X size={16} strokeWidth={1.8} aria-hidden="true" />
+                </button>
+              </div>
+            {:else}
+              <p class="task-field-empty">No subtasks added.</p>
+            {/each}
+          </div>
+          <button
+            class="ui-button ui-button--secondary task-inline-action"
+            type="button"
+            onclick={addSubtaskDraft}
+          >
+            <Plus size={15} strokeWidth={1.8} aria-hidden="true" />
+            Add subtask
+          </button>
+        </fieldset>
+
+        <fieldset class="task-fieldset task-field-wide">
+          <legend>
+            <Paperclip size={16} strokeWidth={1.8} aria-hidden="true" />
+            Attachments
+          </legend>
+          {#if taskAttachments.length}
+            <div class="task-attachment-list">
+              {#each taskAttachments as attachment (attachment.id)}
+                <div class="task-attachment-row">
+                  <button
+                    class="task-attachment-download"
+                    type="button"
+                    onclick={() => downloadTaskAttachment(attachment)}
+                  >
+                    <span>{attachment.file_name}</span>
+                    <small
+                      >{Math.max(1, Math.round(attachment.byte_size / 1024))}
+                      KB</small
+                    >
+                  </button>
+                  <button
+                    class="ui-button ui-button--danger ui-button--icon icon-button"
+                    type="button"
+                    aria-label={`Delete ${attachment.file_name}`}
+                    onclick={() => removeTaskAttachment(attachment)}
+                  >
+                    <Trash2 size={15} strokeWidth={1.8} aria-hidden="true" />
+                  </button>
+                </div>
+              {/each}
+            </div>
+          {/if}
+          <label class="task-file-picker" for="task-attachments">
+            <Paperclip size={16} strokeWidth={1.8} aria-hidden="true" />
+            <span>
+              {pendingTaskFiles.length
+                ? `${pendingTaskFiles.length} file${
+                    pendingTaskFiles.length === 1 ? "" : "s"
+                  } selected`
+                : "Choose files"}
+            </span>
+            <input
+              id="task-attachments"
+              type="file"
+              multiple
+              onchange={selectTaskAttachments}
+            />
+          </label>
+          <small>Files are private to your account. Maximum 10 MB each.</small>
+        </fieldset>
+
+        {#if taskEditorError}
+          <p class="form-error task-field-wide" role="alert">
+            {taskEditorError}
+          </p>
+        {/if}
+      </div>
+
+      <div class="task-editor-actions task-field-wide">
+        {#if editingTaskId}
+          <button
+            class="ui-button ui-button--danger task-delete-button"
+            type="button"
+            disabled={savingTask}
+            onclick={removeCurrentTask}
+          >
+            <Trash2 size={16} strokeWidth={1.8} aria-hidden="true" />
+            Delete task
+          </button>
+        {/if}
+        <button
+          class="ui-button ui-button--primary primary-btn"
+          type="submit"
+          disabled={savingTask}
+          data-od-id="save-task"
+        >
+          {savingTask
+            ? "Saving…"
+            : editingTaskId
+              ? "Save changes"
+              : "Create task"}
+        </button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog
+    class="settings-dialog widget-library-dialog"
+    {@attach captureWidgetLibraryDialog}
+    onclick={(event) =>
+      event.target === widgetLibraryDialog && widgetLibraryDialog.close()}
+    data-od-id="widget-library-dialog"
+  >
+    <div class="settings-heading">
+      <div>
+        <h2>Add a widget</h2>
+        <p>New widgets are added to your dashboard.</p>
+      </div>
+      <button
+        class="ui-button ui-button--ghost ui-button--icon dialog-close"
+        aria-label="Close widget library"
+        onclick={() => widgetLibraryDialog?.close()}
+        ><X size={18} strokeWidth={1.8} aria-hidden="true" /></button
+      >
+    </div>
+    <div class="widget-library-grid">
+      {#each widgetCatalog as item (item.kind)}
+        <button
+          class="widget-library-item"
+          type="button"
+          disabled={addingWidgetKind !== "" || savingLayout}
+          onclick={() => addWidget(item.kind, item.size)}
+          data-od-id={`add-widget-${item.kind}`}
+        >
+          <span>
+            <strong>{item.title}</strong>
+            <small>{item.description}</small>
+          </span>
+          <span class="data-note">
+            {addingWidgetKind === item.kind ? "Adding…" : item.size}
+          </span>
+        </button>
+      {/each}
+    </div>
+  </dialog>
+
+  <dialog
+    class="settings-dialog profile-settings-dialog"
+    {@attach captureSettingsDialog}
+    onclose={clearUserSettingsDrafts}
+    onclick={(event) =>
+      event.target === settingsDialog && settingsDialog.close()}
+    data-od-id="user-settings-dialog"
+  >
+    <div class="settings-heading">
+      <div>
+        <h2>Account settings</h2>
+        <p>
+          {dashboard.user.role === "administrator" ? "Administrator" : "Member"} /
+          {dashboard.user.email}
+        </p>
+      </div>
+      <button
+        class="ui-button ui-button--ghost ui-button--icon dialog-close"
+        aria-label="Close account settings"
+        onclick={() => settingsDialog?.close()}
+        ><X size={18} strokeWidth={1.8} aria-hidden="true" /></button
+      >
+    </div>
+
+    <form
+      class="settings-form"
+      onsubmit={saveSettings}
+      data-od-id="user-settings-form"
+    >
+      <div class="settings-form-scroll">
+        <div class="profile-avatar-editor" data-od-id="avatar-settings">
+          <span class="settings-avatar" aria-hidden="true">
+            {#if avatarPreviewSource()}
+              <img
+                src={avatarPreviewSource()}
+                alt=""
+                onerror={() => (avatarAvailable = false)}
+              />
+            {:else}
+              {profileInitials}
+            {/if}
+          </span>
+          <div class="profile-avatar-copy">
+            <strong>Profile image</strong>
+            <span>JPEG, PNG, WebP, or AVIF up to 10 MB.</span>
+          </div>
+          <div class="profile-avatar-actions">
+            <label
+              class="ui-button ui-button--secondary secondary-btn avatar-upload"
+            >
+              Choose image
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/avif"
+                onchange={selectAvatar}
+                data-od-id="choose-user-avatar"
+              />
+            </label>
+            <button
+              class="ui-button ui-button--danger background-reset"
+              type="button"
+              onclick={resetAvatar}
+              data-od-id="remove-user-avatar">Remove</button
+            >
+          </div>
+        </div>
+
+        <section
+          class="profile-wallpaper-editor"
+          aria-labelledby="session-wallpaper-heading"
+          data-od-id="session-wallpaper-settings"
+        >
+          <div class="profile-wallpaper-heading">
+            <strong id="session-wallpaper-heading">Session backgrounds</strong>
+            <span>JPEG, PNG, WebP, or AVIF up to 30 MB.</span>
+          </div>
+          <div class="profile-wallpaper-list">
+            {#each userWallpaperOptions as option (option.id)}
+              <div
+                class="profile-wallpaper-row"
+                data-od-id={`user-${option.id}-wallpaper-settings`}
+              >
+                <div
+                  class="background-preview appearance-preview profile-wallpaper-preview"
+                  style:--background-preview={wallpaperBackground(option.id)}
+                  style:--preview-blur="0px"
+                  style:--preview-brightness={option.id === "welcome"
+                    ? "78%"
+                    : "88%"}
+                  style:--preview-contrast={option.id === "welcome"
+                    ? "108%"
+                    : "104%"}
+                  style:--preview-saturation={option.id === "welcome"
+                    ? "72%"
+                    : "82%"}
+                  aria-label={`${option.title} preview`}
+                  role="img"
+                >
+                  <span>[ {option.code} ]</span>
+                </div>
+                <div class="profile-wallpaper-copy">
+                  <strong>{option.title}</strong>
+                  <p>{option.description}</p>
+                  <small>{wallpaperFileLabel(option.id)}</small>
+                </div>
+                <div class="profile-wallpaper-actions">
+                  <label
+                    class="ui-button ui-button--secondary secondary-btn background-upload"
+                  >
+                    Choose image
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,image/avif"
+                      onchange={(event) => selectWallpaper(option.id, event)}
+                      data-od-id={`choose-${option.id}-wallpaper`}
+                    />
+                  </label>
+                  <button
+                    class="ui-button ui-button--danger background-reset"
+                    type="button"
+                    onclick={() => resetWallpaper(option.id)}
+                    data-od-id={`reset-${option.id}-wallpaper`}
+                    >Use default</button
+                  >
+                </div>
+              </div>
+            {/each}
+          </div>
+        </section>
+
+        <label for="settings-name">Display name</label>
+        <input
+          id="settings-name"
+          class="text-input"
+          bind:value={settingsDisplayName}
+          maxlength="60"
+          required
+        />
+
+        <label for="settings-location">Weather location</label>
+        <input
+          id="settings-location"
+          class="text-input"
+          bind:value={settingsLocation}
+          maxlength="80"
+          required
+        />
+
+        <label for="settings-timezone">Timezone</label>
+        <input
+          id="settings-timezone"
+          class="text-input"
+          bind:value={settingsTimezone}
+          maxlength="80"
+          placeholder="Europe/London"
+          required
+        />
+
+        <label for="settings-temperature">Temperature unit</label>
+        <select
+          id="settings-temperature"
+          class="select-input"
+          bind:value={settingsTemperatureUnit}
+        >
+          <option value="celsius">Celsius</option>
+          <option value="fahrenheit">Fahrenheit</option>
+        </select>
+
+        {#if settingsError}
+          <p class="form-error" role="alert">{settingsError}</p>
+        {/if}
+
+        <button
+          class="admin-entry"
+          type="button"
+          onclick={openAppearance}
+          data-od-id="open-dashboard-appearance"
+        >
+          <span
+            ><strong>Appearance</strong><small
+              >Background processing and login surface</small
+            ></span
+          >
+          <ImageIcon size={18} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+
+        {#if dashboard.user.role === "administrator"}
+          <button
+            class="admin-entry"
+            type="button"
+            onclick={openAdministration}
+            data-od-id="open-user-administration"
+          >
+            <span
+              ><strong>User administration</strong><small
+                >Roles, access, and account removal</small
+              ></span
+            >
+            <ArrowRight size={18} strokeWidth={1.8} aria-hidden="true" />
+          </button>
+        {/if}
+        <button
+          class="admin-entry destructive-entry"
+          type="button"
+          onclick={openDestructiveActions}
+          data-od-id="open-destructive-actions"
+        >
+          <span
+            ><strong>Destructive actions</strong><small
+              >Permanently remove complete areas of your data</small
+            ></span
+          >
+          <Trash2 size={18} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+      </div>
+
+      <div class="settings-actions">
+        <button
+          class="ui-button ui-button--ghost sign-out-btn"
+          type="button"
+          onclick={signOut}>Sign out</button
+        >
+        <button
+          class="ui-button ui-button--primary primary-btn"
+          type="submit"
+          disabled={savingSettings}
+          data-od-id="save-user-settings"
+        >
+          {savingSettings ? "Saving…" : "Save changes"}
+        </button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog
+    class="settings-dialog destructive-dialog"
+    {@attach captureDestructiveDialog}
+    onclick={(event) =>
+      event.target === destructiveDialog && void closeDestructiveActions()}
+    data-od-id="destructive-actions-dialog"
+  >
+    <div class="settings-heading">
+      <button
+        class="nested-dialog-back"
+        type="button"
+        aria-label="Go back to account settings"
+        onclick={() => closeDestructiveActions(true)}
+        data-od-id="back-to-settings-from-destructive-actions"
+      >
+        <ChevronLeft size={17} strokeWidth={1.8} aria-hidden="true" />
+        <span>Settings</span>
+      </button>
+      <div>
+        <h2>Destructive actions</h2>
+        <p>Permanent, account-scoped content deletion</p>
+      </div>
+      <button
+        class="ui-button ui-button--ghost ui-button--icon dialog-close"
+        aria-label="Close destructive actions"
+        onclick={() => closeDestructiveActions()}
+        ><X size={18} strokeWidth={1.8} aria-hidden="true" /></button
+      >
+    </div>
+
+    <div class="destructive-content">
+      <div class="destructive-notice">
+        <Trash2 size={18} aria-hidden="true" />
+        <p>
+          These actions permanently delete only your account’s records. They
+          cannot be undone.
+        </p>
+      </div>
+      {#if destructiveError}
+        <p class="form-error" role="alert">{destructiveError}</p>
+      {/if}
+      <div class="destructive-list">
+        {#each destructiveContentActions as action (action.scope)}
+          <article data-od-id={`delete-${action.scope}-data`}>
+            <div>
+              <strong>{action.title}</strong>
+              <small>{action.description}</small>
+            </div>
+            <button
+              class="ui-button ui-button--danger"
+              class:confirm={pendingContentDeletion === action.scope}
+              type="button"
+              disabled={Boolean(deletingContentScope)}
+              onclick={() => removeContentArea(action)}
+            >
+              {deletingContentScope === action.scope
+                ? "Deleting…"
+                : pendingContentDeletion === action.scope
+                  ? "Confirm delete"
+                  : "Delete all"}
+            </button>
+          </article>
+        {/each}
+      </div>
+    </div>
+  </dialog>
+
+  <dialog
+    class="settings-dialog appearance-dialog"
+    {@attach captureAppearanceDialog}
+    onclose={resetAppearanceDraft}
+    onclick={(event) =>
+      event.target === appearanceDialog && void closeAppearance()}
+    data-od-id="dashboard-appearance-dialog"
+  >
+    <div class="settings-heading">
+      <button
+        class="nested-dialog-back"
+        type="button"
+        aria-label="Go back to account settings"
+        onclick={() => void closeAppearance(true)}
+        data-od-id="back-to-settings-from-appearance"
+      >
+        <ChevronLeft size={17} strokeWidth={1.8} aria-hidden="true" />
+        <span>Settings</span>
+      </button>
+      <div>
+        <h2>Appearance</h2>
+        <p>
+          {dashboard.user.role === "administrator"
+            ? "Page background processing and the global login wallpaper"
+            : "Page background processing"}
+        </p>
+      </div>
+      <button
+        class="ui-button ui-button--ghost ui-button--icon dialog-close"
+        aria-label="Close appearance settings"
+        onclick={() => void closeAppearance()}
+        ><X size={18} strokeWidth={1.8} aria-hidden="true" /></button
+      >
+    </div>
+
+    <form
+      class="appearance-editor"
+      onsubmit={saveAppearance}
+      data-od-id="dashboard-appearance-form"
+    >
+      {#if dashboard.user.role === "administrator"}
+        <div class="wallpaper-slot-grid" aria-label="Wallpaper surfaces">
+          {#each appearanceWallpaperOptions as option (option.id)}
+            <section
+              class="wallpaper-slot-card"
+              data-od-id={`wallpaper-${option.id}-settings`}
+            >
+              <div
+                class="background-preview appearance-preview wallpaper-slot-preview"
+                style:--background-preview={wallpaperBackground(option.id)}
+                style:--preview-blur="0px"
+                style:--preview-brightness="100%"
+                style:--preview-contrast="100%"
+                style:--preview-saturation="100%"
+                aria-label={`${option.title} wallpaper preview`}
+                role="img"
+              >
+                <span>[ {option.code} ]</span>
+              </div>
+              <div class="wallpaper-slot-copy">
+                <strong>{option.title}</strong>
+                <p>{option.description}</p>
+                <small>Administrator managed · publicly retrievable</small>
+              </div>
+              <span class="background-file-name">
+                {wallpaperFileLabel(option.id)}
+              </span>
+              <div class="wallpaper-slot-actions">
+                <label
+                  class="ui-button ui-button--secondary secondary-btn background-upload"
+                >
+                  Choose image
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/avif"
+                    onchange={(event) => selectWallpaper(option.id, event)}
+                    data-od-id={`choose-${option.id}-wallpaper`}
+                  />
+                </label>
+                <button
+                  class="ui-button ui-button--danger background-reset"
+                  type="button"
+                  onclick={() => resetWallpaper(option.id)}
+                  data-od-id={`reset-${option.id}-wallpaper`}
+                  >Use default</button
+                >
+              </div>
+            </section>
+          {/each}
+        </div>
+      {/if}
+
+      <div class="appearance-control-heading">
+        <strong>Page background processing</strong>
+        <span
+          >Applied to the Welcome background behind authenticated pages.</span
+        >
+      </div>
+
+      <div class="appearance-controls">
+        <label>
+          <span><strong>Blur</strong><output>{backgroundBlur}px</output></span>
+          <input
+            type="range"
+            min="0"
+            max="24"
+            step="1"
+            bind:value={backgroundBlur}
+          />
+        </label>
+        <label>
+          <span
+            ><strong>Brightness</strong><output>{backgroundBrightness}%</output
+            ></span
+          >
+          <input
+            type="range"
+            min="40"
+            max="140"
+            step="1"
+            bind:value={backgroundBrightness}
+          />
+        </label>
+        <label>
+          <span
+            ><strong>Contrast</strong><output>{backgroundContrast}%</output
+            ></span
+          >
+          <input
+            type="range"
+            min="50"
+            max="160"
+            step="1"
+            bind:value={backgroundContrast}
+          />
+        </label>
+        <label>
+          <span
+            ><strong>Saturation</strong><output>{backgroundSaturation}%</output
+            ></span
+          >
+          <input
+            type="range"
+            min="0"
+            max="180"
+            step="1"
+            bind:value={backgroundSaturation}
+          />
+        </label>
+      </div>
+
+      {#if appearanceError}
+        <p class="form-error" role="alert">{appearanceError}</p>
+      {/if}
+
+      <div class="appearance-actions">
+        <button
+          class="ui-button ui-button--secondary secondary-btn"
+          type="button"
+          onclick={resetBackgroundFilters}
+          data-od-id="reset-background-filters"
+        >
+          <RotateCcw size={16} strokeWidth={1.8} aria-hidden="true" />
+          Reset filters
+        </button>
+        <button
+          class="ui-button ui-button--primary primary-btn"
+          type="submit"
+          disabled={savingAppearance}
+          data-od-id="save-dashboard-appearance"
+        >
+          {savingAppearance ? "Saving…" : "Save appearance"}
+        </button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog
+    class="settings-dialog admin-dialog"
+    {@attach captureAdminDialog}
+    onclick={(event) => event.target === adminDialog && adminDialog.close()}
+    data-od-id="user-administration-dialog"
+  >
+    <div class="settings-heading">
+      <button
+        class="nested-dialog-back"
+        type="button"
+        aria-label="Go back to account settings"
+        onclick={() => adminDialog?.close()}
+        data-od-id="back-to-settings-from-administration"
+      >
+        <ChevronLeft size={17} strokeWidth={1.8} aria-hidden="true" />
+        <span>Settings</span>
+      </button>
+      <div>
+        <h2>People &amp; access</h2>
+        <p>{managedUsers.length} users, {administratorCount} administrators</p>
+      </div>
+      <button
+        class="ui-button ui-button--ghost ui-button--icon dialog-close"
+        aria-label="Close user administration"
+        onclick={() => adminDialog?.close()}
+        ><X size={18} strokeWidth={1.8} aria-hidden="true" /></button
+      >
+    </div>
+
+    <div class="admin-directory" data-od-id="user-directory">
+      <div class="admin-directory-note">
+        <p>
+          Role changes apply immediately. Your own administrator account is
+          locked here to protect access.
+        </p>
+      </div>
+
+      {#if adminError}
+        <p class="form-error" role="alert">{adminError}</p>
+      {/if}
+
+      {#if loadingUsers}
+        <div class="admin-loading" role="status">
+          <span class="sr-only">Loading user directory…</span>
+          {#each [1, 2, 3] as row (row)}
+            <span class="admin-loading-row" aria-hidden="true"></span>
+          {/each}
+        </div>
+      {:else}
+        <div class="admin-user-list">
+          {#each managedUsers as user (user.id)}
+            <article
+              class="admin-user-row"
+              data-od-id={`managed-user-${user.id}`}
+            >
+              <div class="admin-avatar" aria-hidden="true">
+                {memberInitials(user)}
+              </div>
+              <div class="admin-user-copy">
+                <div class="admin-user-name">
+                  <strong>{user.display_name}</strong>
+                  {#if user.id === dashboard.user.id}<span class="you-badge"
+                      >You</span
+                    >{/if}
+                </div>
+                <span>{user.email}</span>
+                <small>Joined {memberSince(user.created_at)}</small>
+              </div>
+              <div class="admin-user-controls">
+                <label class="sr-only" for={`role-${user.id}`}
+                  >Role for {user.display_name}</label
+                >
+                <select
+                  id={`role-${user.id}`}
+                  class="select-input role-select"
+                  value={user.role}
+                  disabled={user.id === dashboard.user.id ||
+                    mutatingUserId !== ""}
+                  onchange={(event) => handleRoleChange(event, user)}
+                  data-od-id={`user-role-${user.id}`}
+                >
+                  <option value="member">Member</option>
+                  <option value="administrator">Administrator</option>
+                </select>
+                <button
+                  class="ui-button ui-button--danger remove-user-btn"
+                  type="button"
+                  disabled={user.id === dashboard.user.id ||
+                    mutatingUserId !== ""}
+                  aria-label={`Remove ${user.display_name}`}
+                  onclick={() => (pendingRemovalId = user.id)}
+                  data-od-id={`remove-user-${user.id}`}
+                >
+                  Remove
+                </button>
+              </div>
+              {#if pendingRemovalId === user.id}
+                <div
+                  class="remove-confirmation"
+                  data-od-id={`remove-confirmation-${user.id}`}
+                >
+                  <p>
+                    <strong>Remove {user.display_name}?</strong>
+                    <span
+                      >Their dashboard, settings, and active sessions will be
+                      deleted.</span
+                    >
+                  </p>
+                  <div>
+                    <button
+                      class="ui-button ui-button--secondary secondary-btn"
+                      type="button"
+                      onclick={() => (pendingRemovalId = "")}
+                      >Keep account</button
+                    >
+                    <button
+                      class="ui-button ui-button--danger remove-user-btn confirm-remove"
+                      type="button"
+                      disabled={mutatingUserId !== ""}
+                      onclick={() => removeManagedUser(user)}
+                    >
+                      {mutatingUserId === user.id
+                        ? "Removing…"
+                        : "Confirm removal"}
+                    </button>
+                  </div>
+                </div>
+              {/if}
+            </article>
+          {:else}
+            <p class="empty-state roomy">No user accounts found.</p>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  </dialog>
+{/if}

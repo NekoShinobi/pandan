@@ -1,0 +1,82 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        DEV_UID: ${DEV_UID:-1000}
+        DEV_GID: ${DEV_GID:-1000}
+    ports:
+      - "${PORT:-9651}:9651"
+    volumes:
+      - .:/app
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target-cache:/app/target
+    environment:
+      DATABASE_URL: sqlite:///app/.devdata/pandan.db
+      PORT: 9651
+      RUST_LOG: ${RUST_LOG:-info}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URL: ${OIDC_REDIRECT_URL:-}
+      OIDC_PROVIDER_NAME: ${OIDC_PROVIDER_NAME:-}
+      PANDAN_WIDGET_SECRET_KEY: ${PANDAN_WIDGET_SECRET_KEY:-}
+      INVIDIOUS_BASE_URL: ${INVIDIOUS_BASE_URL:-}
+      DEV_CHOWN_PATHS: >-
+        /app/target /app/.devdata /usr/local/cargo/registry /usr/local/cargo/git
+    command: bacon --headless run
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "--fail",
+          "--silent",
+          "http://127.0.0.1:9651/api/health",
+        ]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 10
+    init: true
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui-dev
+      args:
+        DEV_UID: ${DEV_UID:-1000}
+        DEV_GID: ${DEV_GID:-1000}
+    working_dir: /app/ui
+    ports:
+      - "${UI_PORT:-5173}:5173"
+    volumes:
+      - ./ui:/app/ui
+      - ui-node-modules:/app/ui/node_modules
+      - ui-svelte-kit:/app/ui/.svelte-kit
+      - ui-bun-cache:/tmp/bun-cache
+    environment:
+      API_URL: http://api:9651
+      PORT: 9651
+      HOME: /tmp
+      BUN_INSTALL_CACHE_DIR: /tmp/bun-cache
+      VITE_USE_POLLING: ${VITE_USE_POLLING:-true}
+      DEV_CHOWN_PATHS: >-
+        /app/ui/node_modules /app/ui/.svelte-kit /tmp/bun-cache
+    command: >-
+      sh -c "bun install --frozen-lockfile && bun run dev --host 0.0.0.0"
+    depends_on:
+      api:
+        condition: service_healthy
+    init: true
+
+volumes:
+  cargo-registry:
+  cargo-git:
+  target-cache:
+  ui-node-modules:
+  ui-svelte-kit:
+  ui-bun-cache:

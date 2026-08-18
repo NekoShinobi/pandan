@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1.7
+
+# Rust development image. Bacon rebuilds and restarts the server on source changes.
+FROM rust:1-slim-bookworm
+
+ARG DEV_UID=1000
+ARG DEV_GID=1000
+
+ENV DEV_UID=${DEV_UID} \
+    DEV_GID=${DEV_GID} \
+    CARGO_TARGET_DIR=/app/target
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && cargo install --locked bacon \
+    && if ! getent group "${DEV_GID}" >/dev/null; then groupadd --gid "${DEV_GID}" app; fi \
+    && useradd --uid "${DEV_UID}" --gid "${DEV_GID}" --create-home --non-unique app \
+    && mkdir -p /app/target /usr/local/cargo/registry /usr/local/cargo/git \
+    && chown -R "${DEV_UID}:${DEV_GID}" /app /usr/local/cargo
+
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+EXPOSE 9651
+
+ENTRYPOINT ["docker-entrypoint.sh"]
