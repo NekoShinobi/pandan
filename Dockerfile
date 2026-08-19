@@ -53,6 +53,7 @@ COPY --from=ui-builder --chown=${PUID}:${PGID} /app/ui/build ./ui/build
 USER ${PUID}:${PGID}
 
 ENV DATABASE_URL=sqlite:///app/data/pandan.db \
+    PANDAN_MEDIA_DIR=/app/data/podcasts \
     PORT=9651 \
     RUST_LOG=info
 

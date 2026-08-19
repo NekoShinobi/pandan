@@ -32,7 +32,7 @@ feed-rs = "2.3"
 icalendar = { version = "0.17.13", features = ["recurrence"] }
 futures-util = "0.3"
 quick-xml = { version = "0.38", features = ["serialize"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 url = "2.5"
 
 [lints]

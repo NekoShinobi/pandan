@@ -15,11 +15,18 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - `ui/` — SvelteKit 5 static frontend, TypeScript, Tailwind CSS 4.
 - `ui/src/routes/+page.svelte` — application shell, authentication, settings, dashboard, Tasks, and product navigation.
 - `ui/src/lib/KanbanPage.svelte` — Kanban boards, card collaboration, workspace membership, and permission settings.
+- `ui/src/lib/PodcastsPage.svelte` — podcast catalogue, requests, listening views, and the administrator review queue.
+- `ui/src/lib/podcastPlayer.svelte.ts` — module-scoped playback state. The shell owns the single `<audio>` element so playback survives section changes; never move it into a page component.
 - `ui/src/lib/` — feature pages and reusable widgets.
 - `ui/src/app.css` — shared visual system and component styling.
+- `ui/src/app.html` — document shell; owns the title, description, icons, and link-preview tags.
+- `assets/og/` — offline design tool that renders the link-preview card and icons into `ui/static/`.
 - `ui/src/lib/api.ts` — typed browser API client.
 - `DESIGN.md` — persistent interface and interaction rules; read it before frontend changes.
 - `crates/server/` — Actix Web API, authentication, remote integrations, and static UI serving.
+- `crates/server/src/document.rs` — renders the application document and its absolute link-preview URLs.
+- `crates/server/src/podcasts.rs` — podcast HTTP surface: catalogue, requests, subscriptions, playback, and listening state.
+- `crates/server/src/podcast_media.rs` — guarded feed and audio fetching, on-disk episode storage, eviction, startup reconciliation, and the refresh and download workers.
 - `crates/db/` — SQLx entities, queries, migrations, and SQLite connection lifecycle.
 - `SCHEMA.md` — human-readable database contract; update it with schema changes.
 - `justfile` — canonical development, build, test, and container commands.
@@ -31,7 +38,7 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - Administrator checks are enforced by the server, never only by the interface.
 - The final administrator cannot be demoted or deleted.
 - The initial administrator setup is one-time and claimed atomically.
-- Sidebar navigation order is Dashboard, Tasks, Kanban, Contacts, Calendar, RSS, Journal, Lines, YouTube, Coding, Subscriptions, Trading. Kanban expands to Boards, Workspaces, and Invitations.
+- Sidebar navigation order is Dashboard, Tasks, Kanban, Contacts, Calendar, RSS, Journal, Lines, YouTube, Podcasts, Coding, Subscriptions, Trading. Kanban expands to Boards, Workspaces, and Invitations.
 - Tasks Active and Archived views share the same page structure: keep New task and Focus Mode visible, and do not collapse the worklist grid when switching views.
 - The command palette is a global surface, not a dashboard feature. Keep its entry points page-independent: `Ctrl`/`Cmd` + `K`, the `/` key, and the header search control. Do not add palette triggers inside dashboard widgets or dashboard-only panels, and do not reintroduce the removed `search` web search widget; web search belongs in the palette's fallthrough row.
 - The Lines composer is avatar-first: the viewer's avatar sits beside the post entry with no heading above it, and the Private/Instance selector sits beside the Post button. Replies are composed in the centered reply modal, which quotes the parent post above the reply entry; do not restore the inline reply banner.
@@ -39,6 +46,24 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - Kanban workspaces are collaboration aggregates and are distinct from the removed dashboard `user_workspaces` partition UI. Every board, column, card, comment, checklist, label, and attachment authorization must resolve through active `kanban_workspace_members` membership.
 - Kanban roles are `admin`, `member`, and `guest` with the 24 kan.bn-compatible workspace/board/list/card/comment/member permissions. Admin grants are immutable, workspace manage/delete stay admin-only, per-member overrides are allowed for other permissions, and the final workspace admin cannot be demoted or removed.
 - Kanban invitations are in-app only and may target existing Pandan users; do not add email delivery or arbitrary addresses.
+- The podcast catalogue is one administrator-curated set shared by the whole instance. Members request a feed; only an administrator publishes one. Never let a member route create a `podcasts` row.
+- A feed already in the catalogue never becomes a request. Compare on the normalized URL and answer with a subscription instead.
+- Podcast requests keep their decision history. Rejections retain the administrator's reason for the requester, and only `pending` requests may be decided or withdrawn.
+- Every podcast episode read — metadata, audio bytes, progress, queue, saved state — resolves through an active `podcast_subscriptions` row. An unsubscribed caller, administrator included, gets `404` rather than `403`, so responses do not leak which episodes exist.
+- Cached episode audio is a shared instance resource. Clearing one account's podcast content, or deleting the account, must never delete a cached file; `podcast_downloads.requested_by` is `ON DELETE SET NULL` for exactly that reason.
+- Caching a show's whole back catalogue (`POST /api/podcasts/{podcast_id}/downloads`) is administrator-only, for the same reason publishing a podcast is: it commits shared disk and shared bandwidth. It only queues what is uncached or previously failed, and the download worker still applies the storage budget, so it must never be reachable by a member or used to bypass a limit.
+- The player bar is rendered by the shell as a sibling of `.dashboard-app`, not a descendant, so it does not inherit the tactical telemetry palette. It binds the terminal tokens itself in `ui/src/app.css`; without them its controls hover in the light root theme.
+- `podcastPlayer` tracks the loaded source separately from the current episode. A play that fails because the file was not cached yet leaves the episode set and the source unusable, so a retry after the download lands must reload rather than resume, and must adopt the reloaded record that finally carries a duration.
+- Eviction is least-recently-used on `last_accessed_at` and skips pinned files, in-flight transfers, and anything in a listener's play queue. When it cannot free enough, defer the download rather than exceeding the storage budget.
+- Podcast discovery is deliberately absent. Requests carry a feed URL that the server previews; do not add a directory search, playlists, or a streaming proxy for remote audio.
+
+### Link previews
+
+- Pandan is a client-rendered application behind authentication, so a crawler only ever sees `ui/src/app.html`. Every URL previews as the same generic card; do not add per-route or per-record preview tags.
+- The document title, description, and preview tags live in `app.html`, not in `svelte:head`. Setting a title in both appends a second `<title>` to the head and the browser honours the first.
+- Preview tags carry the `__PANDAN_ORIGIN__` placeholder. `crates/server/src/document.rs` substitutes the public origin as it serves the document, so the application document is rendered and never handed to `actix_files`.
+- The resolved origin is `PANDAN_BASE_URL` when configured and otherwise rebuilt from request headers. It is attacker-controlled in that second case: keep it restricted to characters that cannot escape an HTML attribute, fall back to root-relative URLs when it is not, and never reuse it for an authorization or redirect decision.
+- `ui/static/og-card.png` is 1200x630; keep the declared `og:image:width` and `og:image:height` in step with it. Regenerate the card and icons with `assets/og/render-brand-assets.py`, which needs Pillow and JetBrains Mono and is not part of the build or CI.
 
 ### Appearance and uploads
 
@@ -54,6 +79,7 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - Lines attachments are limited to 10 MB. Their read access always follows the parent post: owner-only for private posts and authenticated-instance access for public posts.
 - Kanban card attachments are limited to 10 MB. Reads and writes always follow the parent card's active workspace membership and effective permissions.
 - Uploaded files are stored in SQLite. Keep content type, authorization, and size validation on the server.
+- Downloaded podcast audio is the one exception: it is written to the media root on disk (`PANDAN_MEDIA_DIR`, default `data/podcasts`) so playback can be served with `NamedFile` and answer HTTP Range requests without holding an episode in memory. Authorization still happens in the handler; never mount the media root as static files. Podcast artwork stays a SQLite blob.
 
 ### Authentication and secrets
 
@@ -77,6 +103,8 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - YouTube channel metadata refreshes every two hours through configured Invidious first and the public YouTube feed second. Shared portrait images are stored in SQLite and refreshed at most every 24 hours; failed portrait responses must never populate the cache.
 - Render user Markdown through the existing sanitizer. Custom HTML and iframe widgets remain sandboxed.
 - Lines public posts are readable only by authenticated instance users. Private posts remain owner-only, including from administrators; administrators may force-delete public posts but must never gain private-post read access.
+- Podcast feeds and enclosures use their own HTTP clients, not the shared widget client: enclosures redirect through tracking prefixes and run to hundreds of megabytes. Follow redirects manually, re-running `validate_public_https_url` on every hop, cap redirects, and enforce the size ceiling both on `Content-Length` and while streaming.
+- Podcast downloads are written to a partial file inside the media root and renamed into place only once complete and flushed. Reconcile the media root against `podcast_downloads` on startup so an interrupted transfer is never mistaken for a playable episode.
 - Lines author avatars are served from `/api/lines/authors/{user_id}/avatar` and follow post visibility: an avatar is readable only when that author has at least one post the viewer can already see. Do not widen it into a general user-avatar lookup.
 - `/api/lines/posts/{post_id}/thread` and `/api/lines/authors/{user_id}` apply the same visibility rule as the timeline. A thread only exposes a parent or reply the viewer may already read, and an author profile resolves only for authors with at least one post visible to the viewer.
 

@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
 mod kanban;
+mod podcasts;
 pub use kanban::*;
+pub use podcasts::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
 pub struct AppMetadata {
@@ -168,7 +170,7 @@ pub struct UserCredentials {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UserSettings {
     pub user_id: String,
     pub display_name: String,
@@ -177,6 +179,7 @@ pub struct UserSettings {
     pub sidebar_timezones: Vec<String>,
     pub temperature_unit: String,
     pub lines_default_visibility: String,
+    pub podcast_playback_rate: f64,
     pub updated_at: String,
 }
 
@@ -218,7 +221,7 @@ pub struct Workspace {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
+#[derive(Debug, Clone, FromRow, PartialEq)]
 pub struct SessionAccount {
     pub id: String,
     pub email: String,
@@ -230,6 +233,7 @@ pub struct SessionAccount {
     pub sidebar_timezones_json: String,
     pub temperature_unit: String,
     pub lines_default_visibility: String,
+    pub podcast_playback_rate: f64,
     pub settings_updated_at: String,
 }
 

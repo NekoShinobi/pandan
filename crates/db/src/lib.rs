@@ -1,5 +1,6 @@
 pub mod contact_queries;
 pub mod entities;
+mod podcast_queries;
 pub mod queries;
 mod youtube_queries;
 
@@ -138,6 +139,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "037_rss_refresh_schedule",
         include_str!("../migrations/037_rss_refresh_schedule.sql"),
+    ),
+    (
+        "038_podcasts",
+        include_str!("../migrations/038_podcasts.sql"),
     ),
 ];
 
@@ -1846,6 +1851,341 @@ mod tests {
                 .map(|column| column.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["Todo", "In Progress", "Finished"]
+        );
+    }
+
+    #[tokio::test]
+    async fn podcast_requests_gate_the_catalogue_and_downloads_survive_their_requester() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (admin, _) = queries::create_account(
+            &pool,
+            "admin-podcasts@example.com",
+            "$argon2id$admin-podcasts",
+            "Admin Podcasts",
+        )
+        .await
+        .expect("administrator account creates");
+        let (member, _) = queries::create_account(
+            &pool,
+            "member-podcasts@example.com",
+            "$argon2id$member-podcasts",
+            "Member Podcasts",
+        )
+        .await
+        .expect("member account creates");
+
+        let settings = queries::get_podcast_settings(&pool)
+            .await
+            .expect("podcast policy loads");
+        assert!(settings.requests_enabled);
+        assert_eq!(settings.max_pending_requests_per_user, 5);
+
+        // A member request does not create a catalogue entry on its own.
+        let request = queries::insert_podcast_request(
+            &pool,
+            &entities::PodcastRequestDraft {
+                user_id: member.id.clone(),
+                feed_url: "https://example.com/Feed.xml".to_owned(),
+                normalized_url: "https://example.com/Feed.xml".to_owned(),
+                resolved_title: "Example Show".to_owned(),
+                resolved_author: "Example Author".to_owned(),
+                resolved_artwork_url: String::new(),
+                note: "Please add this".to_owned(),
+            },
+        )
+        .await
+        .expect("request records");
+        assert_eq!(request.status, "pending");
+        assert_eq!(request.requester_name, "Member Podcasts");
+        assert!(
+            queries::list_podcast_summaries(&pool, &member.id)
+                .await
+                .expect("catalogue loads")
+                .is_empty(),
+            "a pending request must not publish a podcast"
+        );
+        assert!(
+            queries::has_open_podcast_request(&pool, &member.id, "https://example.com/Feed.xml")
+                .await
+                .expect("open request lookup completes")
+        );
+
+        // Approval publishes the podcast and subscribes the requester in one step.
+        let podcast = queries::insert_podcast(
+            &pool,
+            &entities::PodcastDraft {
+                feed_url: "https://example.com/Feed.xml".to_owned(),
+                normalized_url: "https://example.com/Feed.xml".to_owned(),
+                preview: entities::PodcastFeedPreview {
+                    title: "Example Show".to_owned(),
+                    description: "A show".to_owned(),
+                    author: "Example Author".to_owned(),
+                    site_url: "https://example.com".to_owned(),
+                    language: "en".to_owned(),
+                    artwork_url: "https://example.com/art.jpg".to_owned(),
+                },
+                added_by: admin.id.clone(),
+                auto_download_count: 3,
+            },
+        )
+        .await
+        .expect("catalogue entry creates");
+        assert!(
+            queries::approve_podcast_request(&pool, &request.id, &admin.id, &podcast.id, "")
+                .await
+                .expect("approval completes")
+        );
+        let summaries = queries::list_podcast_summaries(&pool, &member.id)
+            .await
+            .expect("catalogue loads");
+        assert_eq!(summaries.len(), 1);
+        assert!(summaries[0].subscribed, "approval subscribes the requester");
+        assert!(
+            !queries::approve_podcast_request(&pool, &request.id, &admin.id, &podcast.id, "")
+                .await
+                .expect("second approval completes"),
+            "a decided request cannot be approved twice"
+        );
+
+        // The same feed is never requestable twice.
+        assert!(
+            queries::find_podcast_by_normalized_url(&pool, "https://example.com/Feed.xml")
+                .await
+                .expect("catalogue lookup completes")
+                .is_some()
+        );
+
+        let new_ids = queries::upsert_podcast_episodes(
+            &pool,
+            &podcast.id,
+            &[
+                entities::PodcastEpisodeDraft {
+                    guid: "ep-1".to_owned(),
+                    title: "Episode one".to_owned(),
+                    description: "First".to_owned(),
+                    episode_url: "https://example.com/1".to_owned(),
+                    enclosure_url: "https://cdn.example.com/1.mp3".to_owned(),
+                    enclosure_type: "audio/mpeg".to_owned(),
+                    enclosure_bytes: Some(1024),
+                    duration_seconds: Some(600),
+                    published_at: "2026-08-01T00:00:00Z".to_owned(),
+                },
+                entities::PodcastEpisodeDraft {
+                    guid: "ep-2".to_owned(),
+                    title: "Episode two".to_owned(),
+                    description: "Second".to_owned(),
+                    episode_url: "https://example.com/2".to_owned(),
+                    enclosure_url: "https://cdn.example.com/2.mp3".to_owned(),
+                    enclosure_type: "audio/mpeg".to_owned(),
+                    enclosure_bytes: Some(2048),
+                    duration_seconds: Some(900),
+                    published_at: "2026-08-02T00:00:00Z".to_owned(),
+                },
+            ],
+        )
+        .await
+        .expect("episodes index");
+        assert_eq!(new_ids.len(), 2);
+
+        // Re-indexing the same feed discovers nothing new.
+        assert!(
+            queries::upsert_podcast_episodes(
+                &pool,
+                &podcast.id,
+                &[entities::PodcastEpisodeDraft {
+                    guid: "ep-1".to_owned(),
+                    title: "Episode one, retitled".to_owned(),
+                    description: "First".to_owned(),
+                    episode_url: "https://example.com/1".to_owned(),
+                    enclosure_url: "https://cdn.example.com/1.mp3".to_owned(),
+                    enclosure_type: "audio/mpeg".to_owned(),
+                    enclosure_bytes: Some(1024),
+                    duration_seconds: Some(600),
+                    published_at: "2026-08-01T00:00:00Z".to_owned(),
+                }],
+            )
+            .await
+            .expect("re-index completes")
+            .is_empty()
+        );
+
+        let episodes = queries::list_podcast_episodes(&pool, &member.id, &podcast.id, 50, 0)
+            .await
+            .expect("episodes load");
+        assert_eq!(episodes.len(), 2);
+        assert_eq!(episodes[0].title, "Episode two", "newest first");
+        assert_eq!(episodes[1].title, "Episode one, retitled");
+        assert!(episodes[0].download_status.is_none());
+
+        let newest = episodes[0].id.clone();
+        assert!(
+            queries::user_can_access_episode(&pool, &member.id, &newest)
+                .await
+                .expect("access check completes")
+        );
+        assert!(
+            !queries::user_can_access_episode(&pool, &admin.id, &newest)
+                .await
+                .expect("access check completes"),
+            "an unsubscribed administrator has no episode access"
+        );
+
+        // A cached file outlives the account that asked for it.
+        queries::enqueue_podcast_download(&pool, &newest, Some(&member.id))
+            .await
+            .expect("download enqueues");
+        let job = queries::claim_podcast_download(&pool, "1970-01-01T00:00:00Z", 3)
+            .await
+            .expect("claim completes")
+            .expect("a job is available");
+        assert_eq!(job.episode_id, newest);
+        assert_eq!(job.enclosure_url, "https://cdn.example.com/2.mp3");
+        assert!(
+            queries::claim_podcast_download(&pool, "1970-01-01T00:00:00Z", 3)
+                .await
+                .expect("second claim completes")
+                .is_none(),
+            "a leased job is not handed out twice"
+        );
+        queries::mark_podcast_download_ready(&pool, &newest, "cached.mp3", "audio/mpeg", 2048)
+            .await
+            .expect("download publishes");
+        assert_eq!(
+            queries::podcast_storage_used_bytes(&pool)
+                .await
+                .expect("usage loads"),
+            2048
+        );
+
+        queries::delete_user_podcast_content(&pool, &member.id)
+            .await
+            .expect("member content clears");
+        assert!(
+            queries::get_podcast_cached_file(&pool, &newest)
+                .await
+                .expect("cached lookup completes")
+                .is_some(),
+            "shared cached audio survives clearing one listener's content"
+        );
+        assert!(
+            queries::get_podcast(&pool, &podcast.id)
+                .await
+                .expect("catalogue lookup completes")
+                .is_some(),
+            "the shared catalogue survives clearing one listener's content"
+        );
+    }
+
+    #[tokio::test]
+    async fn podcast_queue_reorders_without_tripping_its_unique_position() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (owner, _) = queries::create_account(
+            &pool,
+            "queue-podcasts@example.com",
+            "$argon2id$queue-podcasts",
+            "Queue Owner",
+        )
+        .await
+        .expect("account creates");
+        let podcast = queries::insert_podcast(
+            &pool,
+            &entities::PodcastDraft {
+                feed_url: "https://example.com/queue.xml".to_owned(),
+                normalized_url: "https://example.com/queue.xml".to_owned(),
+                preview: entities::PodcastFeedPreview {
+                    title: "Queue Show".to_owned(),
+                    description: String::new(),
+                    author: String::new(),
+                    site_url: String::new(),
+                    language: String::new(),
+                    artwork_url: String::new(),
+                },
+                added_by: owner.id.clone(),
+                auto_download_count: 0,
+            },
+        )
+        .await
+        .expect("catalogue entry creates");
+        queries::subscribe_to_podcast(&pool, &owner.id, &podcast.id)
+            .await
+            .expect("subscription creates");
+
+        let drafts = (0..4)
+            .map(|index| entities::PodcastEpisodeDraft {
+                guid: format!("ep-{index}"),
+                title: format!("Episode {index}"),
+                description: String::new(),
+                episode_url: String::new(),
+                enclosure_url: format!("https://cdn.example.com/{index}.mp3"),
+                enclosure_type: "audio/mpeg".to_owned(),
+                enclosure_bytes: None,
+                duration_seconds: None,
+                published_at: format!("2026-08-0{}T00:00:00Z", index + 1),
+            })
+            .collect::<Vec<_>>();
+        let ids = queries::upsert_podcast_episodes(&pool, &podcast.id, &drafts)
+            .await
+            .expect("episodes index");
+        assert_eq!(ids.len(), 4);
+
+        for id in &ids {
+            assert!(
+                queries::append_to_podcast_queue(&pool, &owner.id, id, 100)
+                    .await
+                    .expect("queue append completes")
+            );
+        }
+        let queued = queries::list_podcast_queue(&pool, &owner.id)
+            .await
+            .expect("queue loads");
+        assert_eq!(
+            queued
+                .iter()
+                .map(|item| item.id.clone())
+                .collect::<Vec<_>>(),
+            ids
+        );
+
+        // Full reversal is the case a naive single-pass rewrite cannot survive.
+        let reversed = ids.iter().rev().cloned().collect::<Vec<_>>();
+        assert!(
+            queries::reorder_podcast_queue(&pool, &owner.id, &reversed)
+                .await
+                .expect("reorder completes")
+        );
+        assert_eq!(
+            queries::list_podcast_queue(&pool, &owner.id)
+                .await
+                .expect("queue loads")
+                .iter()
+                .map(|item| item.id.clone())
+                .collect::<Vec<_>>(),
+            reversed
+        );
+
+        // A reorder that does not name exactly the queued set is refused.
+        assert!(
+            !queries::reorder_podcast_queue(&pool, &owner.id, &reversed[..2])
+                .await
+                .expect("partial reorder completes")
+        );
+
+        assert!(
+            queries::remove_from_podcast_queue(&pool, &owner.id, &reversed[1])
+                .await
+                .expect("removal completes")
+        );
+        let remaining = queries::list_podcast_queue(&pool, &owner.id)
+            .await
+            .expect("queue loads");
+        assert_eq!(remaining.len(), 3);
+        assert_eq!(
+            remaining
+                .iter()
+                .filter_map(|item| item.queue_position)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "removal closes the gap it leaves behind"
         );
     }
 }

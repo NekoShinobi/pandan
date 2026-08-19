@@ -3,7 +3,54 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#f5f3ee" />
+    <meta name="theme-color" content="#020504" />
+    <meta name="color-scheme" content="dark" />
+
+    <title>Pandan: Personal dashboard</title>
+    <meta
+      name="description"
+      content="Pandan is a self-hosted, terminal-inspired command center for tasks, boards, contacts, calendars, feeds, and notes. Every surface sits behind your own login."
+    />
+
+    <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="icon" href="/icon-192.png" sizes="192x192" type="image/png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <!--
+      Link preview card. Pandan renders in the browser and every page sits
+      behind authentication, so a crawler only ever sees this document: one
+      generic card stands in for every URL. `__PANDAN_ORIGIN__` is replaced with
+      the deployment's public origin as the server hands this file out; see
+      `crates/server/src/document.rs`.
+    -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Pandan" />
+    <meta property="og:title" content="Pandan: Personal dashboard" />
+    <meta
+      property="og:description"
+      content="A self-hosted, terminal-inspired command center for the things you follow and do. Tasks, boards, calendars, feeds, and notes, behind your own login."
+    />
+    <meta property="og:url" content="__PANDAN_ORIGIN__/" />
+    <meta property="og:image" content="__PANDAN_ORIGIN__/og-card.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="A dark terminal panel carrying the Pandan wordmark, the headline Your private command center, and a wireframe of the dashboard canvas."
+    />
+    <meta property="og:locale" content="en_US" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Pandan: Personal dashboard" />
+    <meta
+      name="twitter:description"
+      content="A self-hosted, terminal-inspired command center for the things you follow and do. Tasks, boards, calendars, feeds, and notes, behind your own login."
+    />
+    <meta name="twitter:image" content="__PANDAN_ORIGIN__/og-card.png" />
+    <meta
+      name="twitter:image:alt"
+      content="A dark terminal panel carrying the Pandan wordmark, the headline Your private command center, and a wireframe of the dashboard canvas."
+    />
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">

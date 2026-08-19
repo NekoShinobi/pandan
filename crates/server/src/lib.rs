@@ -1,8 +1,6 @@
-use actix_files::NamedFile;
 use actix_web::{
     HttpRequest, HttpResponse, Responder, ResponseError,
     cookie::{Cookie, SameSite, time::Duration as CookieDuration},
-    error::ErrorInternalServerError,
     http::{StatusCode, header},
     web,
 };
@@ -32,12 +30,17 @@ use tracing::{info, warn};
 mod bible;
 pub mod calendar;
 mod contacts;
+pub mod document;
 mod kanban;
 mod lines;
 pub mod oidc;
+pub mod podcast_media;
+mod podcasts;
 pub mod widget_integrations;
 mod youtube_reader;
 
+pub use document::{SiteOrigin, spa_document};
+pub use podcast_media::{PodcastMedia, spawn_podcast_workers};
 pub use youtube_reader::spawn_youtube_refresh_worker;
 
 pub const UI_BUILD_DIR: &str = "./ui/build";
@@ -58,6 +61,8 @@ pub struct AppState {
     pub cookie_secure: bool,
     pub oidc: Option<oidc::OidcProvider>,
     pub widget_integrations: widget_integrations::WidgetIntegrationService,
+    pub podcast_media: podcast_media::PodcastMedia,
+    pub site_origin: document::SiteOrigin,
 }
 
 #[derive(Serialize)]
@@ -130,6 +135,8 @@ pub struct UpdateSettingsRequest {
     pub sidebar_timezones: Option<Vec<String>>,
     pub temperature_unit: String,
     pub lines_default_visibility: String,
+    #[serde(default)]
+    pub podcast_playback_rate: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1440,6 +1447,14 @@ async fn update_settings(
     ) {
         return Err(ApiError::BadRequest("Lines default visibility is invalid"));
     }
+    let podcast_playback_rate = payload
+        .podcast_playback_rate
+        .unwrap_or(account.podcast_playback_rate);
+    if !(0.5..=3.0).contains(&podcast_playback_rate) {
+        return Err(ApiError::BadRequest(
+            "podcast playback rate must be between 0.5 and 3.0",
+        ));
+    }
 
     Ok(web::Json(
         db::queries::update_user_settings(
@@ -1451,6 +1466,7 @@ async fn update_settings(
             &sidebar_timezones_json,
             &payload.temperature_unit,
             &payload.lines_default_visibility,
+            podcast_playback_rate,
         )
         .await?,
     ))
@@ -1472,6 +1488,7 @@ async fn delete_user_content(
             | "rss"
             | "journal"
             | "youtube"
+            | "podcasts"
             | "coding"
             | "subscriptions"
     ) {
@@ -3040,6 +3057,7 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
             .route("/tasks/{task_id}/restore", web::patch().to(restore_task))
             .configure(kanban::configure)
             .configure(lines::configure)
+            .configure(podcasts::configure)
             .route("/rss", web::get().to(rss_reader))
             .route(
                 "/rss/subscriptions",
@@ -3183,6 +3201,7 @@ fn auth_response(account: SessionAccount) -> AuthResponse {
             sidebar_timezones,
             temperature_unit: account.temperature_unit,
             lines_default_visibility: account.lines_default_visibility,
+            podcast_playback_rate: account.podcast_playback_rate,
             updated_at: account.settings_updated_at,
         },
     }
@@ -3274,17 +3293,6 @@ fn verify_password(password: &str, password_hash: &str) -> bool {
     })
 }
 
-/// Serves the static application's fallback document for client-side routes.
-///
-/// # Errors
-///
-/// Returns an Actix error when the UI has not been built or the fallback file cannot be opened.
-pub async fn spa_fallback() -> actix_web::Result<NamedFile> {
-    NamedFile::open_async(format!("{UI_BUILD_DIR}/200.html"))
-        .await
-        .map_err(ErrorInternalServerError)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3297,12 +3305,18 @@ mod tests {
     }
 
     fn state(pool: SqlitePool) -> web::Data<AppState> {
+        // Each test gets its own media root so cached-file assertions cannot collide.
+        let media_root =
+            std::env::temp_dir().join(format!("pandan-test-media-{}", uuid::Uuid::new_v4()));
         web::Data::new(AppState {
             pool,
             cookie_secure: false,
             oidc: None,
             widget_integrations: widget_integrations::WidgetIntegrationService::for_tests()
                 .expect("test widget integrations initialize"),
+            podcast_media: podcast_media::PodcastMedia::with_root(media_root)
+                .expect("test podcast media initializes"),
+            site_origin: document::SiteOrigin::default(),
         })
     }
 
@@ -3752,6 +3766,7 @@ mod tests {
                     ]),
                     temperature_unit: "fahrenheit".to_owned(),
                     lines_default_visibility: "public".to_owned(),
+                    podcast_playback_rate: None,
                 })
                 .to_request(),
         )
@@ -3773,6 +3788,7 @@ mod tests {
                     sidebar_timezones: None,
                     temperature_unit: "fahrenheit".to_owned(),
                     lines_default_visibility: "public".to_owned(),
+                    podcast_playback_rate: None,
                 })
                 .to_request(),
         )
@@ -4528,5 +4544,268 @@ mod tests {
         .await;
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id, member_dashboard.user.id);
+    }
+
+    /// The podcast trust boundary, exercised over HTTP.
+    ///
+    /// A member must not be able to reach any route that publishes a podcast, decides a
+    /// request, evicts a cached file, or changes storage policy. Only the catalogue an
+    /// administrator has approved may be subscribed to.
+    #[tokio::test]
+    async fn members_cannot_reach_any_podcast_administrator_route() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state(test_pool().await))
+                .configure(configure_api),
+        )
+        .await;
+        let administrator = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/setup")
+                .set_json(RegisterRequest {
+                    email: "podcast-admin@example.com".to_owned(),
+                    password: "a secure administrator password".to_owned(),
+                    display_name: "Podcast Admin".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        let administrator_cookie = session_cookie(&administrator);
+        let member = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/auth/register")
+                .set_json(RegisterRequest {
+                    email: "podcast-member@example.com".to_owned(),
+                    password: "a secure member password".to_owned(),
+                    display_name: "Podcast Member".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        let member_cookie = session_cookie(&member);
+
+        // Every administrator-only route, refused for a member.
+        for request in [
+            test::TestRequest::get().uri("/api/podcasts/requests"),
+            test::TestRequest::get().uri("/api/podcasts/settings"),
+        ] {
+            let response =
+                test::call_service(&app, request.cookie(member_cookie.clone()).to_request()).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "a member reached an administrator podcast route"
+            );
+        }
+        let refused = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/podcasts")
+                .cookie(member_cookie.clone())
+                .set_json(serde_json::json!({ "feed_url": "https://example.com/feed.xml" }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(
+            refused.status(),
+            StatusCode::FORBIDDEN,
+            "a member published a podcast directly"
+        );
+        let refused = test::call_service(
+            &app,
+            test::TestRequest::patch()
+                .uri("/api/podcasts/settings")
+                .cookie(member_cookie.clone())
+                .set_json(serde_json::json!({
+                    "requests_enabled": false,
+                    "member_downloads_enabled": false,
+                    "max_pending_requests_per_user": 1,
+                    "storage_budget_bytes": 1_073_741_824_i64,
+                    "max_episode_bytes": 52_428_800_i64,
+                    "default_auto_download_count": 1
+                }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let refused = test::call_service(
+            &app,
+            test::TestRequest::delete()
+                .uri("/api/podcasts/episodes/anything/download")
+                .cookie(member_cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let refused = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/podcasts/anything/downloads")
+                .cookie(member_cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(
+            refused.status(),
+            StatusCode::FORBIDDEN,
+            "a member queued a whole show for download"
+        );
+
+        // Anonymous callers reach nothing at all.
+        let anonymous = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/api/podcasts").to_request(),
+        )
+        .await;
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+
+        // A member sees an empty catalogue and their own (empty) request list.
+        let overview: serde_json::Value = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/podcasts")
+                .cookie(member_cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(overview["podcasts"].as_array().map(Vec::len), Some(0));
+        assert_eq!(overview["requests"].as_array().map(Vec::len), Some(0));
+        assert_eq!(
+            overview["policy"]["requests_enabled"],
+            serde_json::json!(true)
+        );
+
+        // An administrator reaches the review queue and the storage policy.
+        let queue: Vec<serde_json::Value> = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/podcasts/requests")
+                .cookie(administrator_cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert!(queue.is_empty());
+        let settings: serde_json::Value = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/podcasts/settings")
+                .cookie(administrator_cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(settings["requests_enabled"], serde_json::json!(true));
+        assert_eq!(settings["storage_used_bytes"], serde_json::json!(0));
+
+        // The bulk download route is reachable for an administrator, and still resolves
+        // the show before queueing anything.
+        let missing = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/podcasts/not-a-show/downloads")
+                .cookie(administrator_cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+        // Closing requests refuses submissions at the door, before any outbound fetch.
+        let closed = test::call_service(
+            &app,
+            test::TestRequest::patch()
+                .uri("/api/podcasts/settings")
+                .cookie(administrator_cookie.clone())
+                .set_json(serde_json::json!({
+                    "requests_enabled": false,
+                    "member_downloads_enabled": true,
+                    "max_pending_requests_per_user": 5,
+                    "storage_budget_bytes": 1_073_741_824_i64,
+                    "max_episode_bytes": 52_428_800_i64,
+                    "default_auto_download_count": 3
+                }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(closed.status(), StatusCode::OK);
+        let refused = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/podcasts/requests")
+                .cookie(member_cookie.clone())
+                .set_json(serde_json::json!({ "feed_url": "https://example.com/feed.xml" }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// A malformed or private feed address is refused before anything is fetched.
+    #[tokio::test]
+    async fn podcast_requests_refuse_unsafe_feed_addresses() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state(test_pool().await))
+                .configure(configure_api),
+        )
+        .await;
+        let administrator = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/setup")
+                .set_json(RegisterRequest {
+                    email: "feedguard@example.com".to_owned(),
+                    password: "a secure administrator password".to_owned(),
+                    display_name: "Feed Guard".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        let cookie = session_cookie(&administrator);
+
+        for hostile in [
+            "http://example.com/feed.xml",
+            "https://user:pass@example.com/feed.xml",
+            "not a url",
+            "",
+        ] {
+            let response = test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri("/api/podcasts/requests")
+                    .cookie(cookie.clone())
+                    .set_json(serde_json::json!({ "feed_url": hostile }))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "{hostile} was not refused"
+            );
+        }
+
+        // Loopback and private destinations are refused by the shared SSRF guard, which
+        // reports a provider error rather than accepting the feed.
+        for private in [
+            "https://localhost/feed.xml",
+            "https://127.0.0.1/feed.xml",
+            "https://192.168.1.10/feed.xml",
+        ] {
+            let response = test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri("/api/podcasts/requests")
+                    .cookie(cookie.clone())
+                    .set_json(serde_json::json!({ "feed_url": private }))
+                    .to_request(),
+            )
+            .await;
+            assert_ne!(
+                response.status(),
+                StatusCode::OK,
+                "{private} must never be accepted"
+            );
+        }
     }
 }

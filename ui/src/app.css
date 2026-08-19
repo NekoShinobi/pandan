@@ -4033,6 +4033,302 @@ body
   font-size: 11px;
 }
 
+/*
+ * Podcast player.
+ *
+ * Rendered by the shell rather than the Podcasts page, so playback continues while
+ * the reader moves between sections. It sits above page content but below the toast.
+ *
+ * It is also a sibling of `.dashboard-app` rather than a descendant, so it does not
+ * inherit the tactical telemetry palette and has to bind the terminal tokens itself.
+ * Without them the bar falls back to the light root values and its control hovers come
+ * out of the wrong theme.
+ */
+.podcast-player-bar {
+  --bg: oklch(11% 0.012 165);
+  --surface: oklch(15% 0.014 165);
+  --fg: oklch(91% 0.016 150);
+  --muted: oklch(65% 0.02 155);
+  --border: oklch(38% 0.025 155);
+  --accent: oklch(79% 0.16 145);
+  --danger: oklch(72% 0.17 25);
+  --accent-soft: color-mix(in oklch, var(--accent) 12%, transparent);
+  --fg-soft: color-mix(in oklch, var(--fg) 5%, transparent);
+  --button-on-accent: oklch(14% 0.018 165);
+  --radius: 0px;
+  --radius-sm: 0px;
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(1020px, calc(100vw - 24px));
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--surface) 92%, var(--bg));
+  color: var(--fg);
+  font-family: var(--font-mono);
+  box-shadow: 14px 14px 0 color-mix(in oklch, var(--bg) 72%, transparent);
+  transform: translateX(-50%);
+  animation: podcast-player-enter 240ms var(--ease-out) both;
+}
+
+.podcast-player-transport {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+/*
+ * Control tooltips.
+ *
+ * The bar is a dense row of icon-only controls, so each one names itself on hover and on
+ * keyboard focus. `aria-label` remains the accessible name — an explicit label wins over
+ * generated content — so the tooltip is purely the sighted affordance.
+ */
+.podcast-player-bar [data-tip] {
+  position: relative;
+}
+
+.podcast-player-bar [data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 9px);
+  left: 50%;
+  z-index: 2;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translate(-50%, 4px);
+  pointer-events: none;
+  transition:
+    opacity 120ms var(--ease-out),
+    transform 120ms var(--ease-out);
+}
+
+.podcast-player-bar [data-tip]:hover::after,
+.podcast-player-bar [data-tip]:focus-visible::after,
+.podcast-player-bar [data-tip]:focus-within::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/*
+ * The controls at either end of the bar anchor their tooltip to the edge they sit on.
+ * Centred, a label wider than its 44px button would hang past the bar and, on a narrow
+ * viewport, past the screen.
+ */
+.podcast-player-transport > [data-tip]:first-child::after {
+  left: 0;
+  transform: translate(0, 4px);
+}
+
+.podcast-player-transport > [data-tip]:first-child:hover::after,
+.podcast-player-transport > [data-tip]:first-child:focus-visible::after {
+  transform: translate(0, 0);
+}
+
+.podcast-player-bar > [data-tip]:last-child::after {
+  left: auto;
+  right: 0;
+  transform: translate(0, 4px);
+}
+
+.podcast-player-bar > [data-tip]:last-child:hover::after,
+.podcast-player-bar > [data-tip]:last-child:focus-visible::after {
+  transform: translate(0, 0);
+}
+
+/* The popover replaces the tooltip once it is open, rather than stacking on top of it. */
+.podcast-player-bar
+  .podcast-player-volume:has([aria-expanded="true"])
+  [data-tip]::after {
+  content: none;
+}
+
+.podcast-player-volume {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.podcast-player-volume-panel {
+  position: absolute;
+  bottom: calc(100% + 9px);
+  left: 50%;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 10px 10px 0 color-mix(in oklch, var(--bg) 72%, transparent);
+  transform: translateX(-50%);
+  animation: podcast-volume-enter 160ms var(--ease-out) both;
+}
+
+.podcast-player-volume-panel input[type="range"] {
+  width: 116px;
+  min-height: 44px;
+  accent-color: var(--accent);
+}
+
+.podcast-player-volume-panel .podcast-player-time {
+  min-width: 34px;
+  text-align: right;
+}
+
+@keyframes podcast-volume-enter {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@keyframes podcast-player-enter {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 14px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.podcast-player-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 160px;
+}
+
+.podcast-player-meta strong {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.podcast-player-meta small {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.podcast-player-scrub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 2 1 240px;
+  min-width: 0;
+}
+
+.podcast-player-scrub input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  accent-color: var(--accent);
+}
+
+.podcast-player-time {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.podcast-player-rate select {
+  min-height: 44px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.visually-hidden-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .podcast-player-bar,
+  .podcast-player-volume-panel {
+    animation: none;
+  }
+
+  /* The tooltip still appears; it just arrives in place instead of sliding into it. */
+  .podcast-player-bar [data-tip]::after {
+    transition: none;
+  }
+}
+
+/*
+ * Narrow layout: the episode name and the scrubber take a full row each, and the
+ * controls reflow underneath them rather than being squeezed below their touch target.
+ */
+@media (max-width: 860px) {
+  .podcast-player-bar {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .podcast-player-meta {
+    order: 1;
+    flex-basis: 100%;
+  }
+
+  .podcast-player-scrub {
+    order: 2;
+    flex-basis: 100%;
+  }
+
+  .podcast-player-transport {
+    order: 3;
+  }
+
+  .podcast-player-volume {
+    order: 4;
+  }
+
+  .podcast-player-rate {
+    order: 5;
+  }
+
+  .podcast-player-close {
+    order: 6;
+    margin-left: auto;
+  }
+}
+
 .toast {
   position: fixed;
   left: 50%;

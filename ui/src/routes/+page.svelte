@@ -27,13 +27,20 @@
   import Repeat2 from "lucide-svelte/icons/repeat-2";
   import RotateCcw from "lucide-svelte/icons/rotate-ccw";
   import ReceiptText from "lucide-svelte/icons/receipt-text";
+  import Podcast from "lucide-svelte/icons/podcast";
+  import RotateCw from "lucide-svelte/icons/rotate-cw";
   import Rss from "lucide-svelte/icons/rss";
   import Search from "lucide-svelte/icons/search";
   import Settings from "lucide-svelte/icons/settings";
+  import SkipBack from "lucide-svelte/icons/skip-back";
+  import SkipForward from "lucide-svelte/icons/skip-forward";
   import SlidersHorizontal from "lucide-svelte/icons/sliders-horizontal";
   import Star from "lucide-svelte/icons/star";
   import Tag from "lucide-svelte/icons/tag";
   import Trash2 from "lucide-svelte/icons/trash-2";
+  import Volume1 from "lucide-svelte/icons/volume-1";
+  import Volume2 from "lucide-svelte/icons/volume-2";
+  import VolumeOff from "lucide-svelte/icons/volume-off";
   import X from "lucide-svelte/icons/x";
   import Youtube from "lucide-svelte/icons/circle-play";
   import { onDestroy, onMount, tick } from "svelte";
@@ -48,10 +55,17 @@
   import JournalPage from "$lib/JournalPage.svelte";
   import KanbanPage from "$lib/KanbanPage.svelte";
   import LinesPage from "$lib/LinesPage.svelte";
+  import PodcastsPage from "$lib/PodcastsPage.svelte";
   import RssReaderPage from "$lib/RssReaderPage.svelte";
   import SidebarUtilities from "$lib/SidebarUtilities.svelte";
   import SubscriptionsPage from "$lib/SubscriptionsPage.svelte";
   import YoutubePage from "$lib/YoutubePage.svelte";
+  import {
+    SKIP_BACK_SECONDS,
+    SKIP_FORWARD_SECONDS,
+    formatPlaybackTime,
+    podcastPlayer,
+  } from "$lib/podcastPlayer.svelte";
   import {
     archiveTask,
     clearCompletedTasks,
@@ -116,6 +130,7 @@
     | "journal"
     | "lines"
     | "youtube"
+    | "podcasts"
     | "coding"
     | "subscriptions"
     | "trading";
@@ -221,6 +236,12 @@
       scope: "youtube",
       title: "All YouTube Data",
       description: "Your Channel Subscriptions, Groups, And Display Settings.",
+    },
+    {
+      scope: "podcasts",
+      title: "All Podcast Data",
+      description:
+        "Your Subscriptions, Play Queue, Saved Episodes, Progress, And Requests.",
     },
     {
       scope: "coding",
@@ -455,24 +476,31 @@
       icon: Youtube,
     },
     {
+      id: "podcasts",
+      label: "Podcasts",
+      description: "Listen to shows this instance hosts, and ask for new ones.",
+      code: "10",
+      icon: Podcast,
+    },
+    {
       id: "coding",
       label: "Coding",
       description: "Track projects, repositories, and release activity.",
-      code: "10",
+      code: "11",
       icon: Code2,
     },
     {
       id: "subscriptions",
       label: "Subscriptions",
       description: "Monitor recurring services, costs, and renewal dates.",
-      code: "11",
+      code: "12",
       icon: ReceiptText,
     },
     {
       id: "trading",
       label: "Trading",
       description: "Plan watchlists, market notes, and trades.",
-      code: "12",
+      code: "13",
       icon: ChartCandlestick,
     },
   ] as const;
@@ -552,6 +580,10 @@
     $state<UserSettings["temperature_unit"]>("celsius");
   let settingsLinesDefaultVisibility =
     $state<UserSettings["lines_default_visibility"]>("private");
+  // The shell owns the single audio element so playback survives section changes.
+  let podcastAudio = $state<HTMLAudioElement>();
+  let podcastVolumeOpen = $state(false);
+  let podcastVolumeControl = $state<HTMLDivElement>();
   let avatarRevision = $state(Date.now());
   let avatarAvailable = $state(true);
   let avatarFile = $state<File | null>(null);
@@ -1322,6 +1354,71 @@
     wallpaperRevisions.dashboard = revision;
     wallpaperRevisions.welcome = revision;
     wallpaperRevisions.loading = revision;
+  }
+
+  $effect(() => {
+    if (!podcastAudio) return;
+    podcastPlayer.attach(podcastAudio);
+    podcastPlayer.setPlaybackRate(dashboard?.settings.podcast_playback_rate ?? 1);
+  });
+
+  // The volume popover is a transient surface, so it closes on Escape or on a pointer
+  // press anywhere outside it. The listeners only exist while it is open.
+  $effect(() => {
+    if (!podcastVolumeOpen) return;
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && podcastVolumeControl?.contains(target)) return;
+      podcastVolumeOpen = false;
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      podcastVolumeOpen = false;
+    };
+    globalThis.addEventListener("pointerdown", dismiss);
+    globalThis.addEventListener("keydown", escape, true);
+    return () => {
+      globalThis.removeEventListener("pointerdown", dismiss);
+      globalThis.removeEventListener("keydown", escape, true);
+    };
+  });
+
+  // Closing the player must not leave its popover orphaned on screen.
+  $effect(() => {
+    if (!podcastPlayer.episode) podcastVolumeOpen = false;
+  });
+
+  // A position is written on an interval while playing; this catches the tail end
+  // when the tab is closed or backgrounded between writes.
+  $effect(() => {
+    const flush = () => void podcastPlayer.flushNow();
+    globalThis.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", flush);
+    return () => {
+      globalThis.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", flush);
+    };
+  });
+
+  /** Applies a playback speed immediately and remembers it for the next session. */
+  async function savePlaybackRate(rate: number) {
+    podcastPlayer.setPlaybackRate(rate);
+    if (!dashboard) return;
+    try {
+      const settings = await updateUserSettings({
+        display_name: dashboard.settings.display_name,
+        location: dashboard.settings.location,
+        timezone: dashboard.settings.timezone,
+        temperature_unit: dashboard.settings.temperature_unit,
+        lines_default_visibility: dashboard.settings.lines_default_visibility,
+        podcast_playback_rate: rate,
+      });
+      dashboard = { ...dashboard, settings };
+    } catch {
+      // Speed already applied locally; remembering it is a convenience, not a
+      // reason to interrupt playback.
+    }
   }
 
   function openProductPage(page: ProductPage) {
@@ -2846,14 +2943,11 @@
   }
 </script>
 
-<svelte:head>
-  <title>Pandan: Personal dashboard</title>
-  <meta
-    name="description"
-    content="A personal dashboard for tasks, preferences, and curated feeds."
-  />
-</svelte:head>
-
+<!--
+  The document title, description, and link preview tags live in `app.html` so
+  crawlers see them without running the application. Setting them here as well
+  would append a second `<title>` to the head, and the browser honours the first.
+-->
 <svelte:window onkeydown={handleKeydown} />
 
 {#if loadingOverlayVisible}
@@ -4266,6 +4360,8 @@
             />
           {:else if activeSection === "youtube"}
             <YoutubePage />
+          {:else if activeSection === "podcasts"}
+            <PodcastsPage viewerRole={dashboard.user.role} />
           {:else if activeSection === "coding"}
             <CodingPage />
           {:else if activeSection === "subscriptions"}
@@ -4309,6 +4405,181 @@
       {/key}
     </main>
   </div>
+
+  <!--
+    The player lives in the shell, outside the `{#if activeSection}` chain above.
+    An audio element owned by PodcastsPage.svelte would be destroyed the moment
+    someone navigated to another section, cutting playback off mid-sentence.
+  -->
+  <audio
+    bind:this={podcastAudio}
+    preload="metadata"
+    onplay={() => podcastPlayer.handlePlay()}
+    onpause={() => podcastPlayer.handlePause()}
+    onloadedmetadata={() => podcastPlayer.handleLoadedMetadata()}
+    ondurationchange={() => podcastPlayer.handleDurationChange()}
+    ontimeupdate={() => podcastPlayer.handleTimeUpdate()}
+    onwaiting={() => podcastPlayer.handleWaiting()}
+    onplaying={() => podcastPlayer.handlePlaying()}
+    onerror={() => podcastPlayer.handleError()}
+    onended={() => podcastPlayer.handleEnded()}
+  ></audio>
+
+  {#if podcastPlayer.episode}
+    <div class="podcast-player-bar" data-od-id="podcast-player">
+      <div class="podcast-player-transport">
+        <button
+          class="ui-button ui-button--ghost ui-button--icon"
+          type="button"
+          data-tip="Previous episode"
+          aria-label={podcastPlayer.hasPrevious
+            ? "Play the previous episode"
+            : "Restart this episode"}
+          onclick={() => podcastPlayer.playPrevious()}
+        >
+          <SkipBack size={16} strokeWidth={1.9} />
+        </button>
+        <button
+          class="ui-button ui-button--ghost ui-button--icon"
+          type="button"
+          data-tip={`Back ${SKIP_BACK_SECONDS}s`}
+          aria-label={`Skip back ${SKIP_BACK_SECONDS} seconds`}
+          onclick={() => podcastPlayer.skip(-SKIP_BACK_SECONDS)}
+        >
+          <RotateCcw size={16} strokeWidth={1.9} />
+        </button>
+        <button
+          class="ui-button ui-button--primary ui-button--icon"
+          type="button"
+          data-tip={podcastPlayer.playing ? "Pause" : "Play"}
+          aria-label={podcastPlayer.playing ? "Pause episode" : "Play episode"}
+          onclick={() => podcastPlayer.toggle()}
+        >
+          {#if podcastPlayer.playing}
+            <Pause size={17} strokeWidth={2} />
+          {:else}
+            <Play size={17} strokeWidth={2} />
+          {/if}
+        </button>
+        <button
+          class="ui-button ui-button--ghost ui-button--icon"
+          type="button"
+          data-tip={`Forward ${SKIP_FORWARD_SECONDS}s`}
+          aria-label={`Skip forward ${SKIP_FORWARD_SECONDS} seconds`}
+          onclick={() => podcastPlayer.skip(SKIP_FORWARD_SECONDS)}
+        >
+          <RotateCw size={16} strokeWidth={1.9} />
+        </button>
+        <button
+          class="ui-button ui-button--ghost ui-button--icon"
+          type="button"
+          data-tip="Next episode"
+          aria-label="Play the next queued episode"
+          disabled={!podcastPlayer.hasNext}
+          onclick={() => podcastPlayer.playNext()}
+        >
+          <SkipForward size={16} strokeWidth={1.9} />
+        </button>
+      </div>
+
+      <div class="podcast-player-meta">
+        <strong>{podcastPlayer.episode.title}</strong>
+        <small>{podcastPlayer.episode.podcast_title}</small>
+      </div>
+
+      <label class="podcast-player-scrub">
+        <span class="podcast-player-time"
+          >{formatPlaybackTime(podcastPlayer.currentTime)}</span
+        >
+        <input
+          type="range"
+          min="0"
+          max={Math.max(podcastPlayer.duration, 1)}
+          step="1"
+          value={podcastPlayer.currentTime}
+          aria-label="Seek within the episode"
+          oninput={(event) =>
+            podcastPlayer.seek(Number(event.currentTarget.value))}
+        />
+        <span class="podcast-player-time"
+          >{formatPlaybackTime(podcastPlayer.duration)}</span
+        >
+      </label>
+
+      <div class="podcast-player-volume" bind:this={podcastVolumeControl}>
+        <button
+          class="ui-button ui-button--ghost ui-button--icon"
+          type="button"
+          data-tip="Volume"
+          aria-label={`Volume, ${Math.round(podcastPlayer.effectiveVolume * 100)} percent`}
+          aria-expanded={podcastVolumeOpen}
+          aria-controls="podcast-volume-panel"
+          onclick={() => (podcastVolumeOpen = !podcastVolumeOpen)}
+        >
+          {#if podcastPlayer.effectiveVolume === 0}
+            <VolumeOff size={16} strokeWidth={1.9} />
+          {:else if podcastPlayer.effectiveVolume < 0.5}
+            <Volume1 size={16} strokeWidth={1.9} />
+          {:else}
+            <Volume2 size={16} strokeWidth={1.9} />
+          {/if}
+        </button>
+        {#if podcastVolumeOpen}
+          <div class="podcast-player-volume-panel" id="podcast-volume-panel">
+            <button
+              class="ui-button ui-button--ghost ui-button--icon"
+              type="button"
+              aria-pressed={podcastPlayer.muted}
+              aria-label={podcastPlayer.muted ? "Unmute" : "Mute"}
+              onclick={() => podcastPlayer.toggleMuted()}
+            >
+              {#if podcastPlayer.effectiveVolume === 0}
+                <VolumeOff size={15} strokeWidth={1.9} />
+              {:else}
+                <Volume2 size={15} strokeWidth={1.9} />
+              {/if}
+            </button>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value={podcastPlayer.effectiveVolume}
+              aria-label="Playback volume"
+              oninput={(event) =>
+                podcastPlayer.setVolume(Number(event.currentTarget.value))}
+            />
+            <span class="podcast-player-time">
+              {Math.round(podcastPlayer.effectiveVolume * 100)}%
+            </span>
+          </div>
+        {/if}
+      </div>
+
+      <label class="podcast-player-rate" data-tip="Playback speed">
+        <span class="visually-hidden-label">Playback speed</span>
+        <select
+          value={podcastPlayer.playbackRate}
+          onchange={(event) =>
+            savePlaybackRate(Number(event.currentTarget.value))}
+        >
+          {#each [0.75, 1, 1.25, 1.5, 1.75, 2] as rate (rate)}
+            <option value={rate}>{rate}&#215;</option>
+          {/each}
+        </select>
+      </label>
+
+      <button
+        class="ui-button ui-button--ghost ui-button--icon podcast-player-close"
+        type="button"
+        data-tip="Close player"
+        aria-label="Close the player"
+        onclick={() => podcastPlayer.close()}
+      >
+        <X size={16} strokeWidth={1.9} />
+      </button>
+    </div>
+  {/if}
 
   <div
     class={["toast", toastMessage && "show"]}

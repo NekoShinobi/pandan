@@ -2067,7 +2067,10 @@ fn parse_reddit_feed_snapshot(
     })
 }
 
-async fn validate_public_https_url(value: &str) -> Result<Url, String> {
+/// Validates one outbound URL against the shared SSRF policy.
+///
+/// Exposed to the crate so the podcast downloader can re-run it on every redirect hop.
+pub(crate) async fn validate_public_https_url(value: &str) -> Result<Url, String> {
     let url = Url::parse(value).map_err(|_| "URL is invalid".to_owned())?;
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
         return Err("only credential-free HTTPS URLs are allowed".to_owned());

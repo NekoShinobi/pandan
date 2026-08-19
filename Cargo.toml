@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.85"
 
 [workspace.dependencies]
-tokio = { version = "1.51.2", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "1.51.2", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal", "time"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 chrono = { version = "0.4.44", features = ["serde"] }

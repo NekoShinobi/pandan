@@ -374,6 +374,124 @@ export interface JournalResponse {
   nodes: JournalNode[];
 }
 
+export type PodcastRequestStatus =
+  "pending" | "approved" | "rejected" | "withdrawn";
+
+export type PodcastDownloadStatus =
+  "queued" | "downloading" | "ready" | "failed";
+
+export interface PodcastSummary {
+  id: string;
+  title: string;
+  description: string;
+  author: string;
+  site_url: string;
+  feed_url: string;
+  artwork_url: string;
+  has_artwork: boolean;
+  auto_download_count: number;
+  max_retained_episodes: number;
+  subscribed: boolean;
+  episode_count: number;
+  downloaded_count: number;
+  latest_published_at: string | null;
+  last_fetched_at: string | null;
+  last_error: string | null;
+  created_at: string;
+}
+
+export interface Podcast {
+  id: string;
+  feed_url: string;
+  normalized_url: string;
+  title: string;
+  description: string;
+  author: string;
+  site_url: string;
+  language: string;
+  artwork_url: string;
+  has_artwork: boolean;
+  auto_download_count: number;
+  max_retained_episodes: number;
+  added_by: string | null;
+  last_fetched_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PodcastEpisode {
+  id: string;
+  podcast_id: string;
+  podcast_title: string;
+  title: string;
+  description: string;
+  episode_url: string;
+  enclosure_type: string;
+  enclosure_bytes: number | null;
+  duration_seconds: number | null;
+  published_at: string;
+  download_status: PodcastDownloadStatus | null;
+  download_progress: number;
+  position_seconds: number;
+  completed_at: string | null;
+  saved_at: string | null;
+  queue_position: number | null;
+}
+
+export interface PodcastRequest {
+  id: string;
+  user_id: string;
+  requester_name: string;
+  feed_url: string;
+  resolved_title: string;
+  resolved_author: string;
+  resolved_artwork_url: string;
+  note: string;
+  status: PodcastRequestStatus;
+  decision_note: string;
+  decided_by_name: string | null;
+  decided_at: string | null;
+  podcast_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** The part of the administrator policy members are allowed to see. */
+export interface PodcastPolicy {
+  requests_enabled: boolean;
+  member_downloads_enabled: boolean;
+  max_pending_requests_per_user: number;
+}
+
+export interface PodcastOverview {
+  podcasts: PodcastSummary[];
+  queue: PodcastEpisode[];
+  saved: PodcastEpisode[];
+  recent: PodcastEpisode[];
+  in_progress: PodcastEpisode[];
+  requests: PodcastRequest[];
+  policy: PodcastPolicy;
+}
+
+export interface PodcastAdminSettings {
+  requests_enabled: boolean;
+  member_downloads_enabled: boolean;
+  max_pending_requests_per_user: number;
+  storage_budget_bytes: number;
+  max_episode_bytes: number;
+  default_auto_download_count: number;
+  updated_at: string;
+  storage_used_bytes: number;
+}
+
+export interface PodcastRequestOutcome {
+  /** `subscribed` when the feed was already catalogued, so no review was needed. */
+  outcome: "requested" | "subscribed";
+  request: PodcastRequest | null;
+  podcast_id: string | null;
+}
+
 export type CalendarColor = `#${string}`;
 
 export interface CalendarSubscription {
@@ -670,6 +788,7 @@ export interface UserSettings {
   sidebar_timezones: string[];
   temperature_unit: "celsius" | "fahrenheit";
   lines_default_visibility: LineVisibility;
+  podcast_playback_rate: number;
   updated_at: string;
 }
 
@@ -681,6 +800,7 @@ export type UserContentScope =
   | "rss"
   | "journal"
   | "youtube"
+  | "podcasts"
   | "coding"
   | "subscriptions";
 
@@ -970,6 +1090,7 @@ export function updateUserSettings(input: {
   sidebar_timezones?: string[];
   temperature_unit: UserSettings["temperature_unit"];
   lines_default_visibility: LineVisibility;
+  podcast_playback_rate?: number;
 }): Promise<UserSettings> {
   return requestJson<UserSettings>("/api/settings", {
     method: "PUT",
@@ -2299,5 +2420,255 @@ export function deleteKanbanAttachment(id: string): Promise<void> {
   return requestEmpty(`/api/kanban/attachments/${kanbanPath(id)}`, {
     method: "DELETE",
     credentials: "same-origin",
+  });
+}
+
+// --- Podcasts ---------------------------------------------------------------
+//
+// The catalogue is administrator-curated. Members submit a feed for review and
+// subscribe to what has been approved; only administrators publish, decide, or
+// change storage policy. Episode audio is served from the instance's own disk by
+// `podcastAudioUrl`, never proxied from the origin feed.
+
+export function fetchPodcasts(): Promise<PodcastOverview> {
+  return requestJson<PodcastOverview>("/api/podcasts");
+}
+
+export function fetchPodcastEpisodes(
+  podcastId: string,
+  options: { limit?: number; offset?: number } = {},
+): Promise<PodcastEpisode[]> {
+  const query = new URLSearchParams();
+  if (options.limit !== undefined) query.set("limit", String(options.limit));
+  if (options.offset !== undefined) query.set("offset", String(options.offset));
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  return requestJson<PodcastEpisode[]>(
+    `/api/podcasts/${encodeURIComponent(podcastId)}/episodes${suffix}`,
+  );
+}
+
+export function submitPodcastRequest(
+  feedUrl: string,
+  note: string,
+): Promise<PodcastRequestOutcome> {
+  return requestJson<PodcastRequestOutcome>("/api/podcasts/requests", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ feed_url: feedUrl, note }),
+  });
+}
+
+export function withdrawPodcastRequest(requestId: string): Promise<void> {
+  return requestEmpty(
+    `/api/podcasts/requests/${encodeURIComponent(requestId)}`,
+    { method: "DELETE", credentials: "same-origin" },
+  );
+}
+
+export function subscribeToPodcast(podcastId: string): Promise<void> {
+  return requestEmpty(
+    `/api/podcasts/${encodeURIComponent(podcastId)}/subscription`,
+    { method: "PUT", credentials: "same-origin" },
+  );
+}
+
+export function unsubscribeFromPodcast(podcastId: string): Promise<void> {
+  return requestEmpty(
+    `/api/podcasts/${encodeURIComponent(podcastId)}/subscription`,
+    { method: "DELETE", credentials: "same-origin" },
+  );
+}
+
+export function podcastArtworkUrl(podcastId: string): string {
+  return `/api/podcasts/${encodeURIComponent(podcastId)}/artwork`;
+}
+
+/** The instance's own copy of the episode. Supports range requests, so seeking works. */
+export function podcastAudioUrl(episodeId: string): string {
+  return `/api/podcasts/episodes/${encodeURIComponent(episodeId)}/audio`;
+}
+
+export function requestPodcastDownload(episodeId: string): Promise<void> {
+  return requestEmpty(
+    `/api/podcasts/episodes/${encodeURIComponent(episodeId)}/download`,
+    { method: "POST", credentials: "same-origin" },
+  );
+}
+
+export function savePodcastProgress(
+  episodeId: string,
+  positionSeconds: number,
+  completed: boolean,
+): Promise<void> {
+  return requestEmpty(
+    `/api/podcasts/episodes/${encodeURIComponent(episodeId)}/progress`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({
+        position_seconds: Math.max(0, Math.round(positionSeconds)),
+        completed,
+      }),
+    },
+  );
+}
+
+export function setPodcastEpisodeSaved(
+  episodeId: string,
+  saved: boolean,
+): Promise<void> {
+  return requestEmpty(
+    `/api/podcasts/episodes/${encodeURIComponent(episodeId)}/saved`,
+    { method: saved ? "PUT" : "DELETE", credentials: "same-origin" },
+  );
+}
+
+export function appendToPodcastQueue(
+  episodeId: string,
+): Promise<PodcastEpisode[]> {
+  return requestJson<PodcastEpisode[]>("/api/podcasts/queue", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ episode_id: episodeId }),
+  });
+}
+
+export function reorderPodcastQueue(
+  episodeIds: string[],
+): Promise<PodcastEpisode[]> {
+  return requestJson<PodcastEpisode[]>("/api/podcasts/queue", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ episode_ids: episodeIds }),
+  });
+}
+
+export function removeFromPodcastQueue(
+  episodeId: string,
+): Promise<PodcastEpisode[]> {
+  return requestJson<PodcastEpisode[]>(
+    `/api/podcasts/queue/${encodeURIComponent(episodeId)}`,
+    { method: "DELETE", credentials: "same-origin" },
+  );
+}
+
+// --- Podcasts: administrator ------------------------------------------------
+
+export function fetchPodcastRequests(
+  status: "all" | PodcastRequestStatus = "pending",
+): Promise<PodcastRequest[]> {
+  return requestJson<PodcastRequest[]>(
+    `/api/podcasts/requests?status=${encodeURIComponent(status)}`,
+  );
+}
+
+export function approvePodcastRequest(
+  requestId: string,
+  note: string,
+): Promise<Podcast> {
+  return requestJson<Podcast>(
+    `/api/podcasts/requests/${encodeURIComponent(requestId)}/approve`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ note }),
+    },
+  );
+}
+
+export function rejectPodcastRequest(
+  requestId: string,
+  note: string,
+): Promise<void> {
+  return requestEmpty(
+    `/api/podcasts/requests/${encodeURIComponent(requestId)}/reject`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ note }),
+    },
+  );
+}
+
+export function addPodcast(feedUrl: string): Promise<Podcast> {
+  return requestJson<Podcast>("/api/podcasts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ feed_url: feedUrl }),
+  });
+}
+
+export function updatePodcastRetention(
+  podcastId: string,
+  autoDownloadCount: number,
+  maxRetainedEpisodes: number,
+): Promise<Podcast> {
+  return requestJson<Podcast>(
+    `/api/podcasts/${encodeURIComponent(podcastId)}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({
+        auto_download_count: autoDownloadCount,
+        max_retained_episodes: maxRetainedEpisodes,
+      }),
+    },
+  );
+}
+
+export function deletePodcast(podcastId: string): Promise<void> {
+  return requestEmpty(`/api/podcasts/${encodeURIComponent(podcastId)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+
+export function removePodcastDownload(episodeId: string): Promise<void> {
+  return requestEmpty(
+    `/api/podcasts/episodes/${encodeURIComponent(episodeId)}/download`,
+    { method: "DELETE", credentials: "same-origin" },
+  );
+}
+
+/**
+ * Queues every uncached episode of one show. Administrator-only.
+ *
+ * Resolves with the number of episodes newly queued; episodes already cached or already
+ * in flight are left alone and not counted.
+ */
+export function downloadAllPodcastEpisodes(
+  podcastId: string,
+): Promise<{ queued: number }> {
+  return requestJson<{ queued: number }>(
+    `/api/podcasts/${encodeURIComponent(podcastId)}/downloads`,
+    { method: "POST", credentials: "same-origin" },
+  );
+}
+
+export function fetchPodcastSettings(): Promise<PodcastAdminSettings> {
+  return requestJson<PodcastAdminSettings>("/api/podcasts/settings");
+}
+
+export function updatePodcastSettings(input: {
+  requests_enabled: boolean;
+  member_downloads_enabled: boolean;
+  max_pending_requests_per_user: number;
+  storage_budget_bytes: number;
+  max_episode_bytes: number;
+  default_auto_download_count: number;
+}): Promise<PodcastAdminSettings> {
+  return requestJson<PodcastAdminSettings>("/api/podcasts/settings", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
   });
 }

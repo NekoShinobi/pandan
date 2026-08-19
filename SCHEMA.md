@@ -81,6 +81,7 @@ One preference record per user.
 | `sidebar_timezones_json`  | TEXT | Valid JSON array containing 1–5 timezone names      |
 | `temperature_unit`        | TEXT | `celsius` or `fahrenheit`                           |
 | `lines_default_visibility`| TEXT | `private` or `public`; defaults to `private`        |
+| `podcast_playback_rate`   | REAL | 0.5–3.0; defaults to 1.0                            |
 | `updated_at`              | TEXT | Required, RFC 3339 timestamp                        |
 
 ## `user_backgrounds`
@@ -471,6 +472,174 @@ area is deleted.
 | `user_id`  | TEXT | Composite primary key, references `users` with cascade delete |
 | `video_id` | TEXT | Composite primary key, references `youtube_videos` with cascade delete |
 | `saved_at` | TEXT | Required, RFC 3339 timestamp                                  |
+
+## `podcasts`
+
+The instance's administrator-curated podcast catalogue. A row exists only once an administrator has
+approved a feed or added one directly; a member request never creates one. `normalized_url` is the
+uniqueness key, so the same show cannot be catalogued twice under cosmetically different addresses.
+Artwork is cached here as a blob and refreshed at most once a day; a failed fetch never overwrites
+it. Episode audio is **not** stored in SQLite — see `podcast_downloads`.
+
+| Column                  | Type    | Constraints                                            |
+| ----------------------- | ------- | ------------------------------------------------------ |
+| `id`                    | TEXT    | Primary key                                            |
+| `feed_url`              | TEXT    | Required, trimmed length 1–2048, as submitted          |
+| `normalized_url`        | TEXT    | Required, unique, trimmed length 1–2048                |
+| `title`                 | TEXT    | Required, trimmed length 1–300                         |
+| `description`           | TEXT    | Required, defaults to empty                            |
+| `author`                | TEXT    | Required, defaults to empty                            |
+| `site_url`              | TEXT    | Required, defaults to empty                            |
+| `language`              | TEXT    | Required, defaults to empty                            |
+| `artwork_url`           | TEXT    | Required, defaults to empty                            |
+| `artwork_content_type`  | TEXT    | Required, defaults to empty                            |
+| `artwork_data`          | BLOB    | Optional cached image bytes                            |
+| `artwork_fetched_at`    | TEXT    | Optional RFC 3339 timestamp                            |
+| `auto_download_count`   | INTEGER | Newest episodes cached automatically, 0–25, default 3  |
+| `max_retained_episodes` | INTEGER | Retention window, 1–1000, default 50                   |
+| `added_by`              | TEXT    | Optional reference to `users`, null on account delete  |
+| `last_fetched_at`       | TEXT    | Optional RFC 3339 timestamp                            |
+| `refresh_started_at`    | TEXT    | Optional refresh lease, RFC 3339 timestamp             |
+| `last_error`            | TEXT    | Optional isolated refresh failure                      |
+| `created_at`            | TEXT    | Required, RFC 3339 timestamp                           |
+| `updated_at`            | TEXT    | Required, RFC 3339 timestamp                           |
+
+## `podcast_requests`
+
+Member requests awaiting an administrator decision, retained afterwards as history so a rejection
+keeps its reason visible to the requester. A partial unique index over
+`(user_id, normalized_url) WHERE status = 'pending'` allows one open request per user per feed while
+letting decided rows accumulate. Only `pending` rows may be approved, rejected, or withdrawn.
+
+| Column                 | Type | Constraints                                                            |
+| ---------------------- | ---- | ---------------------------------------------------------------------- |
+| `id`                   | TEXT | Primary key                                                            |
+| `user_id`              | TEXT | References `users` with cascade delete                                 |
+| `feed_url`             | TEXT | Required, trimmed length 1–2048                                        |
+| `normalized_url`       | TEXT | Required, trimmed length 1–2048                                        |
+| `resolved_title`       | TEXT | Preview resolved from the feed, defaults to empty                      |
+| `resolved_author`      | TEXT | Preview resolved from the feed, defaults to empty                      |
+| `resolved_artwork_url` | TEXT | Preview resolved from the feed, defaults to empty                      |
+| `note`                 | TEXT | Requester's reason, up to 500 characters                               |
+| `status`               | TEXT | One of `pending`, `approved`, `rejected`, `withdrawn`                  |
+| `decision_note`        | TEXT | Administrator's reason, up to 500 characters                           |
+| `decided_by`           | TEXT | Optional reference to `users`, null on account delete                  |
+| `decided_at`           | TEXT | Optional RFC 3339 timestamp                                            |
+| `podcast_id`           | TEXT | Optional reference to `podcasts`, set on approval, null on show delete |
+| `created_at`           | TEXT | Required, RFC 3339 timestamp                                           |
+| `updated_at`           | TEXT | Required, RFC 3339 timestamp                                           |
+
+## `podcast_episodes`
+
+Feed items indexed at the instance level, shared by every subscriber. Unique per `(podcast_id, guid)`;
+feeds that omit a guid fall back to the enclosure URL so re-indexing stays idempotent. Rows are
+refreshed in place, so a retitled episode keeps everyone's listening position.
+
+| Column             | Type    | Constraints                                        |
+| ------------------ | ------- | -------------------------------------------------- |
+| `id`               | TEXT    | Primary key                                        |
+| `podcast_id`       | TEXT    | References `podcasts` with cascade delete          |
+| `guid`             | TEXT    | Required, trimmed length 1–2048, unique per show   |
+| `title`            | TEXT    | Required, trimmed length 1–500                     |
+| `description`      | TEXT    | Required, defaults to empty                        |
+| `episode_url`      | TEXT    | Required, defaults to empty                        |
+| `enclosure_url`    | TEXT    | Required, trimmed length 1–2048                    |
+| `enclosure_type`   | TEXT    | Required, defaults to empty                        |
+| `enclosure_bytes`  | INTEGER | Optional, non-negative                             |
+| `duration_seconds` | INTEGER | Optional, non-negative                             |
+| `published_at`     | TEXT    | Required, RFC 3339 timestamp                       |
+| `fetched_at`       | TEXT    | Required, RFC 3339 timestamp                       |
+
+## `podcast_downloads`
+
+The index over cached episode files, doubling as the download work queue. The audio itself lives on
+disk under `PANDAN_MEDIA_DIR` (default `data/podcasts`) as `<episode_id>.<ext>`, where the extension
+comes from a server-side media-type allowlist — nothing from a remote URL or header reaches the
+filesystem. `requested_by` is `ON DELETE SET NULL` on purpose: cached audio is a shared instance
+resource and must outlive the account that first asked for it. Startup reconciles this table against
+the media root in both directions.
+
+| Column             | Type    | Constraints                                                   |
+| ------------------ | ------- | ------------------------------------------------------------- |
+| `episode_id`       | TEXT    | Primary key, references `podcast_episodes` with cascade delete |
+| `status`           | TEXT    | One of `queued`, `downloading`, `ready`, `failed`             |
+| `requested_by`     | TEXT    | Optional reference to `users`, null on account delete         |
+| `file_name`        | TEXT    | Plain file name inside the media root, defaults to empty      |
+| `content_type`     | TEXT    | Required, defaults to empty                                   |
+| `byte_size`        | INTEGER | Required, non-negative, defaults to 0                         |
+| `downloaded_bytes` | INTEGER | Required, non-negative, defaults to 0                         |
+| `pinned`           | INTEGER | 0 or 1; pinned files are never evicted                        |
+| `attempts`         | INTEGER | Required, non-negative, defaults to 0                         |
+| `last_error`       | TEXT    | Required, defaults to empty                                   |
+| `lease_started_at` | TEXT    | Optional worker lease, RFC 3339 timestamp                     |
+| `last_accessed_at` | TEXT    | Optional RFC 3339 timestamp; least-recently-used eviction ranks on it |
+| `created_at`       | TEXT    | Required, RFC 3339 timestamp                                  |
+| `updated_at`       | TEXT    | Required, RFC 3339 timestamp                                  |
+
+## `podcast_subscriptions`
+
+Private account-to-podcast membership. Every episode read — metadata, audio bytes, and listening
+state — resolves through this table.
+
+| Column       | Type | Constraints                                                 |
+| ------------ | ---- | ----------------------------------------------------------- |
+| `user_id`    | TEXT | Composite primary key, references `users` with cascade delete |
+| `podcast_id` | TEXT | Composite primary key, references `podcasts` with cascade delete |
+| `created_at` | TEXT | Required, RFC 3339 timestamp                                |
+
+## `podcast_episode_progress`
+
+Private per-account resume position and completion state, written on an interval while playing and
+on pause, seek, and page hide.
+
+| Column             | Type    | Constraints                                                    |
+| ------------------ | ------- | -------------------------------------------------------------- |
+| `user_id`          | TEXT    | Composite primary key, references `users` with cascade delete  |
+| `episode_id`       | TEXT    | Composite primary key, references `podcast_episodes` with cascade delete |
+| `position_seconds` | INTEGER | Required, non-negative, defaults to 0                          |
+| `completed_at`     | TEXT    | Optional RFC 3339 timestamp                                    |
+| `updated_at`       | TEXT    | Required, RFC 3339 timestamp                                   |
+
+## `podcast_queue`
+
+Private per-account play order. This is play order, not a saved collection. `UNIQUE(user_id, position)`
+is checked per statement, so reordering parks every affected row in the 256–511 band before writing
+final 0–255 positions; the two ranges cannot overlap, which is what makes a full reversal safe.
+
+| Column       | Type    | Constraints                                                     |
+| ------------ | ------- | --------------------------------------------------------------- |
+| `user_id`    | TEXT    | Composite primary key, references `users` with cascade delete   |
+| `episode_id` | TEXT    | Composite primary key, references `podcast_episodes` with cascade delete |
+| `position`   | INTEGER | 0–511; 0–255 are final positions, 256–511 the reorder parking band |
+| `added_at`   | TEXT    | Required, RFC 3339 timestamp                                    |
+
+## `podcast_saved_episodes`
+
+Private account-to-episode saved list, mirroring `rss_read_later` and `youtube_watch_later`. A saved
+episode is exempt from retention trimming.
+
+| Column       | Type | Constraints                                                     |
+| ------------ | ---- | --------------------------------------------------------------- |
+| `user_id`    | TEXT | Composite primary key, references `users` with cascade delete   |
+| `episode_id` | TEXT | Composite primary key, references `podcast_episodes` with cascade delete |
+| `saved_at`   | TEXT | Required, RFC 3339 timestamp                                    |
+
+## `podcast_settings`
+
+Singleton administrator-controlled podcast policy, seeded by migration `038_podcasts` exactly as
+`authentication_settings` is. Closing requests makes the catalogue administrator-only; the storage
+budget bounds how much disk cached audio may occupy before least-recently-used eviction runs.
+
+| Column                          | Type    | Constraints                                          |
+| ------------------------------- | ------- | ---------------------------------------------------- |
+| `id`                            | INTEGER | Primary key, always 1                                |
+| `requests_enabled`              | INTEGER | 0 or 1, defaults to 1                                |
+| `member_downloads_enabled`      | INTEGER | 0 or 1, defaults to 1                                |
+| `max_pending_requests_per_user` | INTEGER | 0–100, defaults to 5                                 |
+| `storage_budget_bytes`          | INTEGER | 0–1 TiB, defaults to 20 GiB                          |
+| `max_episode_bytes`             | INTEGER | 1 MiB–5 GiB, defaults to 500 MiB                     |
+| `default_auto_download_count`   | INTEGER | 0–25, defaults to 3                                  |
+| `updated_at`                    | TEXT    | Required, RFC 3339 timestamp                         |
 
 ## `journal_nodes`
 

@@ -10,6 +10,7 @@ use crate::entities::{
     RssSubscriptionDraft, SessionAccount, Task, TaskAttachment, TaskDraft, TaskSubtask, User,
     UserAppearance, UserAvatar, UserBackground, UserCredentials, UserSettings, Workspace,
 };
+pub use crate::podcast_queries::*;
 pub use crate::youtube_queries::*;
 use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
 
@@ -87,6 +88,7 @@ struct UserSettingsRecord {
     sidebar_timezones_json: String,
     temperature_unit: String,
     lines_default_visibility: String,
+    podcast_playback_rate: f64,
     updated_at: String,
 }
 
@@ -105,6 +107,7 @@ impl UserSettingsRecord {
             sidebar_timezones,
             temperature_unit: self.temperature_unit,
             lines_default_visibility: self.lines_default_visibility,
+            podcast_playback_rate: self.podcast_playback_rate,
             updated_at: self.updated_at,
         }
     }
@@ -1344,6 +1347,25 @@ pub async fn delete_user_content(
                 .await?
                 .rows_affected();
             projects + credentials
+        }
+        // The catalogue and cached audio are shared instance resources: clearing one
+        // listener's data must never delete an episode another is midway through.
+        "podcasts" => {
+            let mut removed = 0;
+            for statement in [
+                "DELETE FROM podcast_queue WHERE user_id = ?",
+                "DELETE FROM podcast_saved_episodes WHERE user_id = ?",
+                "DELETE FROM podcast_episode_progress WHERE user_id = ?",
+                "DELETE FROM podcast_subscriptions WHERE user_id = ?",
+                "DELETE FROM podcast_requests WHERE user_id = ?",
+            ] {
+                removed += sqlx::query(statement)
+                    .bind(user_id)
+                    .execute(&mut *transaction)
+                    .await?
+                    .rows_affected();
+            }
+            removed
         }
         "subscriptions" => sqlx::query("DELETE FROM payment_subscriptions WHERE user_id = ?")
             .bind(user_id)
@@ -2931,6 +2953,7 @@ pub async fn create_account(
             sidebar_timezones: vec!["UTC".to_owned()],
             temperature_unit: "celsius".to_owned(),
             lines_default_visibility: "private".to_owned(),
+            podcast_playback_rate: 1.0,
             updated_at: now,
         },
     ))
@@ -2992,6 +3015,7 @@ pub async fn find_session_account(
                 user_settings.display_name, user_settings.location, user_settings.timezone, \
                 user_settings.sidebar_timezones_json, user_settings.temperature_unit, \
                 user_settings.lines_default_visibility, \
+                user_settings.podcast_playback_rate, \
                 user_settings.updated_at AS settings_updated_at \
          FROM sessions \
          JOIN users ON users.id = sessions.user_id \
@@ -3031,12 +3055,13 @@ pub async fn update_user_settings(
     sidebar_timezones_json: &str,
     temperature_unit: &str,
     lines_default_visibility: &str,
+    podcast_playback_rate: f64,
 ) -> Result<UserSettings, sqlx::Error> {
     let updated_at = chrono::Utc::now().to_rfc3339();
     sqlx::query(
         "UPDATE user_settings SET display_name = ?, location = ?, timezone = ?, \
          sidebar_timezones_json = ?, temperature_unit = ?, lines_default_visibility = ?, \
-         updated_at = ? WHERE user_id = ?",
+         podcast_playback_rate = ?, updated_at = ? WHERE user_id = ?",
     )
     .bind(display_name)
     .bind(location)
@@ -3044,6 +3069,7 @@ pub async fn update_user_settings(
     .bind(sidebar_timezones_json)
     .bind(temperature_unit)
     .bind(lines_default_visibility)
+    .bind(podcast_playback_rate)
     .bind(&updated_at)
     .bind(user_id)
     .execute(pool)
@@ -3051,7 +3077,7 @@ pub async fn update_user_settings(
 
     sqlx::query_as::<_, UserSettingsRecord>(
         "SELECT user_id, display_name, location, timezone, sidebar_timezones_json, \
-                temperature_unit, lines_default_visibility, updated_at \
+                temperature_unit, lines_default_visibility, podcast_playback_rate, updated_at \
          FROM user_settings WHERE user_id = ?",
     )
     .bind(user_id)
@@ -3891,6 +3917,7 @@ async fn insert_initial_administrator(
             sidebar_timezones: vec!["UTC".to_owned()],
             temperature_unit: "celsius".to_owned(),
             lines_default_visibility: "private".to_owned(),
+            podcast_playback_rate: 1.0,
             updated_at: now,
         },
     )))

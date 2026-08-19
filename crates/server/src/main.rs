@@ -1,6 +1,6 @@
 use actix_files::Files;
 use actix_web::{App, HttpServer, web};
-use server::{AppState, UI_BUILD_DIR, configure_api, spa_fallback};
+use server::{AppState, SiteOrigin, UI_BUILD_DIR, configure_api, spa_document};
 use tracing::info;
 use tracing_actix_web::TracingLogger;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -40,13 +40,22 @@ async fn main() -> miette::Result<()> {
         invidious_enabled = widget_integrations.invidious_enabled(),
         "widget integrations configured"
     );
+    let podcast_media = server::PodcastMedia::from_env()
+        .map_err(|error| miette::miette!("podcast media configuration error: {error}"))?;
+    info!(
+        media_dir = %podcast_media.root().display(),
+        "podcast media storage configured"
+    );
     let state = web::Data::new(AppState {
         pool,
         cookie_secure,
         oidc,
         widget_integrations,
+        podcast_media,
+        site_origin: SiteOrigin::from_env(),
     });
     server::spawn_youtube_refresh_worker(state.clone());
+    server::spawn_podcast_workers(state.clone());
     server::spawn_rss_refresh_worker(state.clone());
 
     info!(port, "server listening");
@@ -55,11 +64,13 @@ async fn main() -> miette::Result<()> {
             .wrap(TracingLogger::default())
             .app_data(state.clone())
             .configure(configure_api)
+            // The application document is rendered rather than served from
+            // disk, so the root route cannot be left to `Files::index_file`.
+            .service(web::resource("/").to(spa_document))
             .service(
                 Files::new("/", UI_BUILD_DIR)
-                    .index_file("200.html")
                     .prefer_utf8(true)
-                    .default_handler(web::to(spa_fallback)),
+                    .default_handler(web::to(spa_document)),
             )
     })
     .bind(("0.0.0.0", port))

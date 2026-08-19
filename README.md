@@ -27,6 +27,7 @@ Pandan brings planning, reading, contacts, calendars, notes, lightweight instanc
 - [OpenID Connect](#openid-connect)
 - [Data, backups, and upgrades](#data-backups-and-upgrades)
 - [Security model](#security-model)
+- [Link previews](#link-previews)
 - [Local development](#local-development)
 - [Architecture](#architecture)
 - [Troubleshooting](#troubleshooting)
@@ -44,6 +45,7 @@ Pandan brings planning, reading, contacts, calendars, notes, lightweight instanc
 | **Journal** | Nested documents that can contain Markdown content and child documents; rendered Markdown is sanitized before display. |
 | **Lines** | A Markdown timeline with account avatars, public or private posts, threaded replies composed in a modal, thread and author screens, hashtag discovery, search, file attachments, reactions, and administrator moderation of public posts. |
 | **YouTube** | Channel subscriptions, groups, a private Watch Later queue, thumbnail or compact layouts, manual refresh, and server-side shared metadata caching. |
+| **Podcasts** | An administrator-curated show catalogue for the whole instance, member requests with approve/reject review, per-account subscriptions, a play queue, saved episodes, and episodes downloaded once and then streamed from this server. Playback follows you across sections with skip-to-episode, rewind and forward, volume, and speed controls, and resumes where you left off. Administrators can queue a show's whole back catalogue in one action. |
 | **Coding** | Releases from GitHub, GitLab, Codeberg, Gitea, and Forgejo; connected accounts can also show owned repositories, open pull requests, and GitLab pipelines. |
 | **Subscriptions** | Recurring service costs, first-payment dates, filtering, and separate daily, weekly, monthly, and yearly totals for each currency. |
 | **Trading** | A navigation placeholder for a future market workspace; watchlists and trade planning are not implemented yet. |
@@ -136,9 +138,10 @@ Pandan prevents an administrator from deleting their active account or removing 
 | `PORT` | `9651` | Server port when running directly; in production Compose it selects the published host port while the container continues to listen on `9651`. |
 | `RUST_LOG` | `info` | Rust tracing filter, such as `info`, `debug`, or a crate-specific filter. |
 | `COOKIE_SECURE` | `false` | Accepts `1`, `true`, or `yes` (case-insensitive) to mark session and OIDC state cookies as HTTPS-only. |
-| `PANDAN_BASE_URL` | unset in the server | Public absolute HTTP(S) application URL. Required when OIDC is enabled and used to derive its callback URL. |
+| `PANDAN_BASE_URL` | unset in the server | Public absolute HTTP(S) application URL. Required when OIDC is enabled, where it derives the callback URL, and used for link-preview URLs. Without it, previews fall back to the address each request arrived on. |
 | `PANDAN_SECRET_KEY` | unset | Base64 text that decodes to exactly 32 bytes. Enables encrypted provider-credential storage. |
 | `INVIDIOUS_BASE_URL` | unset | Optional public HTTPS Invidious base URL used before YouTube's public uploads feed. |
+| `PANDAN_MEDIA_DIR` | `data/podcasts` | Directory for downloaded podcast episodes. Must be writable and on a volume with room for the storage budget. Production Compose sets `/app/data/podcasts`. |
 
 ### Production container settings
 
@@ -251,12 +254,19 @@ The `just db-reset` recipe permanently deletes the host and container-developmen
 | Task attachments | Any content type accepted by the task attachment endpoint | 10 MB |
 | Kanban card attachments | Any content type accepted by the Kanban attachment endpoint | 10 MB |
 | Contact JSON import | Pandan or Monica JSON | 64 MB and at most 10,000 records |
+| Podcast episodes (downloaded, not uploaded) | Audio media types from a server-side allowlist | 500 MB per episode by default, within a 20 GB instance budget |
+
+Podcast episode limits are administrator-configurable from the Podcasts page. Episode audio is the
+only content Pandan stores outside SQLite: files are written under `PANDAN_MEDIA_DIR` so playback can
+be streamed and seeked, and access still goes through an authenticated handler.
 
 ## Remote content behavior
 
 - User-supplied RSS, ICS, CardDAV, Invidious, Gitea, and Forgejo destinations must use public HTTPS URLs. Server-side fetches reject loopback, private, link-local, multicast, and reserved destinations after DNS resolution.
 - Remote requests use bounded redirects, connection and request timeouts, response-size limits, and isolated provider errors so one failing provider does not break an entire page.
 - YouTube channel metadata refreshes every two hours. Pandan tries configured Invidious first and YouTube's public uploads feed second. Shared channel portraits are stored in SQLite and refreshed at most every 24 hours; invalid or failed portrait responses are not cached.
+- Podcast feeds and episode enclosures use dedicated HTTP clients because enclosures routinely redirect through tracking prefixes and run to hundreds of megabytes. Redirects are followed manually and revalidated against the same public-destination policy at every hop, and the size ceiling is enforced both on the declared length and while streaming.
+- Pandan never proxies remote podcast audio to a browser. An episode is downloaded once to this server and then served from local disk, so nothing plays until the instance holds its own copy.
 - The daily Bible Verse widget selects locally and deterministically from the packaged English Revised Version data; it makes no runtime verse request.
 
 ## Security model
@@ -271,6 +281,21 @@ The `just db-reset` recipe permanently deletes the host and container-developmen
 - The supplied production Compose configuration runs the container as an unprivileged user with a read-only root filesystem, a temporary `/tmp`, all Linux capabilities dropped, and `no-new-privileges` enabled.
 
 These controls reduce common self-hosting risks, but Pandan is not a substitute for TLS, network access controls, database backups, secret management, and timely dependency updates.
+
+## Link previews
+
+Pandan renders in the browser and every page sits behind authentication, so a chat or social crawler
+never reaches account data. Every link therefore previews as the same generic card, built from
+`ui/static/og-card.png` and the Open Graph and Twitter tags in `ui/src/app.html`.
+
+Preview tags need absolute URLs, so the server writes them into the application document as it serves
+it. It uses `PANDAN_BASE_URL` when that is set, and otherwise the scheme and host the request arrived
+on, honouring `Forwarded`, `X-Forwarded-Proto`, and `X-Forwarded-Host` from a terminating proxy. Set
+`PANDAN_BASE_URL` whenever the public address cannot be reconstructed from the request, such as behind
+a proxy that rewrites `Host`.
+
+Preview services cache what they fetch, often for days. After changing the card, ask the service to
+re-fetch the link rather than expecting existing messages to update.
 
 ## Health check
 
