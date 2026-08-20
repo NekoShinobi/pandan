@@ -24,11 +24,18 @@ const COMPLETION_TAIL_SECONDS = 15;
 const RESTART_THRESHOLD_SECONDS = 5;
 /** Volume is a device preference rather than account state, so it lives in storage. */
 const VOLUME_STORAGE_KEY = "pandan:podcast-volume";
+/** Where the slider starts, leaving headroom above unity for a quiet recording. */
+const DEFAULT_VOLUME = 0.8;
+/** The ceiling, as a multiple of the source level. Above 1 the boost needs a gain node. */
+const MAX_VOLUME = 2;
 
 /** How far the rewind control moves. Exported so its label cannot drift from its behavior. */
 export const SKIP_BACK_SECONDS = 15;
 /** How far the forward control moves. Exported for the same reason. */
 export const SKIP_FORWARD_SECONDS = 30;
+
+/** The volume ceiling, exported so the slider cannot drift from what the player accepts. */
+export const MAX_PLAYBACK_VOLUME = MAX_VOLUME;
 
 class PodcastPlayer {
   episode = $state<PodcastEpisode | null>(null);
@@ -36,7 +43,7 @@ class PodcastPlayer {
   currentTime = $state(0);
   duration = $state(0);
   playbackRate = $state(1);
-  volume = $state(1);
+  volume = $state(DEFAULT_VOLUME);
   muted = $state(false);
   buffering = $state(false);
   error = $state("");
@@ -61,13 +68,24 @@ class PodcastPlayer {
    * and has to adopt the reloaded record that finally carries a duration.
    */
   #loadedEpisodeId = "";
+  /**
+   * The boost graph, built only once a level above 100% is asked for.
+   *
+   * `HTMLMediaElement.volume` is capped at 1, so amplification has to run through Web
+   * Audio. The context is created from the slider interaction itself, which is a user
+   * gesture, so it starts running rather than suspended.
+   */
+  #audioContext: AudioContext | null = null;
+  #gain: GainNode | null = null;
 
   /** Binds the shell's audio element. Called once, when the shell mounts. */
   attach(element: HTMLAudioElement) {
     this.#element = element;
     element.playbackRate = this.playbackRate;
     this.volume = readStoredVolume();
-    this.#applyVolume();
+    // Mount is not a user gesture. A stored boost waits for the first play rather than
+    // opening an AudioContext here, which would start suspended and play silently.
+    this.#applyVolume(false);
   }
 
   get element(): HTMLAudioElement | null {
@@ -144,6 +162,9 @@ class PodcastPlayer {
 
     try {
       this.buffering = true;
+      // Playing is a user gesture, which is where a boost stored from a previous visit
+      // gets its audio graph.
+      this.#applyVolume();
       await element.play();
     } catch {
       this.error = "This episode could not be played.";
@@ -224,7 +245,7 @@ class PodcastPlayer {
   }
 
   setVolume(value: number) {
-    const bounded = Math.min(Math.max(value, 0), 1);
+    const bounded = Math.min(Math.max(value, 0), MAX_VOLUME);
     this.volume = bounded;
     this.muted = bounded === 0;
     this.#applyVolume();
@@ -233,7 +254,7 @@ class PodcastPlayer {
 
   toggleMuted() {
     // Unmuting a slider that was dragged to zero would still be silent, so give it a level.
-    if (this.muted && this.volume === 0) this.volume = 0.5;
+    if (this.muted && this.volume === 0) this.volume = DEFAULT_VOLUME;
     this.muted = !this.muted;
     this.#applyVolume();
     if (!this.muted) storeVolume(this.volume);
@@ -348,11 +369,41 @@ class PodcastPlayer {
     await this.#flush();
   }
 
-  #applyVolume() {
+  #applyVolume(allowGraph = true) {
     const element = this.#element;
     if (!element) return;
-    element.volume = this.volume;
+    const level = this.muted ? 0 : this.volume;
+    // Build the graph the first time the level goes past unity, then keep using it: the
+    // element sits at 1 and the gain node carries the whole level, so the two never
+    // multiply together.
+    const gain = level > 1 && allowGraph ? this.#ensureGain() : this.#gain;
     element.muted = this.muted;
+    if (gain) {
+      element.volume = 1;
+      gain.gain.value = level;
+      void this.#audioContext?.resume().catch(() => undefined);
+      return;
+    }
+    element.volume = Math.min(level, 1);
+  }
+
+  /** Routes the element through a gain node, or returns null where Web Audio is absent. */
+  #ensureGain(): GainNode | null {
+    if (this.#gain) return this.#gain;
+    const element = this.#element;
+    if (!element || typeof AudioContext !== "function") return null;
+    try {
+      const context = new AudioContext();
+      const gain = context.createGain();
+      context.createMediaElementSource(element).connect(gain);
+      gain.connect(context.destination);
+      this.#audioContext = context;
+      this.#gain = gain;
+      return gain;
+    } catch {
+      // Without the graph the element still plays; it just cannot go above 100%.
+      return null;
+    }
   }
 
   async #flush() {
@@ -380,11 +431,13 @@ class PodcastPlayer {
 function readStoredVolume(): number {
   try {
     const stored = localStorage.getItem(VOLUME_STORAGE_KEY);
-    if (stored === null) return 1;
+    if (stored === null) return DEFAULT_VOLUME;
     const value = Number(stored);
-    return Number.isFinite(value) && value >= 0 && value <= 1 ? value : 1;
+    return Number.isFinite(value) && value >= 0 && value <= MAX_VOLUME
+      ? value
+      : DEFAULT_VOLUME;
   } catch {
-    return 1;
+    return DEFAULT_VOLUME;
   }
 }
 

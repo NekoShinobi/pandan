@@ -5,6 +5,9 @@ export DEV_UID := env_var_or_default("DEV_UID", `id -u`)
 export DEV_GID := env_var_or_default("DEV_GID", `id -g`)
 
 DEPS_MIN_AGE_DAYS := "3"
+CARGO_NEXTEST_VERSION := "0.9.143"
+CARGO_MACHETE_VERSION := "0.9.2"
+CARGO_MUTANTS_VERSION := "27.1.0"
 
 # List available recipes.
 [private]
@@ -13,9 +16,17 @@ default:
 
 # Install Rust and Svelte dependencies exactly as locked.
 [group('dev')]
-setup:
+setup: setup-tools
     cargo fetch --locked
     cd ui && bun install --frozen-lockfile
+
+# Install the pinned Rust development tools used by repository recipes.
+[group('dev')]
+setup-tools:
+    rustup component add rust-analyzer
+    cargo install --locked --version "={{ CARGO_NEXTEST_VERSION }}" cargo-nextest
+    cargo install --locked --version "={{ CARGO_MACHETE_VERSION }}" cargo-machete
+    cargo install --locked --version "={{ CARGO_MUTANTS_VERSION }}" cargo-mutants
 
 # Start the API and Vite dev servers with live reload.
 [group('dev')]
@@ -70,6 +81,16 @@ check-ui:
 test:
     cargo test --workspace
 
+# Run the Rust test suite with nextest's process-per-test runner.
+[group('checks')]
+test-nextest:
+    cargo nextest run --workspace
+
+# Mutation-test both Rust crates using nextest for the generated test runs.
+[group('checks')]
+test-mutants:
+    cargo mutants --workspace
+
 # Run all backend and frontend linters.
 [group('checks')]
 lint: lint-api lint-ui
@@ -105,6 +126,11 @@ ci: fmt-check check lint test
 deps-outdated:
     cargo update --dry-run
     cd ui && bun outdated
+
+# Report likely unused Rust dependencies without changing manifests.
+[group('deps')]
+deps-unused:
+    cargo machete
 
 # Refresh lockfiles within declared semver ranges after a three-day cooldown.
 [group('deps')]

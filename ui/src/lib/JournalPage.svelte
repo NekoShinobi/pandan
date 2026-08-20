@@ -18,6 +18,7 @@
   import X from "lucide-svelte/icons/x";
   import { onMount, tick } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
+  import TypedHeading from "$lib/TypedHeading.svelte";
   import {
     createJournalNode,
     deleteJournalNode,
@@ -691,7 +692,7 @@
 <section class="journal-page product-page" data-od-id="journal-page">
   <header class="journal-header page-header">
     <div>
-      <h2>$ journal --open</h2>
+      <TypedHeading text="$ journal --open" odId="journal-heading" />
       <p>
         {nodes.length} documents · {nodes.filter((node) => node.parent_id)
           .length}
@@ -1102,9 +1103,13 @@
 </section>
 
 <style>
+  /* The page fills the canvas so the workspace, and with it the explorer, can take
+     the whole column rather than stopping at a fixed height. */
   .journal-page {
     min-width: 0;
-    display: grid;
+    min-height: var(--product-view-height, auto);
+    display: flex;
+    flex-direction: column;
     gap: 18px;
     padding: clamp(24px, 3vw, 42px);
   }
@@ -1123,14 +1128,6 @@
     font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.09em;
-  }
-  .journal-header h2 {
-    margin-top: 8px;
-    font-family: var(--font-mono);
-    font-size: clamp(26px, 3vw, 42px);
-    font-weight: 540;
-    letter-spacing: -0.04em;
-    line-height: 1.05;
   }
   .journal-header p {
     margin-top: 8px;
@@ -1224,7 +1221,8 @@
   }
   .journal-workspace {
     position: relative;
-    min-height: min(720px, calc(100vh - 210px));
+    min-height: 420px;
+    flex: 1;
     display: grid;
     grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
     border: 1px solid var(--border);
@@ -1236,6 +1234,9 @@
   }
   .journal-explorer {
     min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
     overflow: hidden;
     border-right: 1px solid var(--border);
     background: color-mix(in oklch, var(--page-surface, var(--surface)) 96%, var(--bg));
@@ -1314,10 +1315,11 @@
     color: var(--fg);
   }
   .journal-tree {
-    max-height: calc(100vh - 330px);
-    min-height: 300px;
+    min-height: 0;
+    flex: 1;
     padding: 0 6px 12px;
     overflow: auto;
+    scrollbar-gutter: stable;
   }
   .journal-root-target {
     min-height: 0;
@@ -1948,14 +1950,15 @@
   }
   @media (max-width: 680px) {
     .journal-workspace {
-      min-height: 680px;
+      min-height: 560px;
       grid-template-columns: 1fr;
     }
     .journal-explorer {
       position: absolute;
       z-index: 4;
+      top: 0;
+      bottom: 0;
       width: min(320px, calc(100vw - 32px));
-      height: 680px;
       box-shadow: 22px 0 50px rgba(0, 0, 0, 0.25);
     }
     .journal-workspace.is-collapsed {

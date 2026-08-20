@@ -31,15 +31,18 @@ mod bible;
 pub mod calendar;
 mod contacts;
 pub mod document;
+mod embedded_pages;
 mod kanban;
 mod lines;
 pub mod oidc;
 pub mod podcast_media;
 mod podcasts;
+mod walls;
 pub mod widget_integrations;
 mod youtube_reader;
 
 pub use document::{SiteOrigin, spa_document};
+pub use embedded_pages::EmbeddedPagesResponse;
 pub use podcast_media::{PodcastMedia, spawn_podcast_workers};
 pub use youtube_reader::spawn_youtube_refresh_worker;
 
@@ -54,6 +57,8 @@ const MAX_TASK_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 const RSS_REFRESH_MINUTES: i64 = 30;
 const RSS_REFRESH_BATCH_SIZE: usize = 100;
 const RSS_REFRESH_SPACING_SECONDS: u64 = 1;
+const DEFAULT_RSS_RETENTION_DAYS: i64 = 7;
+const DEFAULT_RSS_RETENTION_MODE: &str = "all";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -112,6 +117,7 @@ pub struct DashboardResponse {
     pub tasks: Vec<Task>,
     pub feeds: Vec<FeedItem>,
     pub widgets: Vec<DashboardWidget>,
+    pub embedded_pages: EmbeddedPagesResponse,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -350,7 +356,9 @@ pub struct RssReaderResponse {
 pub struct CreateRssSubscriptionRequest {
     pub url: String,
     pub category: String,
+    #[serde(default = "default_rss_auto_delete_days")]
     pub auto_delete_days: Option<i64>,
+    #[serde(default = "default_rss_auto_delete_mode")]
     pub auto_delete_mode: String,
 }
 
@@ -359,6 +367,14 @@ pub struct UpdateRssSubscriptionRequest {
     pub category: String,
     pub auto_delete_days: Option<i64>,
     pub auto_delete_mode: String,
+}
+
+fn default_rss_auto_delete_days() -> Option<i64> {
+    Some(DEFAULT_RSS_RETENTION_DAYS)
+}
+
+fn default_rss_auto_delete_mode() -> String {
+    DEFAULT_RSS_RETENTION_MODE.to_owned()
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -899,11 +915,12 @@ async fn dashboard(
 ) -> Result<web::Json<DashboardResponse>, ApiError> {
     let account = authenticated_account(&state, &request).await?;
     let user_id = account.id.clone();
-    let (tasks, feeds, widgets, appearance) = tokio::try_join!(
+    let (tasks, feeds, widgets, appearance, embedded_pages) = tokio::try_join!(
         db::queries::list_tasks(&state.pool, &user_id),
         db::queries::list_feed_items(&state.pool),
         db::queries::list_dashboard_widgets(&state.pool, &user_id),
-        db::queries::find_user_appearance(&state.pool, &user_id)
+        db::queries::find_user_appearance(&state.pool, &user_id),
+        embedded_pages::load_visible_pages(&state.pool, &user_id),
     )?;
     let auth = auth_response(account);
 
@@ -914,6 +931,7 @@ async fn dashboard(
         tasks,
         feeds,
         widgets,
+        embedded_pages,
     }))
 }
 
@@ -1689,6 +1707,7 @@ fn validate_image_upload(
             return Err(ApiError::BadRequest(match image_label {
                 "avatar" => "avatar image type is not supported",
                 "contact photo" => "contact photo type is not supported",
+                "wall" => "wall image type is not supported",
                 _ => "wallpaper image type is not supported",
             }));
         }
@@ -1699,6 +1718,7 @@ fn validate_image_upload(
         Err(ApiError::BadRequest(match image_label {
             "avatar" => "avatar image content does not match its type",
             "contact photo" => "contact photo content does not match its type",
+            "wall" => "wall image content does not match its type",
             _ => "wallpaper image content does not match its type",
         }))
     }
@@ -3001,6 +3021,7 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
                 web::get().to(get_login_wallpaper),
             )
             .route("/dashboard", web::get().to(dashboard))
+            .configure(embedded_pages::configure)
             .route("/widgets", web::post().to(create_widget))
             .route("/widgets/capabilities", web::get().to(widget_capabilities))
             .route("/widgets/layout", web::put().to(update_widget_layout))
@@ -3057,6 +3078,7 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
             .route("/tasks/{task_id}/restore", web::patch().to(restore_task))
             .configure(kanban::configure)
             .configure(lines::configure)
+            .configure(walls::configure)
             .configure(podcasts::configure)
             .route("/rss", web::get().to(rss_reader))
             .route(
@@ -3302,6 +3324,18 @@ mod tests {
         db::connect("sqlite::memory:")
             .await
             .expect("database connects")
+    }
+
+    #[actix_web::test]
+    async fn new_rss_subscriptions_default_to_seven_day_all_item_retention() {
+        let request: CreateRssSubscriptionRequest = serde_json::from_value(serde_json::json!({
+            "url": "https://example.com/feed.xml",
+            "category": "General"
+        }))
+        .expect("request deserializes");
+
+        assert_eq!(request.auto_delete_days, Some(7));
+        assert_eq!(request.auto_delete_mode, "all");
     }
 
     fn state(pool: SqlitePool) -> web::Data<AppState> {
@@ -4807,5 +4841,752 @@ mod tests {
                 "{private} must never be accepted"
             );
         }
+    }
+
+    /// Encodes a real, decodable PNG so the thumbnail pipeline has something to work on.
+    fn sample_png(width: u32, height: u32) -> Vec<u8> {
+        let buffer = image::RgbImage::from_pixel(width, height, image::Rgb([28, 96, 64]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(buffer)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .expect("sample png encodes");
+        bytes.into_inner()
+    }
+
+    /// Registers an account and returns its session cookie.
+    ///
+    /// A macro rather than a function because the initialized test service has no
+    /// nameable type without depending on `actix-http` directly.
+    macro_rules! account {
+        ($app:expr, $uri:expr, $email:expr, $display_name:expr) => {{
+            let response = test::call_service(
+                &$app,
+                test::TestRequest::post()
+                    .uri($uri)
+                    .set_json(RegisterRequest {
+                        email: $email.to_owned(),
+                        password: "a sufficiently long password".to_owned(),
+                        display_name: $display_name.to_owned(),
+                    })
+                    .to_request(),
+            )
+            .await;
+            assert!(
+                response.status().is_success(),
+                "{} registers: {:?}",
+                $email,
+                response.status()
+            );
+            session_cookie(&response)
+        }};
+    }
+
+    /// Submits one wall as the given account and returns it, still pending.
+    macro_rules! submit_wall {
+        ($app:expr, $cookie:expr, $title:expr) => {{
+            let response = test::call_service(
+                &$app,
+                test::TestRequest::post()
+                    .uri(&format!(
+                        "/api/walls?title={}&tags=dark,terminal",
+                        $title.replace(' ', "%20")
+                    ))
+                    .cookie($cookie.clone())
+                    .insert_header((header::CONTENT_TYPE, "image/png"))
+                    .set_payload(sample_png(24, 16))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::CREATED, "wall is submitted");
+            test::read_body_json::<db::entities::Wall, _>(response).await
+        }};
+    }
+
+    #[actix_web::test]
+    async fn walls_run_from_submission_through_approval_to_an_applied_wallpaper() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state(test_pool().await))
+                .configure(configure_api),
+        )
+        .await;
+        let administrator = account!(app, "/api/setup", "admin@example.com", "Admin");
+        let submitter = account!(app, "/api/auth/register", "sub@example.com", "Submitter");
+        let bystander = account!(app, "/api/auth/register", "by@example.com", "Bystander");
+
+        let wall = submit_wall!(app, submitter, "Dark Terminal");
+        assert_eq!(wall.status, "pending");
+        assert_eq!(wall.width, 24);
+        assert_eq!(wall.height, 16);
+        assert_eq!(wall.tags, vec!["dark".to_owned(), "terminal".to_owned()]);
+        assert_eq!(wall.submitted_by_name, "Submitter");
+
+        // A pending wall is invisible to everyone but its submitter and administrators.
+        for (cookie, expected) in [
+            (&bystander, StatusCode::NOT_FOUND),
+            (&submitter, StatusCode::OK),
+            (&administrator, StatusCode::OK),
+        ] {
+            let response = test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri(&format!("/api/walls/{}", wall.id))
+                    .cookie(cookie.clone())
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), expected);
+        }
+
+        let collection: Vec<db::entities::Wall> = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/walls")
+                .cookie(bystander.clone())
+                .to_request(),
+        )
+        .await;
+        assert!(
+            collection.is_empty(),
+            "pending walls stay out of the collection"
+        );
+
+        // Only an administrator may decide.
+        let refused = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri(&format!("/api/walls/{}/approve", wall.id))
+                .cookie(submitter.clone())
+                .set_json(serde_json::json!({ "note": "" }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+        let approved: db::entities::Wall = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::post()
+                .uri(&format!("/api/walls/{}/approve", wall.id))
+                .cookie(administrator.clone())
+                .set_json(serde_json::json!({ "note": "Looks good" }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(approved.status, "approved");
+        assert_eq!(approved.decided_by_name.as_deref(), Some("Admin"));
+
+        let collection: Vec<db::entities::Wall> = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/walls")
+                .cookie(bystander.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(collection.len(), 1, "approved walls reach everyone");
+
+        // A thumbnail was generated and is smaller than the original.
+        let thumbnail = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/api/walls/{}/thumbnail", wall.id))
+                .cookie(bystander.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(thumbnail.status(), StatusCode::OK);
+        assert_eq!(
+            thumbnail
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("image/jpeg")
+        );
+        assert!(!test::read_body(thumbnail).await.is_empty());
+
+        let applied = test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri(&format!("/api/walls/{}/apply", wall.id))
+                .cookie(bystander.clone())
+                .set_json(serde_json::json!({ "slot": "welcome" }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(applied.status(), StatusCode::NO_CONTENT);
+
+        // The wallpaper endpoint now serves the wall's own bytes.
+        let served = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/settings/wallpapers/welcome")
+                .cookie(bystander.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(served.status(), StatusCode::OK);
+        assert_eq!(test::read_body(served).await.as_ref(), sample_png(24, 16));
+
+        let dashboard: DashboardResponse = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/dashboard")
+                .cookie(bystander.clone())
+                .to_request(),
+        )
+        .await;
+        assert!(
+            dashboard.appearance.has_welcome_wallpaper,
+            "an applied wall counts as a custom wallpaper"
+        );
+    }
+
+    #[actix_web::test]
+    async fn a_rejected_or_deleted_wall_releases_the_slots_that_used_it() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state(test_pool().await))
+                .configure(configure_api),
+        )
+        .await;
+        let administrator = account!(app, "/api/setup", "admin@example.com", "Admin");
+
+        let first = submit_wall!(app, administrator, "First");
+        let second = submit_wall!(app, administrator, "Second");
+        for wall in [&first, &second] {
+            test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri(&format!("/api/walls/{}/approve", wall.id))
+                    .cookie(administrator.clone())
+                    .set_json(serde_json::json!({ "note": "" }))
+                    .to_request(),
+            )
+            .await;
+        }
+
+        // Upload an image first, then apply a wall over it.
+        test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri("/api/settings/wallpapers/welcome")
+                .cookie(administrator.clone())
+                .insert_header((header::CONTENT_TYPE, "image/png"))
+                .set_payload(sample_png(8, 8))
+                .to_request(),
+        )
+        .await;
+        test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri(&format!("/api/walls/{}/apply", first.id))
+                .cookie(administrator.clone())
+                .set_json(serde_json::json!({ "slot": "welcome" }))
+                .to_request(),
+        )
+        .await;
+
+        let served = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/settings/wallpapers/welcome")
+                .cookie(administrator.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(
+            test::read_body(served).await.as_ref(),
+            sample_png(24, 16),
+            "an applied wall wins over a previously uploaded image"
+        );
+
+        // Deleting the applied wall cascades the selection away and leaves no wallpaper,
+        // because applying replaced the upload rather than shadowing it.
+        test::call_service(
+            &app,
+            test::TestRequest::delete()
+                .uri(&format!("/api/walls/{}", first.id))
+                .cookie(administrator.clone())
+                .to_request(),
+        )
+        .await;
+        let served = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/settings/wallpapers/welcome")
+                .cookie(administrator.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(served.status(), StatusCode::NOT_FOUND);
+
+        // Uploading again clears an applied wall in the other direction.
+        test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri(&format!("/api/walls/{}/apply", second.id))
+                .cookie(administrator.clone())
+                .set_json(serde_json::json!({ "slot": "welcome" }))
+                .to_request(),
+        )
+        .await;
+        test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri("/api/settings/wallpapers/welcome")
+                .cookie(administrator.clone())
+                .insert_header((header::CONTENT_TYPE, "image/png"))
+                .set_payload(sample_png(8, 8))
+                .to_request(),
+        )
+        .await;
+        let served = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/settings/wallpapers/welcome")
+                .cookie(administrator.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(
+            test::read_body(served).await.as_ref(),
+            sample_png(8, 8),
+            "a fresh upload replaces the applied wall"
+        );
+    }
+
+    #[actix_web::test]
+    async fn the_login_wall_is_administrator_only_and_stays_a_singleton() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state(test_pool().await))
+                .configure(configure_api),
+        )
+        .await;
+        let administrator = account!(app, "/api/setup", "admin@example.com", "Admin");
+        let member = account!(app, "/api/auth/register", "member@example.com", "Member");
+
+        let wall = submit_wall!(app, administrator, "Login");
+        test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri(&format!("/api/walls/{}/approve", wall.id))
+                .cookie(administrator.clone())
+                .set_json(serde_json::json!({ "note": "" }))
+                .to_request(),
+        )
+        .await;
+
+        let refused = test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri(&format!("/api/walls/{}/apply", wall.id))
+                .cookie(member.clone())
+                .set_json(serde_json::json!({ "slot": "login" }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+        test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri(&format!("/api/walls/{}/apply", wall.id))
+                .cookie(administrator.clone())
+                .set_json(serde_json::json!({ "slot": "login" }))
+                .to_request(),
+        )
+        .await;
+
+        // The login image is readable without a session.
+        let public = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/appearance/login-wallpaper")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(public.status(), StatusCode::OK);
+        assert_eq!(test::read_body(public).await.as_ref(), sample_png(24, 16));
+
+        // Uploading a login image afterwards leaves exactly one winner.
+        test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri("/api/settings/wallpapers/login")
+                .cookie(administrator.clone())
+                .insert_header((header::CONTENT_TYPE, "image/png"))
+                .set_payload(sample_png(8, 8))
+                .to_request(),
+        )
+        .await;
+        let public = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/appearance/login-wallpaper")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(
+            test::read_body(public).await.as_ref(),
+            sample_png(8, 8),
+            "an uploaded login image replaces the applied wall"
+        );
+    }
+
+    #[actix_web::test]
+    async fn a_wall_stays_editable_by_its_submitter_and_administrators_at_any_status() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state(test_pool().await))
+                .configure(configure_api),
+        )
+        .await;
+        let administrator = account!(app, "/api/setup", "admin@example.com", "Admin");
+        let submitter = account!(app, "/api/auth/register", "sub@example.com", "Submitter");
+        let bystander = account!(app, "/api/auth/register", "by@example.com", "Bystander");
+
+        let wall = submit_wall!(app, submitter, "Draft");
+        let edit = |cookie: Cookie<'static>, id: String, title: &str, tags: Vec<&str>| {
+            let body = serde_json::json!({
+                "title": title,
+                "description": "edited description",
+                "tags": tags,
+            });
+            test::TestRequest::patch()
+                .uri(&format!("/api/walls/{id}"))
+                .cookie(cookie)
+                .set_json(body)
+                .to_request()
+        };
+
+        // Pending: the submitter may edit.
+        let updated: db::entities::Wall = test::call_and_read_body_json(
+            &app,
+            edit(submitter.clone(), wall.id.clone(), "Renamed", vec!["one"]),
+        )
+        .await;
+        assert_eq!(updated.title, "Renamed");
+        assert_eq!(updated.tags, vec!["one".to_owned()]);
+        assert_eq!(updated.status, "pending", "editing never decides a wall");
+
+        // Someone else never may. While pending it is not even visible to them.
+        let refused = test::call_service(
+            &app,
+            edit(bystander.clone(), wall.id.clone(), "Hijacked", vec![]),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::NOT_FOUND);
+
+        test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri(&format!("/api/walls/{}/approve", wall.id))
+                .cookie(administrator.clone())
+                .set_json(serde_json::json!({ "note": "in" }))
+                .to_request(),
+        )
+        .await;
+
+        // Approved: the submitter still may, and the decision survives the edit.
+        let updated: db::entities::Wall = test::call_and_read_body_json(
+            &app,
+            edit(
+                submitter.clone(),
+                wall.id.clone(),
+                "Renamed again",
+                vec!["two", "three"],
+            ),
+        )
+        .await;
+        assert_eq!(updated.title, "Renamed again");
+        assert_eq!(updated.status, "approved");
+        assert_eq!(updated.decision_note, "in");
+        assert_eq!(updated.decided_by_name.as_deref(), Some("Admin"));
+
+        // An administrator may edit someone else's wall.
+        let updated: db::entities::Wall = test::call_and_read_body_json(
+            &app,
+            edit(
+                administrator.clone(),
+                wall.id.clone(),
+                "Curated",
+                vec!["curated"],
+            ),
+        )
+        .await;
+        assert_eq!(updated.title, "Curated");
+        assert_eq!(updated.tags, vec!["curated".to_owned()]);
+
+        // An approved wall is visible to everyone, but still not editable by them.
+        let refused = test::call_service(
+            &app,
+            edit(bystander.clone(), wall.id.clone(), "Hijacked", vec![]),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+        // A rejected wall stays editable by its submitter too.
+        let rejected = submit_wall!(app, submitter, "Second");
+        test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri(&format!("/api/walls/{}/reject", rejected.id))
+                .cookie(administrator.clone())
+                .set_json(serde_json::json!({ "note": "too small" }))
+                .to_request(),
+        )
+        .await;
+        let updated: db::entities::Wall = test::call_and_read_body_json(
+            &app,
+            edit(submitter.clone(), rejected.id.clone(), "Reworked", vec![]),
+        )
+        .await;
+        assert_eq!(updated.title, "Reworked");
+        assert_eq!(updated.status, "rejected");
+        assert_eq!(updated.decision_note, "too small");
+    }
+
+    #[actix_web::test]
+    async fn wall_thumbnails_shrink_large_images_and_never_inflate_small_ones() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state(test_pool().await))
+                .configure(configure_api),
+        )
+        .await;
+        let cookie = account!(app, "/api/setup", "admin@example.com", "Admin");
+
+        for (width, height, expected_width, expected_height) in
+            [(1920_u32, 1080_u32, 640_u32, 360_u32), (64, 48, 64, 48)]
+        {
+            let response = test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri(&format!("/api/walls?title=Size{width}"))
+                    .cookie(cookie.clone())
+                    .insert_header((header::CONTENT_TYPE, "image/png"))
+                    .set_payload(sample_png(width, height))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::CREATED);
+            let wall: db::entities::Wall = test::read_body_json(response).await;
+            assert_eq!(wall.width, i64::from(width));
+            assert_eq!(wall.height, i64::from(height));
+
+            let thumbnail = test::call_service(
+                &app,
+                test::TestRequest::get()
+                    .uri(&format!("/api/walls/{}/thumbnail", wall.id))
+                    .cookie(cookie.clone())
+                    .to_request(),
+            )
+            .await;
+            let bytes = test::read_body(thumbnail).await;
+            let decoded = image::ImageReader::new(std::io::Cursor::new(bytes.as_ref()))
+                .with_guessed_format()
+                .expect("thumbnail format is readable")
+                .decode()
+                .expect("thumbnail decodes");
+            assert_eq!(
+                (decoded.width(), decoded.height()),
+                (expected_width, expected_height),
+                "{width}x{height} thumbnail is sized correctly"
+            );
+        }
+    }
+
+    #[actix_web::test]
+    async fn wall_submissions_reject_images_the_server_cannot_trust() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state(test_pool().await))
+                .configure(configure_api),
+        )
+        .await;
+        let cookie = account!(app, "/api/setup", "admin@example.com", "Admin");
+
+        // A bare PNG signature passes the magic-byte check but cannot be decoded, so the
+        // thumbnail stage is what has to reject it.
+        let undecodable = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/walls?title=Broken")
+                .cookie(cookie.clone())
+                .insert_header((header::CONTENT_TYPE, "image/png"))
+                .set_payload(vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a])
+                .to_request(),
+        )
+        .await;
+        assert_eq!(undecodable.status(), StatusCode::BAD_REQUEST);
+
+        let wrong_type = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/walls?title=Text")
+                .cookie(cookie.clone())
+                .insert_header((header::CONTENT_TYPE, "text/plain"))
+                .set_payload(b"not an image".to_vec())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(wrong_type.status(), StatusCode::BAD_REQUEST);
+
+        let untitled = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/walls?title=%20")
+                .cookie(cookie.clone())
+                .insert_header((header::CONTENT_TYPE, "image/png"))
+                .set_payload(sample_png(8, 8))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(untitled.status(), StatusCode::BAD_REQUEST);
+
+        // A pending wall cannot be used as a wallpaper.
+        let pending = submit_wall!(app, cookie, "Pending");
+        let refused = test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri(&format!("/api/walls/{}/apply", pending.id))
+                .cookie(cookie.clone())
+                .set_json(serde_json::json!({ "slot": "welcome" }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+    }
+
+    #[actix_web::test]
+    async fn embedded_pages_keep_global_and_personal_scopes_separate() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state(test_pool().await))
+                .configure(configure_api),
+        )
+        .await;
+
+        let unauthenticated = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/embedded-pages")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        let administrator = account!(app, "/api/setup", "admin@example.com", "Admin");
+        let member = account!(app, "/api/auth/register", "member@example.com", "Member");
+        let other = account!(app, "/api/auth/register", "other@example.com", "Other");
+
+        let personal: db::entities::EmbeddedPage = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/embedded-pages")
+                .cookie(member.clone())
+                .set_json(serde_json::json!({
+                    "title": "My reports",
+                    "description": "Private reporting console",
+                    "url": "https://reports.example.com/embed"
+                }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(personal.scope, "user");
+
+        let global: db::entities::EmbeddedPage = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/admin/embedded-pages")
+                .cookie(administrator.clone())
+                .set_json(serde_json::json!({
+                    "title": "Status",
+                    "description": "Instance status",
+                    "url": "https://status.example.com/"
+                }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(global.scope, "global");
+
+        let forbidden = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/admin/embedded-pages")
+                .cookie(member.clone())
+                .set_json(serde_json::json!({
+                    "title": "Not global",
+                    "description": "",
+                    "url": "https://example.com/"
+                }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+        let invalid = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/embedded-pages")
+                .cookie(member.clone())
+                .set_json(serde_json::json!({
+                    "title": "Unsafe",
+                    "description": "",
+                    "url": "http://internal.example.com/"
+                }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+
+        let member_pages: EmbeddedPagesResponse = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/embedded-pages")
+                .cookie(member.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(member_pages.global, vec![global.clone()]);
+        assert_eq!(member_pages.personal, vec![personal.clone()]);
+
+        let other_pages: EmbeddedPagesResponse = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/embedded-pages")
+                .cookie(other)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(other_pages.global, vec![global]);
+        assert!(other_pages.personal.is_empty());
+
+        let hidden_from_administrator = test::call_service(
+            &app,
+            test::TestRequest::patch()
+                .uri(&format!("/api/embedded-pages/{}", personal.id))
+                .cookie(administrator.clone())
+                .set_json(serde_json::json!({
+                    "title": "Admin edit",
+                    "description": "",
+                    "url": "https://example.com/"
+                }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(hidden_from_administrator.status(), StatusCode::NOT_FOUND);
+
+        let dashboard: DashboardResponse = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/dashboard")
+                .cookie(member)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(dashboard.embedded_pages.global.len(), 1);
+        assert_eq!(dashboard.embedded_pages.personal.len(), 1);
     }
 }

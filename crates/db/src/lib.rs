@@ -2,6 +2,7 @@ pub mod contact_queries;
 pub mod entities;
 mod podcast_queries;
 pub mod queries;
+pub mod wall_queries;
 mod youtube_queries;
 
 use sqlx::SqlitePool;
@@ -143,6 +144,19 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "038_podcasts",
         include_str!("../migrations/038_podcasts.sql"),
+    ),
+    ("039_walls", include_str!("../migrations/039_walls.sql")),
+    (
+        "040_embedded_pages",
+        include_str!("../migrations/040_embedded_pages.sql"),
+    ),
+    (
+        "041_embedded_page_trust",
+        include_str!("../migrations/041_embedded_page_trust.sql"),
+    ),
+    (
+        "042_embedded_page_height",
+        include_str!("../migrations/042_embedded_page_height.sql"),
     ),
 ];
 
@@ -298,6 +312,301 @@ mod tests {
             usize::try_from(count).expect("migration count fits usize"),
             MIGRATIONS.len()
         );
+    }
+
+    #[tokio::test]
+    async fn the_walls_migration_applies_over_an_existing_database() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::from_str("sqlite::memory:")
+                    .expect("memory url parses")
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("database connects");
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS _migrations (\
+             name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("migration ledger creates");
+
+        // Seed a database at the release before Walls, with a wallpaper already uploaded.
+        let walls_index = MIGRATIONS
+            .iter()
+            .position(|(name, _)| *name == "039_walls")
+            .expect("walls migration is registered");
+        for (name, migration_sql) in MIGRATIONS.iter().take(walls_index) {
+            let mut transaction = pool.begin().await.expect("migration starts");
+            sqlx::raw_sql(*migration_sql)
+                .execute(&mut *transaction)
+                .await
+                .expect("existing migration applies");
+            sqlx::query("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)")
+                .bind(*name)
+                .bind(chrono::Utc::now().to_rfc3339())
+                .execute(&mut *transaction)
+                .await
+                .expect("existing migration records");
+            transaction.commit().await.expect("migration commits");
+        }
+
+        let (user, _) = queries::create_account(
+            &pool,
+            "walls-upgrade@example.com",
+            "$argon2id$upgrade",
+            "Walls Upgrade",
+        )
+        .await
+        .expect("account creates");
+        sqlx::query(
+            "INSERT INTO user_wallpapers (user_id, slot, mime_type, image_data, updated_at) \
+             VALUES (?, 'welcome', 'image/png', ?, ?)",
+        )
+        .bind(&user.id)
+        .bind(b"existing-wallpaper".as_slice())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("existing wallpaper stores");
+
+        run_migrations(&pool)
+            .await
+            .expect("walls migration applies");
+
+        // The upgrade preserves the uploaded image and leaves the slot resolving to it.
+        let preserved = queries::find_user_wallpaper(&pool, &user.id, "welcome")
+            .await
+            .expect("wallpaper loads")
+            .expect("wallpaper survives the upgrade");
+        assert_eq!(preserved.image_data, b"existing-wallpaper");
+        assert!(
+            wall_queries::list_wall_selections(&pool, &user.id)
+                .await
+                .expect("selections load")
+                .is_empty()
+        );
+        assert!(
+            wall_queries::find_login_wall_selection(&pool)
+                .await
+                .expect("login selection loads")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn embedded_page_height_migration_defaults_existing_pages() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::from_str("sqlite::memory:")
+                    .expect("memory url parses")
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("database connects");
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS _migrations (\
+             name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("migration ledger creates");
+
+        let height_index = MIGRATIONS
+            .iter()
+            .position(|(name, _)| *name == "042_embedded_page_height")
+            .expect("height migration is registered");
+        for (name, migration_sql) in MIGRATIONS.iter().take(height_index) {
+            let mut transaction = pool.begin().await.expect("migration starts");
+            sqlx::raw_sql(*migration_sql)
+                .execute(&mut *transaction)
+                .await
+                .expect("existing migration applies");
+            sqlx::query("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)")
+                .bind(*name)
+                .bind(chrono::Utc::now().to_rfc3339())
+                .execute(&mut *transaction)
+                .await
+                .expect("existing migration records");
+            transaction.commit().await.expect("migration commits");
+        }
+
+        let (owner, _) = queries::create_account(
+            &pool,
+            "embedded-height-upgrade@example.com",
+            "$argon2id$upgrade",
+            "Embedded Height Upgrade",
+        )
+        .await
+        .expect("owner creates");
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO embedded_pages \
+             (id, scope, owner_user_id, created_by_user_id, title, description, url, \
+              allow_same_origin, position, created_at, updated_at) \
+             VALUES ('legacy-embedded-page', 'user', ?, ?, 'Legacy', '', \
+                     'https://example.com/', 0, 0, ?, ?)",
+        )
+        .bind(&owner.id)
+        .bind(&owner.id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("legacy embedded page stores");
+
+        run_migrations(&pool)
+            .await
+            .expect("height migration applies");
+        let iframe_height: i64 = sqlx::query_scalar(
+            "SELECT iframe_height FROM embedded_pages WHERE id = 'legacy-embedded-page'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("migrated height loads");
+
+        assert_eq!(iframe_height, 720);
+    }
+
+    #[tokio::test]
+    async fn embedded_pages_are_scoped_ordered_and_deleted_with_their_owner() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (creator, _) = queries::create_account(
+            &pool,
+            "embedded-creator@example.com",
+            "$argon2id$creator",
+            "Creator",
+        )
+        .await
+        .expect("creator account creates");
+        let (owner, _) = queries::create_account(
+            &pool,
+            "embedded-owner@example.com",
+            "$argon2id$owner",
+            "Owner",
+        )
+        .await
+        .expect("owner account creates");
+        let (other, _) = queries::create_account(
+            &pool,
+            "embedded-other@example.com",
+            "$argon2id$other",
+            "Other",
+        )
+        .await
+        .expect("other account creates");
+
+        let global = queries::create_global_embedded_page(
+            &pool,
+            &creator.id,
+            "Status",
+            "Instance status",
+            "https://status.example.com/",
+            false,
+            720,
+        )
+        .await
+        .expect("global page creates");
+        let first = queries::create_personal_embedded_page(
+            &pool,
+            &owner.id,
+            "Notes",
+            "Private notes",
+            "https://notes.example.com/",
+            true,
+            960,
+        )
+        .await
+        .expect("first personal page creates");
+        let second = queries::create_personal_embedded_page(
+            &pool,
+            &owner.id,
+            "Reports",
+            "Private reports",
+            "https://reports.example.com/",
+            false,
+            640,
+        )
+        .await
+        .expect("second personal page creates");
+        let foreign = queries::create_personal_embedded_page(
+            &pool,
+            &other.id,
+            "Other",
+            "Another account's page",
+            "https://other.example.com/",
+            false,
+            720,
+        )
+        .await
+        .expect("foreign personal page creates");
+
+        let owner_pages = queries::list_personal_embedded_pages(&pool, &owner.id)
+            .await
+            .expect("owner pages load");
+        assert_eq!(
+            owner_pages
+                .iter()
+                .map(|page| page.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![first.id.as_str(), second.id.as_str()]
+        );
+        assert!(owner_pages[0].allow_same_origin);
+        assert!(!owner_pages[1].allow_same_origin);
+        assert_eq!(owner_pages[0].iframe_height, 960);
+        assert_eq!(owner_pages[1].iframe_height, 640);
+        assert!(
+            owner_pages.iter().all(|page| page.id != foreign.id),
+            "another account's page never appears"
+        );
+
+        let reordered = queries::reorder_personal_embedded_pages(
+            &pool,
+            &owner.id,
+            &[second.id.clone(), first.id.clone()],
+        )
+        .await
+        .expect("personal pages reorder")
+        .expect("complete owner order is accepted");
+        assert_eq!(reordered[0].id, second.id);
+        assert!(
+            queries::reorder_personal_embedded_pages(
+                &pool,
+                &owner.id,
+                &[first.id.clone(), foreign.id.clone()],
+            )
+            .await
+            .expect("foreign reorder is evaluated")
+            .is_none(),
+            "a foreign identifier rejects the complete reorder"
+        );
+
+        sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(&owner.id)
+            .execute(&pool)
+            .await
+            .expect("owner deletes");
+        assert!(
+            queries::list_personal_embedded_pages(&pool, &owner.id)
+                .await
+                .expect("deleted owner pages query")
+                .is_empty()
+        );
+
+        sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(&creator.id)
+            .execute(&pool)
+            .await
+            .expect("global creator deletes");
+        let global_pages = queries::list_global_embedded_pages(&pool)
+            .await
+            .expect("global pages load");
+        assert_eq!(global_pages.len(), 1);
+        assert_eq!(global_pages[0].id, global.id);
+        assert!(global_pages[0].created_by_user_id.is_none());
     }
 
     #[tokio::test]
@@ -630,13 +939,16 @@ mod tests {
             .execute(&pool)
             .await
             .expect("legacy wallpaper migration records");
-        queries::upsert_user_wallpaper(
-            &pool,
-            &user.id,
-            "dashboard",
-            "image/png",
-            b"legacy-wallpaper",
+        // Written as the build of that era wrote it. Today's `upsert_user_wallpaper` also
+        // clears `user_wallpaper_selections`, which does not exist at this schema version.
+        sqlx::query(
+            "INSERT INTO user_wallpapers (user_id, slot, mime_type, image_data, updated_at) \
+             VALUES (?, 'dashboard', 'image/png', ?, ?)",
         )
+        .bind(&user.id)
+        .bind(b"legacy-wallpaper".as_slice())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&pool)
         .await
         .expect("legacy wallpaper stores");
 

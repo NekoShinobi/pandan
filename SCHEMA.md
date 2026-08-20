@@ -107,6 +107,8 @@ legacy data compatibility but is no longer exposed as a separate selector. Dashb
 and loading images are user-owned and require the owner's authenticated session. The `login`
 slot is a single global image: only an administrator may replace or remove it, while the image
 itself is publicly retrievable from the application origin for the pre-authentication screen.
+This table holds only *uploaded* images. A slot may instead point at a shared wall through
+`user_wallpaper_selections`, which takes precedence; see that table for the full resolution order.
 
 | Column       | Type | Constraints                                                          |
 | ------------ | ---- | -------------------------------------------------------------------- |
@@ -114,6 +116,63 @@ itself is publicly retrievable from the application origin for the pre-authentic
 | `slot`       | TEXT | Composite primary key; `dashboard`, `welcome`, `loading`, or `login` |
 | `mime_type`  | TEXT | JPEG, PNG, WebP, or AVIF                                             |
 | `image_data` | BLOB | Required, 1 byte to 30 MB                                            |
+| `updated_at` | TEXT | Required, RFC 3339 timestamp                                         |
+
+## `walls`
+
+The shared wallpaper collection. Any account may submit an image; only an administrator may
+approve or reject it, and the decision is retained so a rejection keeps its reason visible to the
+submitter. A `pending` or `rejected` wall is readable only by its submitter and by administrators.
+Only an `approved` wall may be applied to a wallpaper slot. `user_id` is nulled when the submitting
+account is deleted, so the collection survives and is shown as an unattributed contribution.
+`width` and `height` are recorded at submission time so the gallery can reserve each tile's aspect
+ratio, and the thumbnail is generated on the server so it can never disagree with the image an
+administrator approved.
+
+| Column           | Type    | Constraints                                                    |
+| ---------------- | ------- | -------------------------------------------------------------- |
+| `id`             | TEXT    | Primary key                                                    |
+| `user_id`        | TEXT    | Optional reference to `users`, null on account delete          |
+| `title`          | TEXT    | Required, trimmed length 1–120                                 |
+| `description`    | TEXT    | Up to 500 characters, defaults to empty                        |
+| `status`         | TEXT    | One of `pending`, `approved`, `rejected`                       |
+| `decision_note`  | TEXT    | Administrator's reason, up to 500 characters                   |
+| `decided_by`     | TEXT    | Optional reference to `users`, null on account delete          |
+| `decided_at`     | TEXT    | Optional RFC 3339 timestamp                                    |
+| `mime_type`      | TEXT    | JPEG, PNG, WebP, or AVIF                                       |
+| `byte_size`      | INTEGER | Required, 1 byte to 30 MB                                      |
+| `width`          | INTEGER | Required, decoded pixel width                                  |
+| `height`         | INTEGER | Required, decoded pixel height                                 |
+| `image_data`     | BLOB    | Required, the submitted image                                  |
+| `thumbnail_mime` | TEXT    | Always `image/jpeg`                                            |
+| `thumbnail_data` | BLOB    | Required, server-generated gallery thumbnail, 640 px long edge |
+| `created_at`     | TEXT    | Required, RFC 3339 timestamp                                   |
+| `updated_at`     | TEXT    | Required, RFC 3339 timestamp                                   |
+
+## `wall_tags`
+
+Free-form tags used to filter the collection. Compared case-insensitively.
+
+| Column    | Type | Constraints                                            |
+| --------- | ---- | ------------------------------------------------------ |
+| `wall_id` | TEXT | Composite primary key, references `walls` with cascade |
+| `tag`     | TEXT | Composite primary key, `NOCASE`, trimmed length 1–32   |
+
+## `user_wallpaper_selections`
+
+Points one wallpaper slot at a wall instead of an uploaded blob, so a wall applied by many people
+is stored once. A slot resolves an approved selection first, then `user_wallpapers`, then the
+packaged default. Deleting a wall cascades the selection away and a wall leaving `approved` stops
+resolving, so both cases fall back without a cleanup pass. Uploading to a slot deletes its
+selection and applying a wall deletes the slot's uploaded image, so the two sources never disagree.
+The `login` slot remains a global singleton: every writer clears both tables for that slot across
+all administrators before inserting.
+
+| Column       | Type | Constraints                                                          |
+| ------------ | ---- | -------------------------------------------------------------------- |
+| `user_id`    | TEXT | Composite primary key, references `users` with cascade delete        |
+| `slot`       | TEXT | Composite primary key; `dashboard`, `welcome`, `loading`, or `login` |
+| `wall_id`    | TEXT | References `walls` with cascade delete                               |
 | `updated_at` | TEXT | Required, RFC 3339 timestamp                                         |
 
 ## `user_avatars`
@@ -144,6 +203,38 @@ deleted during the upgrade.
 | `position`   | INTEGER | Per-user unique navigation order, 0–31                        |
 | `created_at` | TEXT    | Required, RFC 3339 timestamp                                  |
 | `updated_at` | TEXT    | Required, RFC 3339 timestamp                                  |
+
+## `embedded_pages`
+
+Configured HTTPS destinations rendered as product pages inside the authenticated shell. Global
+rows are visible to every signed-in account and are managed only by administrators. User rows are
+private to `owner_user_id`; administrators do not gain access to another account's personal rows.
+Deleting an owner cascades their personal pages, while deleting the administrator who created a
+global page only clears `created_by_user_id` so the shared entry remains available.
+
+The sidebar renders built-in pages first, then global rows, then the current account's user rows.
+`position` is zero-based within that scope and is replaced transactionally during reordering.
+`allow_same_origin` is disabled by default. Enabling it marks a page as trusted and preserves the
+embedded site's origin inside the iframe, which can support module scripts and site storage while
+reducing sandbox isolation.
+`iframe_height` controls the vertical frame size in pixels. Existing and newly created pages default
+to 720 pixels, with API and database constraints limiting values to 320–2,400 pixels; width remains
+responsive to the application canvas.
+
+| Column               | Type    | Constraints                                                        |
+| -------------------- | ------- | ------------------------------------------------------------------ |
+| `id`                 | TEXT    | Primary key                                                        |
+| `scope`              | TEXT    | Required, `global` or `user`                                       |
+| `owner_user_id`      | TEXT    | Null for global rows; user owner with cascade delete otherwise     |
+| `created_by_user_id` | TEXT    | Optional audit reference to `users`, set null when creator deletes |
+| `title`              | TEXT    | Required, trimmed length 1–80                                      |
+| `description`        | TEXT    | Required, maximum length 280                                       |
+| `url`                | TEXT    | Required absolute HTTPS URL, maximum length 2,000                   |
+| `allow_same_origin`  | INTEGER | Required boolean, defaults to `0`                                  |
+| `iframe_height`      | INTEGER | Required, 320–2,400 pixels, defaults to `720`                       |
+| `position`           | INTEGER | Required non-negative order within the page's scope                |
+| `created_at`         | TEXT    | Required, RFC 3339 timestamp                                       |
+| `updated_at`         | TEXT    | Required, RFC 3339 timestamp                                       |
 
 ## `user_appearance`
 
@@ -320,9 +411,10 @@ Curated feed entries shown in the dashboard's Feeds workspace.
 ## `rss_subscriptions`
 
 User-owned RSS, Atom, or generated Reddit listing sources for the dedicated reader. URLs are unique
-per user. Reddit helpers store a public `reddit.com/r/{subreddit}/{sort}.json` listing URL and the
-server maps its posts into the same item model. Fetching is restricted to public HTTPS destinations;
-a normalized origin is stored separately to make base-URL filtering predictable.
+per user. New subscriptions default to deleting all unsaved items after seven days. Reddit helpers
+store a public `reddit.com/r/{subreddit}/{sort}.rss` Atom URL; older saved `.json` listing URLs are
+normalized to the same Atom endpoint when fetched. Fetching is restricted to public HTTPS
+destinations; a normalized origin is stored separately to make base-URL filtering predictable.
 
 The background refresh worker schedules on `last_attempted_at`, which is stamped when a refresh is
 claimed and by every manual refresh, so a failing source backs off for a full window instead of

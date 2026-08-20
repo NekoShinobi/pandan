@@ -1,7 +1,7 @@
 use actix_files::Files;
 use actix_web::{App, HttpServer, web};
 use server::{AppState, SiteOrigin, UI_BUILD_DIR, configure_api, spa_document};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_actix_web::TracingLogger;
 use tracing_subscriber::{EnvFilter, fmt};
 
@@ -40,6 +40,11 @@ async fn main() -> miette::Result<()> {
         invidious_enabled = widget_integrations.invidious_enabled(),
         "widget integrations configured"
     );
+    if widget_integrations.invidious_allows_private_network() {
+        warn!(
+            "INVIDIOUS_ALLOW_PRIVATE_NETWORK exempts the configured Invidious instance from the private-network guard"
+        );
+    }
     let podcast_media = server::PodcastMedia::from_env()
         .map_err(|error| miette::miette!("podcast media configuration error: {error}"))?;
     info!(

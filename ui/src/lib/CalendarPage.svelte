@@ -9,6 +9,7 @@
   import Trash2 from "lucide-svelte/icons/trash-2";
   import X from "lucide-svelte/icons/x";
   import { onMount, tick, untrack } from "svelte";
+  import TypedHeading from "$lib/TypedHeading.svelte";
   import {
     createCalendarSubscription,
     deleteCalendarSubscription,
@@ -426,7 +427,7 @@
 <section class="calendar-page product-page" data-od-id="calendar-page">
   <header class="calendar-header page-header">
     <div>
-      <h2>$ calendar --month</h2>
+      <TypedHeading text="$ calendar --month" odId="calendar-heading" />
       <p>See dated tasks and public iCalendar sources in one private view.</p>
     </div>
     <button class="ui-button ui-button--primary calendar-primary" type="button" onclick={openAddCalendar}>
@@ -607,7 +608,6 @@
   .calendar-page { display: grid; gap: 18px; padding: clamp(24px, 3vw, 42px); min-width: 0; }
   .calendar-header { display: flex; align-items: end; justify-content: space-between; gap: 24px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
   .calendar-sidebar section > span, .calendar-dialog header span { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .09em; }
-  .calendar-header h2 { margin: 8px 0 0; font-family: var(--font-mono); font-size: clamp(26px, 3vw, 42px); font-weight: 540; letter-spacing: -.04em; }
   .calendar-header p { margin: 7px 0 0; color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
   button, input { font: inherit; }
   button { color: inherit; }
@@ -665,8 +665,6 @@
   .source-list small { margin-top: 3px; color: var(--muted); font-size: 9px; }
   .source-static-mark { grid-column: span 2; justify-self: end; color: var(--muted); font-family: var(--font-mono); font-size: 8px; letter-spacing: .08em; }
   .source-list button.confirm { border-color: oklch(62% .19 25); color: oklch(72% .16 25); }
-  :global(.spinning) { animation: calendar-spin .8s linear infinite; }
-  @keyframes calendar-spin { to { transform: rotate(360deg); } }
   .calendar-dialog { width: min(520px, calc(100vw - 32px)); border: 1px solid var(--border); background: var(--page-surface, var(--surface)); color: var(--fg); padding: 0; }
   .calendar-dialog::backdrop { background: oklch(5% 0 0 / .7); backdrop-filter: blur(5px); }
   .calendar-dialog header { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px; border-bottom: 1px solid var(--border); }
@@ -708,5 +706,4 @@
   :focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
   @media (max-width: 1050px) { .calendar-layout { grid-template-columns: 1fr; } .calendar-sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   @media (max-width: 720px) { .calendar-header { align-items: stretch; flex-direction: column; } .calendar-primary { justify-content: center; } .calendar-sidebar { grid-template-columns: 1fr; } .month-toolbar { align-items: stretch; flex-direction: column; gap: 12px; } .month-navigation { width: 100%; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); } .month-navigation button { padding-inline: 10px; } .month-grid > button { min-height: 72px; padding: 4px; } .event-pill { width: 6px; height: 6px; border: 0; border-radius: 50%; background: var(--calendar-color); padding: 0; font-size: 0; } .day-events { display: flex; } .day-events small { display: none; } .weekday-row span { text-align: center; } .color-picker-preview { grid-template-columns: auto minmax(0, 1fr); } .color-picker-preview > label { grid-column: 1; } .color-picker-preview input { grid-column: 2; } .color-presets { grid-template-columns: repeat(4, minmax(0, 1fr)); } .color-channels { grid-template-columns: 1fr; } }
-  @media (prefers-reduced-motion: reduce) { :global(.spinning) { animation: none; } }
 </style>

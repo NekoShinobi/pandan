@@ -222,8 +222,7 @@
   }
 
   .has-scrollbar {
-    scrollbar-color: var(--border) var(--bg);
-    scrollbar-width: thin;
+    scrollbar-gutter: stable;
   }
 
   .hides-scrollbar {

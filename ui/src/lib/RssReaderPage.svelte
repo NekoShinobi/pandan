@@ -10,6 +10,7 @@
   import Trash2 from "lucide-svelte/icons/trash-2";
   import X from "lucide-svelte/icons/x";
   import { onMount, tick } from "svelte";
+  import TypedHeading from "$lib/TypedHeading.svelte";
   import {
     createRssSubscription,
     deleteRssSubscription,
@@ -31,6 +32,7 @@
   type RedditTopPeriod = "hour" | "day" | "week" | "month" | "year" | "all";
 
   const BACKGROUND_SYNC_MS = 5 * 60 * 1000;
+  const DEFAULT_RETENTION_DAYS = 7;
 
   let reader = $state.raw<RssReaderResponse>({ subscriptions: [], items: [] });
   let loading = $state(true);
@@ -53,9 +55,9 @@
   let redditSort = $state<RedditSort>("hot");
   let redditTopPeriod = $state<RedditTopPeriod>("day");
   let feedCategory = $state("General");
-  let retentionEnabled = $state(false);
-  let retentionDays = $state(30);
-  let retentionMode = $state<RssRetentionMode>("read");
+  let retentionEnabled = $state(true);
+  let retentionDays = $state(DEFAULT_RETENTION_DAYS);
+  let retentionMode = $state<RssRetentionMode>("all");
   let subscriptionError = $state("");
   let savingSubscription = $state(false);
   let confirmingDelete = $state(false);
@@ -186,9 +188,9 @@
     redditSort = "hot";
     redditTopPeriod = "day";
     feedCategory = "General";
-    retentionEnabled = false;
-    retentionDays = 30;
-    retentionMode = "read";
+    retentionEnabled = true;
+    retentionDays = DEFAULT_RETENTION_DAYS;
+    retentionMode = "all";
     subscriptionError = "";
     confirmingDelete = false;
     subscriptionDialog?.showModal();
@@ -202,8 +204,11 @@
     feedUrl = subscription.url;
     feedCategory = subscription.category;
     retentionEnabled = subscription.auto_delete_days !== null;
-    retentionDays = subscription.auto_delete_days ?? 30;
-    retentionMode = subscription.auto_delete_mode;
+    retentionDays = subscription.auto_delete_days ?? DEFAULT_RETENTION_DAYS;
+    retentionMode =
+      subscription.auto_delete_days === null
+        ? "all"
+        : subscription.auto_delete_mode;
     subscriptionError = "";
     confirmingDelete = false;
     subscriptionDialog?.showModal();
@@ -443,9 +448,8 @@
   ) {
     const subreddit = parseSubreddit(value);
     if (!subreddit) return "";
-    const url = new URL(`https://www.reddit.com/r/${subreddit}/${sort}.json`);
+    const url = new URL(`https://www.reddit.com/r/${subreddit}/${sort}.rss`);
     url.searchParams.set("limit", "25");
-    url.searchParams.set("raw_json", "1");
     if (sort === "top") url.searchParams.set("t", topPeriod);
     return url.toString();
   }
@@ -472,7 +476,7 @@
 <section class="rss-reader product-page" data-od-id="rss-page">
   <header class="rss-reader-header page-header">
     <div>
-      <h2>$ rss --{activeView}</h2>
+      <TypedHeading text={`$ rss --${activeView}`} odId="rss-heading" />
       <p>
         {activeView === "stream"
           ? `${unreadCount} unread across ${reader.subscriptions.length} sources`
@@ -486,7 +490,7 @@
       </button>
       <button class="ui-button ui-button--primary rss-primary-button" type="button" onclick={openAddFeed}>
         <Plus size={16} strokeWidth={2} aria-hidden="true" />
-        Add feed
+        Add Feed
       </button>
     </div>
   </header>
@@ -790,21 +794,21 @@
   </dialog>
 
   <dialog
-    class="rss-dialog"
+    class="rss-dialog rss-subscription-dialog"
     {@attach captureSubscriptionDialog}
     onclick={(event) => event.target === subscriptionDialog && closeSubscriptionDialog()}
     data-od-id="rss-subscription-dialog"
   >
     <header>
       <div>
-        <span>[ RSS.SOURCE ]</span>
-        <h2>{editingSubscription ? "Manage feed" : "Add feed"}</h2>
+        <h2>{editingSubscription ? "Manage feed" : "Add Feed"}</h2>
       </div>
       <button class="ui-button ui-button--ghost ui-button--icon" type="button" aria-label="Close feed settings" onclick={closeSubscriptionDialog}>
         <X size={18} strokeWidth={1.8} aria-hidden="true" />
       </button>
     </header>
-    <form onsubmit={saveSubscription}>
+    <form class="rss-subscription-form" onsubmit={saveSubscription}>
+      <div class="rss-subscription-scroll">
       {#if !editingSubscription}
         <div class="rss-source-kind" role="group" aria-label="Feed source type" data-od-id="rss-source-type">
           <button
@@ -900,8 +904,11 @@
       </datalist>
 
       <button class="ui-toggle-button rss-check-row" type="button" aria-pressed={retentionEnabled} onclick={() => (retentionEnabled = !retentionEnabled)}>
-        <span class="ui-toggle-indicator" aria-hidden="true">{#if retentionEnabled}<Check size={13} />{/if}</span>
-        <span><strong>Auto-delete old items</strong><small>Applied whenever the reader loads or this feed refreshes.</small></span>
+        <span class="ui-toggle-indicator" aria-hidden="true"></span>
+        <span class="rss-check-copy">
+          <strong>Auto-delete old items</strong>
+          <small>Applied whenever the reader loads or this feed refreshes.</small>
+        </span>
       </button>
 
       {#if retentionEnabled}
@@ -917,7 +924,8 @@
         </fieldset>
       {/if}
 
-      {#if subscriptionError}<p class="rss-form-error" role="alert">{subscriptionError}</p>{/if}
+        {#if subscriptionError}<p class="rss-form-error" role="alert">{subscriptionError}</p>{/if}
+      </div>
 
       <footer>
         {#if editingSubscription}
@@ -971,7 +979,6 @@
   .rss-reader { display: grid; gap: 18px; padding: clamp(24px, 3vw, 42px); min-width: 0; }
   .rss-reader-header { display: flex; align-items: end; justify-content: space-between; gap: 24px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
   .rss-dialog header span, .rss-source-heading span { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .09em; }
-  .rss-reader-header h2 { margin-top: 8px; font-family: var(--font-mono); font-size: clamp(26px, 3vw, 42px); font-weight: 540; letter-spacing: -.04em; line-height: 1.05; }
   .rss-reader-header p { margin-top: 8px; color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
   .rss-header-actions, .rss-source-actions, .rss-dialog footer { display: flex; align-items: center; gap: 8px; }
   .rss-view-tabs { display: flex; gap: 6px; overflow-x: auto; }
@@ -1041,7 +1048,7 @@
   .rss-empty strong { color: var(--fg); font-family: var(--font-display); font-size: 19px; }
   .rss-empty p { max-width: 42ch; font-size: 12px; }
   .rss-empty button { margin-top: 8px; }
-  :global(.rss-loading-icon), :global(.spinning) { animation: rss-spin .8s linear infinite; }
+  :global(.rss-loading-icon) { animation: rss-spin .8s linear infinite; }
   @keyframes rss-spin { to { transform: rotate(360deg); } }
   .rss-dialog { width: min(600px, calc(100vw - 32px)); max-height: min(780px, calc(100vh - 32px)); margin: auto; padding: 0; overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--page-surface, var(--surface)); color: var(--fg); box-shadow: 0 24px 80px rgba(0, 0, 0, .48); }
   .rss-dialog::backdrop { background: rgba(0, 0, 0, .7); backdrop-filter: blur(7px); }
@@ -1049,10 +1056,13 @@
   .rss-dialog header h2 { margin-top: 5px; font-family: var(--font-display); font-size: 24px; font-weight: 600; letter-spacing: -.02em; }
   .rss-dialog header > button { width: 42px; min-height: 42px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 7px; }
   .rss-dialog form { display: grid; gap: 10px; padding: 22px; }
-  .rss-dialog form > label:not(.rss-check-row), .rss-dialog legend { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .05em; }
+  .rss-subscription-dialog { overflow: hidden; }
+  .rss-dialog .rss-subscription-form { max-height: calc(min(780px, calc(100dvh - 32px)) - 77px); grid-template-rows: minmax(0, 1fr) auto; gap: 0; overflow: hidden; padding: 0; }
+  .rss-subscription-scroll { min-height: 0; display: grid; gap: 10px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 22px; }
+  .rss-subscription-scroll > label:not(.rss-check-row), .rss-dialog legend { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .05em; }
   .rss-dialog input[type="url"], .rss-dialog input[type="text"], .rss-dialog input[list], .rss-dialog input[type="number"], .rss-dialog select { min-height: 44px; width: 100%; padding: 0 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font-family: var(--font-mono); font-size: 12px; }
   .rss-dialog input:disabled { color: var(--muted); }
-  .rss-dialog form > small { margin-top: -4px; color: var(--muted); font-size: 10px; }
+  .rss-subscription-scroll > small { margin-top: -4px; color: var(--muted); font-size: 10px; }
   .rss-source-kind { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); }
   .rss-source-kind button { min-height: 44px; border: 1px solid transparent; border-radius: 4px; color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .04em; }
   .rss-source-kind button:hover { border-color: var(--border); color: var(--fg); }
@@ -1065,17 +1075,18 @@
   .rss-reddit-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .rss-reddit-options label { display: grid; gap: 6px; }
   .rss-reddit-preview { overflow-wrap: anywhere; color: var(--muted); font-family: var(--font-mono); font-size: 9px; line-height: 1.5; }
-  .rss-check-row { display: flex; align-items: start; gap: 10px; margin-top: 10px; padding: 13px; border: 1px solid var(--border); }
-  .rss-check-row > :global(.ui-toggle-indicator) { margin-top: 1px; }
-  .rss-check-row span { display: grid; gap: 3px; }
+  .rss-subscription-dialog header h2 { margin-top: 0; }
+  .rss-check-row { width: 100%; box-sizing: border-box; display: flex; align-items: center; gap: 11px; margin-top: 10px; padding: 13px; border: 1px solid var(--border); }
+  .rss-check-copy { min-width: 0; flex: 1; display: grid; gap: 3px; line-height: 1.4; }
   .rss-check-row strong { font-size: 12px; font-weight: 560; }
-  .rss-check-row small { color: var(--muted); font-size: 10px; }
-  .rss-retention-grid { display: grid; grid-template-columns: auto 100px auto; align-items: center; gap: 9px; }
+  .rss-check-row small { overflow-wrap: anywhere; color: var(--muted); font-size: 10px; }
+  .rss-retention-grid { display: grid; grid-template-columns: minmax(0, 1fr) 100px auto; align-items: center; gap: 9px; }
   .rss-retention-grid label, .rss-retention-grid span { color: var(--muted); font-family: var(--font-mono); font-size: 10px; }
   .rss-dialog fieldset { display: grid; gap: 8px; margin: 2px 0 8px; padding: 12px; border: 1px solid var(--border); }
   .rss-dialog fieldset label { display: flex; align-items: center; gap: 8px; color: var(--fg); font-size: 11px; }
   .rss-dialog fieldset input { accent-color: var(--fg); }
   .rss-dialog footer { justify-content: flex-end; margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .rss-subscription-form > footer { margin: 0; padding: 16px 22px 22px; background: var(--page-surface, var(--surface)); }
   .rss-dialog footer .rss-danger-button:first-child { margin-right: auto; }
   .rss-item-dialog { width: min(760px, calc(100vw - 32px)); }
   .rss-item-dialog header { align-items: start; }
@@ -1126,6 +1137,6 @@
     .rss-reddit-options { grid-template-columns: 1fr; }
   }
   @media (prefers-reduced-motion: reduce) {
-    :global(.rss-loading-icon), :global(.spinning) { animation: none; }
+    :global(.rss-loading-icon) { animation: none; }
   }
 </style>

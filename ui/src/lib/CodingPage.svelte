@@ -10,6 +10,7 @@
   import Trash2 from "lucide-svelte/icons/trash-2";
   import X from "lucide-svelte/icons/x";
   import { onMount, tick } from "svelte";
+  import TypedHeading from "$lib/TypedHeading.svelte";
   import {
     createCodingProject,
     deleteCodingProject,
@@ -41,8 +42,10 @@
   };
 
   let coding = $state.raw<CodingResponse>(emptyCoding);
+  let hasLoaded = false;
   let loading = $state(true);
   let refreshing = $state(false);
+  let initialLoadFailed = $state(false);
   let pageError = $state("");
   let query = $state("");
   let repository = $state("");
@@ -116,14 +119,18 @@
     };
   }
 
-  async function loadCoding(manual = false) {
-    if (manual) refreshing = true;
-    else loading = true;
+  async function loadCoding() {
+    const initialLoad = !hasLoaded;
+    if (initialLoad) loading = true;
+    else refreshing = true;
+    initialLoadFailed = false;
     pageError = "";
     try {
       coding = await fetchCoding();
+      hasLoaded = true;
     } catch (reason: unknown) {
       pageError = reason instanceof Error ? reason.message : "Unable to load Coding";
+      initialLoadFailed = initialLoad;
     } finally {
       loading = false;
       refreshing = false;
@@ -263,13 +270,13 @@
 <section class="coding-page product-page" data-od-id="coding-page">
   <header class="coding-header page-header" data-od-id="coding-header">
     <div>
-      <h2 data-od-id="coding-heading">$ coding --watch</h2>
+      <TypedHeading text="$ coding --watch" odId="coding-heading" />
       <p>Monitor releases, pending review work, and the newest pipelines for subscribed projects.</p>
     </div>
     <div class="header-actions">
-      <button type="button" onclick={() => loadCoding(true)} disabled={refreshing} data-od-id="refresh-coding">
-        <RefreshCw size={15} strokeWidth={1.8} aria-hidden="true" />
-        {refreshing ? "Refreshing…" : "Refresh"}
+      <button type="button" onclick={loadCoding} disabled={loading || refreshing} data-od-id="refresh-coding">
+        <RefreshCw class={refreshing ? "spinning" : undefined} size={15} strokeWidth={1.8} aria-hidden="true" />
+        {loading ? "Loading…" : refreshing ? "Refreshing…" : initialLoadFailed ? "Retry" : "Refresh"}
       </button>
       <button class="ui-button ui-button--primary coding-primary" type="button" onclick={openProjectDialog} data-od-id="add-coding-project">
         <Plus size={16} strokeWidth={1.8} aria-hidden="true" /> Add project
@@ -278,6 +285,7 @@
   </header>
 
   {#if pageError}<p class="coding-error" role="alert">{pageError}</p>{/if}
+  {#if loading}<p class="sr-only" role="status">Loading coding activity.</p>{/if}
   {#if coding.provider_errors.length}
     <details class="provider-errors">
       <summary>{coding.provider_errors.length} provider {coding.provider_errors.length === 1 ? "request" : "requests"} could not refresh</summary>
@@ -285,26 +293,42 @@
     </details>
   {/if}
 
-  <div class="coding-stats" aria-label="Coding overview">
-    <div><span>Projects</span><strong>{coding.projects.length}</strong></div>
-    <div><span>Releases loaded</span><strong>{coding.releases.length}</strong></div>
-    <div><span>Open pull requests</span><strong>{openPullRequestCount}</strong></div>
-    <div><span>Recent pipelines</span><strong>{coding.pipelines.length}</strong></div>
+  <div class="coding-stats" aria-label="Coding overview" aria-busy={loading}>
+    <div><span>Projects</span><strong class:stat-placeholder={loading}>{loading ? "" : initialLoadFailed ? "—" : coding.projects.length}</strong></div>
+    <div><span>Releases loaded</span><strong class:stat-placeholder={loading}>{loading ? "" : initialLoadFailed ? "—" : coding.releases.length}</strong></div>
+    <div><span>Open pull requests</span><strong class:stat-placeholder={loading}>{loading ? "" : initialLoadFailed ? "—" : openPullRequestCount}</strong></div>
+    <div><span>Recent pipelines</span><strong class:stat-placeholder={loading}>{loading ? "" : initialLoadFailed ? "—" : coding.pipelines.length}</strong></div>
   </div>
 
   <div class="coding-layout">
-    <section class="projects-panel" data-od-id="coding-projects">
+    <section class="projects-panel" aria-busy={loading} data-od-id="coding-projects">
       <header>
         <div><span>[ SUBSCRIPTIONS ]</span><h3>Projects</h3></div>
         <label>
           <Search size={14} strokeWidth={1.8} aria-hidden="true" />
           <span class="sr-only">Filter projects</span>
-          <input type="search" bind:value={query} placeholder="Filter provider, host, or repository…" />
+          <input type="search" bind:value={query} disabled={loading || initialLoadFailed} placeholder="Filter provider, host, or repository…" />
         </label>
       </header>
 
       {#if loading}
-        <div class="coding-empty">Loading project activity…</div>
+        <div class="panel-loading project-loading" role="status" data-od-id="coding-projects-loading">
+          <span class="panel-loading-label">Loading subscribed projects…</span>
+          <div class="project-loading-rows" aria-hidden="true">
+            {#each [0, 1, 2] as row (row)}
+              <div class="project-loading-row">
+                <div class="loading-stack"><i class="loading-line loading-line--short"></i><i class="loading-line loading-line--long"></i><i class="loading-line loading-line--medium"></i></div>
+                <div class="loading-stack"><i class="loading-line loading-line--short"></i><i class="loading-line loading-line--medium"></i></div>
+                <div class="loading-stack"><i class="loading-line loading-line--short"></i><i class="loading-line loading-line--medium"></i></div>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {:else if initialLoadFailed}
+        <div class="panel-unavailable" data-od-id="coding-projects-unavailable">
+          <strong>Project activity unavailable</strong>
+          <p>Use Retry in the page header to load subscriptions and release activity.</p>
+        </div>
       {:else}
         <div class="project-list">
           {#each filteredProjects as project (project.id)}
@@ -354,7 +378,7 @@
               </button>
             </article>
           {:else}
-            <div class="coding-empty">
+            <div class="coding-empty" data-od-id={query ? "coding-filter-empty-state" : "coding-projects-empty-state"}>
               <GitBranch size={28} strokeWidth={1.4} aria-hidden="true" />
               <h3>{query ? "No matching projects" : "No projects subscribed"}</h3>
               <p>{query ? "Try a broader filter." : "Add a repository to begin watching its latest release."}</p>
@@ -366,9 +390,16 @@
     </section>
 
     <aside class="coding-rail">
-      <section class="merge-panel" data-od-id="coding-merge-requests">
+      <section class="merge-panel" aria-busy={loading} data-od-id="coding-merge-requests">
         <header><div><span>[ OWNED REPOSITORIES ]</span><h3>Pending pull requests</h3></div><GitMerge size={18} strokeWidth={1.6} aria-hidden="true" /></header>
-        {#if !profileActivityConnected}
+        {#if loading}
+          <div class="panel-loading rail-loading" role="status" data-od-id="coding-merge-requests-loading">
+            <span class="panel-loading-label">Loading pull requests…</span>
+            <div class="loading-stack" aria-hidden="true"><i class="loading-line loading-line--short"></i><i class="loading-line loading-line--long"></i><i class="loading-line loading-line--medium"></i></div>
+          </div>
+        {:else if initialLoadFailed}
+          <div class="panel-unavailable compact"><strong>Pull request data unavailable</strong></div>
+        {:else if !profileActivityConnected}
           <div class="rail-empty">
             <p>Connect a provider token to discover repositories owned by that account and count their open pull requests.</p>
             <button type="button" onclick={() => openCredential()}>Connect provider</button>
@@ -390,10 +421,17 @@
         {/if}
       </section>
 
-      <section class="access-panel" data-od-id="coding-provider-access">
+      <section class="access-panel" aria-busy={loading} data-od-id="coding-provider-access">
         <header><div><span>[ CREDENTIALS ]</span><h3>Provider access</h3></div><KeyRound size={18} strokeWidth={1.6} aria-hidden="true" /></header>
         <p>Tokens stay encrypted on the server and are never returned to this page.</p>
-        {#if !coding.secret_storage_enabled}
+        {#if loading}
+          <div class="panel-loading rail-loading" role="status" data-od-id="coding-provider-access-loading">
+            <span class="panel-loading-label">Checking provider access…</span>
+            <div class="loading-stack" aria-hidden="true"><i class="loading-line loading-line--medium"></i><i class="loading-line loading-line--long"></i></div>
+          </div>
+        {:else if initialLoadFailed}
+          <div class="panel-unavailable compact"><strong>Provider access unavailable</strong></div>
+        {:else if !coding.secret_storage_enabled}
           <div class="credential-note">Configure server secret storage before saving provider tokens.</div>
         {:else}
           <div class="credential-list">
@@ -440,7 +478,6 @@
   .coding-page { display: grid; gap: 18px; min-width: 0; padding: clamp(24px, 3vw, 42px); }
   .coding-header { display: flex; align-items: end; justify-content: space-between; gap: 24px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
   .projects-panel header span, .coding-rail header span, .coding-dialog header span { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .09em; text-transform: uppercase; }
-  .coding-header h2 { margin: 8px 0 0; font-family: var(--font-mono); font-size: clamp(26px, 3vw, 42px); font-weight: 540; letter-spacing: -.04em; }
   .coding-header p { max-width: 68ch; margin: 7px 0 0; color: var(--muted); font-family: var(--font-mono); font-size: 11px; line-height: 1.6; }
   button, input, select { min-height: 42px; border: 1px solid var(--border); background: transparent; color: inherit; font: inherit; }
   button { cursor: pointer; }
@@ -459,12 +496,29 @@
   .coding-stats > div:last-child { border-right: 0; }
   .coding-stats span { color: var(--muted); font-family: var(--font-mono); font-size: 9px; letter-spacing: .07em; text-transform: uppercase; }
   .coding-stats strong { font-family: var(--font-mono); font-size: 23px; font-weight: 520; }
+  .coding-stats strong.stat-placeholder { width: 30px; height: 9px; background: color-mix(in oklch, var(--fg) 13%, transparent); }
   .coding-layout { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(320px, .8fr); gap: 18px; align-items: start; }
   .projects-panel, .coding-rail > section { min-width: 0; border: 1px solid var(--border); background: var(--page-surface, var(--surface)); }
   .projects-panel > header, .coding-rail > section > header { display: flex; min-height: 62px; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
   .projects-panel h3, .coding-rail h3 { margin: 5px 0 0; font-family: var(--font-mono); font-size: 14px; font-weight: 550; }
   .projects-panel label { display: flex; width: min(380px, 50%); min-height: 38px; align-items: center; gap: 8px; border: 1px solid var(--border); padding: 0 10px; }
   .projects-panel input { width: 100%; min-height: 36px; border: 0; outline: 0; font-family: var(--font-mono); font-size: 10px; }
+  .panel-loading { color: var(--muted); font-family: var(--font-mono); }
+  .panel-loading-label { display: block; padding: 14px; border-bottom: 1px solid var(--border); font-size: 9px; letter-spacing: .04em; }
+  .project-loading-rows { display: grid; }
+  .project-loading-row { display: grid; grid-template-columns: minmax(180px, 1.3fr) minmax(120px, .8fr) minmax(125px, .8fr); min-height: 94px; align-items: center; gap: 16px; padding: 14px; border-bottom: 1px solid var(--border); }
+  .project-loading-row:last-child { border-bottom: 0; }
+  .loading-stack { display: grid; justify-items: start; gap: 8px; }
+  .loading-line { display: block; width: 62%; height: 7px; background: color-mix(in oklch, var(--fg) 11%, transparent); }
+  .loading-line--short { width: 32%; }
+  .loading-line--medium { width: 58%; }
+  .loading-line--long { width: 82%; height: 9px; }
+  .rail-loading { display: grid; }
+  .rail-loading > .loading-stack { min-height: 72px; align-content: center; padding: 14px; }
+  .panel-unavailable { display: grid; min-height: 340px; place-content: center; justify-items: center; gap: 7px; padding: 28px; color: var(--muted); text-align: center; }
+  .panel-unavailable.compact { min-height: 96px; justify-items: start; text-align: left; }
+  .panel-unavailable strong { color: var(--fg); font-family: var(--font-mono); font-size: 11px; font-weight: 550; }
+  .panel-unavailable p { max-width: 48ch; margin: 0; font-size: 10px; line-height: 1.6; }
   .project-list > article { display: grid; grid-template-columns: minmax(180px, 1.3fr) minmax(120px, .8fr) minmax(125px, .8fr) 38px; align-items: center; gap: 16px; min-height: 94px; padding: 14px; border-bottom: 1px solid var(--border); }
   .project-list > article:last-child { border-bottom: 0; }
   .project-main, .release-cell, .pipeline-cell { min-width: 0; display: grid; gap: 5px; }

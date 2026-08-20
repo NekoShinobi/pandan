@@ -1,7 +1,7 @@
 use crate::entities::{
     AppMetadata, AuthenticationSettings, CalendarEvent, CalendarEventDraft, CalendarSubscription,
-    CodingCredential, CodingProject, DashboardWidget, FeedItem, JournalNode, KanbanActivity,
-    KanbanAttachment, KanbanBoard, KanbanBoardSummary, KanbanCard, KanbanCardDraft,
+    CodingCredential, CodingProject, DashboardWidget, EmbeddedPage, FeedItem, JournalNode,
+    KanbanActivity, KanbanAttachment, KanbanBoard, KanbanBoardSummary, KanbanCard, KanbanCardDraft,
     KanbanChecklist, KanbanChecklistItem, KanbanColumn, KanbanComment, KanbanDirectoryUser,
     KanbanInvitation, KanbanLabel, KanbanMember, KanbanMemberPermission, KanbanOverview,
     KanbanRolePermission, KanbanWorkspace, KanbanWorkspaceSettings, LineAuthorProfile, LinePost,
@@ -2875,6 +2875,489 @@ async fn insert_default_workspaces(
     Ok(())
 }
 
+/// Lists the instance-wide embedded pages in their administrator-defined order.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the query cannot be completed.
+pub async fn list_global_embedded_pages(
+    pool: &SqlitePool,
+) -> Result<Vec<EmbeddedPage>, sqlx::Error> {
+    sqlx::query_as::<_, EmbeddedPage>(
+        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
+         allow_same_origin, iframe_height, position, created_at, updated_at \
+         FROM embedded_pages \
+         WHERE scope = 'global' AND owner_user_id IS NULL \
+         ORDER BY position ASC, created_at ASC, id ASC",
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// Lists one account's private embedded pages in their chosen order.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the query cannot be completed.
+pub async fn list_personal_embedded_pages(
+    pool: &SqlitePool,
+    user_id: &str,
+) -> Result<Vec<EmbeddedPage>, sqlx::Error> {
+    sqlx::query_as::<_, EmbeddedPage>(
+        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
+         allow_same_origin, iframe_height, position, created_at, updated_at \
+         FROM embedded_pages \
+         WHERE scope = 'user' AND owner_user_id = ? \
+         ORDER BY position ASC, created_at ASC, id ASC",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Counts the instance-wide embedded pages.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the query cannot be completed.
+pub async fn count_global_embedded_pages(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM embedded_pages \
+         WHERE scope = 'global' AND owner_user_id IS NULL",
+    )
+    .fetch_one(pool)
+    .await
+}
+
+/// Counts one account's private embedded pages.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the query cannot be completed.
+pub async fn count_personal_embedded_pages(
+    pool: &SqlitePool,
+    user_id: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM embedded_pages \
+         WHERE scope = 'user' AND owner_user_id = ?",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+}
+
+/// Creates a private embedded page at the end of one account's tier.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the insert cannot be completed.
+pub async fn create_personal_embedded_page(
+    pool: &SqlitePool,
+    user_id: &str,
+    title: &str,
+    description: &str,
+    url: &str,
+    allow_same_origin: bool,
+    iframe_height: i64,
+) -> Result<EmbeddedPage, sqlx::Error> {
+    create_embedded_page(
+        pool,
+        "user",
+        Some(user_id),
+        user_id,
+        title,
+        description,
+        url,
+        allow_same_origin,
+        iframe_height,
+    )
+    .await
+}
+
+/// Creates an instance-wide embedded page at the end of the global tier.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the insert cannot be completed.
+pub async fn create_global_embedded_page(
+    pool: &SqlitePool,
+    administrator_id: &str,
+    title: &str,
+    description: &str,
+    url: &str,
+    allow_same_origin: bool,
+    iframe_height: i64,
+) -> Result<EmbeddedPage, sqlx::Error> {
+    create_embedded_page(
+        pool,
+        "global",
+        None,
+        administrator_id,
+        title,
+        description,
+        url,
+        allow_same_origin,
+        iframe_height,
+    )
+    .await
+}
+
+async fn create_embedded_page(
+    pool: &SqlitePool,
+    scope: &str,
+    owner_user_id: Option<&str>,
+    created_by_user_id: &str,
+    title: &str,
+    description: &str,
+    url: &str,
+    allow_same_origin: bool,
+    iframe_height: i64,
+) -> Result<EmbeddedPage, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut transaction = pool.begin().await?;
+    let position: i64 = if let Some(owner_user_id) = owner_user_id {
+        sqlx::query_scalar(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM embedded_pages \
+             WHERE scope = 'user' AND owner_user_id = ?",
+        )
+        .bind(owner_user_id)
+        .fetch_one(&mut *transaction)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM embedded_pages \
+             WHERE scope = 'global' AND owner_user_id IS NULL",
+        )
+        .fetch_one(&mut *transaction)
+        .await?
+    };
+
+    sqlx::query(
+        "INSERT INTO embedded_pages \
+         (id, scope, owner_user_id, created_by_user_id, title, description, url, \
+          allow_same_origin, iframe_height, position, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(scope)
+    .bind(owner_user_id)
+    .bind(created_by_user_id)
+    .bind(title)
+    .bind(description)
+    .bind(url)
+    .bind(allow_same_origin)
+    .bind(iframe_height)
+    .bind(position)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+
+    Ok(EmbeddedPage {
+        id,
+        scope: scope.to_owned(),
+        owner_user_id: owner_user_id.map(str::to_owned),
+        created_by_user_id: Some(created_by_user_id.to_owned()),
+        title: title.to_owned(),
+        description: description.to_owned(),
+        url: url.to_owned(),
+        allow_same_origin,
+        iframe_height,
+        position,
+        created_at: now.clone(),
+        updated_at: now,
+    })
+}
+
+/// Updates a private embedded page owned by one account.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the update cannot be completed.
+pub async fn update_personal_embedded_page(
+    pool: &SqlitePool,
+    user_id: &str,
+    page_id: &str,
+    title: &str,
+    description: &str,
+    url: &str,
+    allow_same_origin: bool,
+    iframe_height: i64,
+) -> Result<Option<EmbeddedPage>, sqlx::Error> {
+    let updated_at = chrono::Utc::now().to_rfc3339();
+    let result = sqlx::query(
+        "UPDATE embedded_pages SET title = ?, description = ?, url = ?, \
+         allow_same_origin = ?, iframe_height = ?, updated_at = ? \
+         WHERE id = ? AND scope = 'user' AND owner_user_id = ?",
+    )
+    .bind(title)
+    .bind(description)
+    .bind(url)
+    .bind(allow_same_origin)
+    .bind(iframe_height)
+    .bind(&updated_at)
+    .bind(page_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() != 1 {
+        return Ok(None);
+    }
+
+    sqlx::query_as::<_, EmbeddedPage>(
+        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
+         allow_same_origin, iframe_height, position, created_at, updated_at \
+         FROM embedded_pages WHERE id = ?",
+    )
+    .bind(page_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Updates one instance-wide embedded page.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the update cannot be completed.
+pub async fn update_global_embedded_page(
+    pool: &SqlitePool,
+    page_id: &str,
+    title: &str,
+    description: &str,
+    url: &str,
+    allow_same_origin: bool,
+    iframe_height: i64,
+) -> Result<Option<EmbeddedPage>, sqlx::Error> {
+    let updated_at = chrono::Utc::now().to_rfc3339();
+    let result = sqlx::query(
+        "UPDATE embedded_pages SET title = ?, description = ?, url = ?, \
+         allow_same_origin = ?, iframe_height = ?, updated_at = ? \
+         WHERE id = ? AND scope = 'global' AND owner_user_id IS NULL",
+    )
+    .bind(title)
+    .bind(description)
+    .bind(url)
+    .bind(allow_same_origin)
+    .bind(iframe_height)
+    .bind(&updated_at)
+    .bind(page_id)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() != 1 {
+        return Ok(None);
+    }
+
+    sqlx::query_as::<_, EmbeddedPage>(
+        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
+         allow_same_origin, iframe_height, position, created_at, updated_at \
+         FROM embedded_pages WHERE id = ?",
+    )
+    .bind(page_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Deletes a private embedded page owned by one account and closes its ordering gap.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the transaction cannot be completed.
+pub async fn delete_personal_embedded_page(
+    pool: &SqlitePool,
+    user_id: &str,
+    page_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    let position = sqlx::query_scalar::<_, i64>(
+        "SELECT position FROM embedded_pages \
+         WHERE id = ? AND scope = 'user' AND owner_user_id = ?",
+    )
+    .bind(page_id)
+    .bind(user_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some(position) = position else {
+        transaction.rollback().await?;
+        return Ok(false);
+    };
+    sqlx::query(
+        "DELETE FROM embedded_pages \
+         WHERE id = ? AND scope = 'user' AND owner_user_id = ?",
+    )
+    .bind(page_id)
+    .bind(user_id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE embedded_pages SET position = position - 1 \
+         WHERE scope = 'user' AND owner_user_id = ? AND position > ?",
+    )
+    .bind(user_id)
+    .bind(position)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(true)
+}
+
+/// Deletes an instance-wide embedded page and closes its ordering gap.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the transaction cannot be completed.
+pub async fn delete_global_embedded_page(
+    pool: &SqlitePool,
+    page_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    let position = sqlx::query_scalar::<_, i64>(
+        "SELECT position FROM embedded_pages \
+         WHERE id = ? AND scope = 'global' AND owner_user_id IS NULL",
+    )
+    .bind(page_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some(position) = position else {
+        transaction.rollback().await?;
+        return Ok(false);
+    };
+    sqlx::query(
+        "DELETE FROM embedded_pages \
+         WHERE id = ? AND scope = 'global' AND owner_user_id IS NULL",
+    )
+    .bind(page_id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE embedded_pages SET position = position - 1 \
+         WHERE scope = 'global' AND owner_user_id IS NULL AND position > ?",
+    )
+    .bind(position)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(true)
+}
+
+/// Replaces one account's complete private embedded-page order atomically.
+///
+/// Returns `None` when the identifiers are incomplete, duplicated, or not owned by the account.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the transaction cannot be completed.
+pub async fn reorder_personal_embedded_pages(
+    pool: &SqlitePool,
+    user_id: &str,
+    page_ids: &[String],
+) -> Result<Option<Vec<EmbeddedPage>>, sqlx::Error> {
+    reorder_embedded_pages(pool, Some(user_id), page_ids).await?;
+    let pages = list_personal_embedded_pages(pool, user_id).await?;
+    if pages.len() == page_ids.len()
+        && pages
+            .iter()
+            .zip(page_ids)
+            .all(|(page, expected_id)| page.id == *expected_id)
+    {
+        Ok(Some(pages))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Replaces the complete instance-wide embedded-page order atomically.
+///
+/// Returns `None` when the identifiers are incomplete, duplicated, or not global pages.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the transaction cannot be completed.
+pub async fn reorder_global_embedded_pages(
+    pool: &SqlitePool,
+    page_ids: &[String],
+) -> Result<Option<Vec<EmbeddedPage>>, sqlx::Error> {
+    reorder_embedded_pages(pool, None, page_ids).await?;
+    let pages = list_global_embedded_pages(pool).await?;
+    if pages.len() == page_ids.len()
+        && pages
+            .iter()
+            .zip(page_ids)
+            .all(|(page, expected_id)| page.id == *expected_id)
+    {
+        Ok(Some(pages))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn reorder_embedded_pages(
+    pool: &SqlitePool,
+    owner_user_id: Option<&str>,
+    page_ids: &[String],
+) -> Result<(), sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    let existing_ids = if let Some(owner_user_id) = owner_user_id {
+        sqlx::query_scalar::<_, String>(
+            "SELECT id FROM embedded_pages \
+             WHERE scope = 'user' AND owner_user_id = ? ORDER BY position ASC, id ASC",
+        )
+        .bind(owner_user_id)
+        .fetch_all(&mut *transaction)
+        .await?
+    } else {
+        sqlx::query_scalar::<_, String>(
+            "SELECT id FROM embedded_pages \
+             WHERE scope = 'global' AND owner_user_id IS NULL ORDER BY position ASC, id ASC",
+        )
+        .fetch_all(&mut *transaction)
+        .await?
+    };
+    let valid = existing_ids.len() == page_ids.len()
+        && page_ids
+            .iter()
+            .enumerate()
+            .all(|(index, id)| !page_ids[..index].contains(id) && existing_ids.contains(id));
+    if !valid {
+        transaction.rollback().await?;
+        return Ok(());
+    }
+
+    let updated_at = chrono::Utc::now().to_rfc3339();
+    for (position, page_id) in page_ids.iter().enumerate() {
+        let result = if let Some(owner_user_id) = owner_user_id {
+            sqlx::query(
+                "UPDATE embedded_pages SET position = ?, updated_at = ? \
+                 WHERE id = ? AND scope = 'user' AND owner_user_id = ?",
+            )
+            .bind(i64::try_from(position).unwrap_or(i64::MAX))
+            .bind(&updated_at)
+            .bind(page_id)
+            .bind(owner_user_id)
+            .execute(&mut *transaction)
+            .await?
+        } else {
+            sqlx::query(
+                "UPDATE embedded_pages SET position = ?, updated_at = ? \
+                 WHERE id = ? AND scope = 'global' AND owner_user_id IS NULL",
+            )
+            .bind(i64::try_from(position).unwrap_or(i64::MAX))
+            .bind(&updated_at)
+            .bind(page_id)
+            .execute(&mut *transaction)
+            .await?
+        };
+        if result.rows_affected() != 1 {
+            transaction.rollback().await?;
+            return Ok(());
+        }
+    }
+    transaction.commit().await?;
+    Ok(())
+}
+
 /// Creates an account, its settings, and a small starter task set atomically.
 ///
 /// # Errors
@@ -3168,6 +3651,14 @@ pub async fn upsert_user_wallpaper(
     mime_type: &str,
     image_data: &[u8],
 ) -> Result<(), sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    // An upload replaces any wall applied to the same slot, so the two sources of a
+    // wallpaper never disagree about which image the slot resolves to.
+    sqlx::query("DELETE FROM user_wallpaper_selections WHERE user_id = ? AND slot = ?")
+        .bind(user_id)
+        .bind(slot)
+        .execute(&mut *transaction)
+        .await?;
     sqlx::query(
         "INSERT INTO user_wallpapers (user_id, slot, mime_type, image_data, updated_at) \
          VALUES (?, ?, ?, ?, ?) \
@@ -3180,9 +3671,9 @@ pub async fn upsert_user_wallpaper(
     .bind(mime_type)
     .bind(image_data)
     .bind(chrono::Utc::now().to_rfc3339())
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
-    Ok(())
+    transaction.commit().await
 }
 
 /// Replaces the singleton administrator-controlled login wallpaper.
@@ -3198,6 +3689,11 @@ pub async fn replace_login_wallpaper(
 ) -> Result<(), sqlx::Error> {
     let mut transaction = pool.begin().await?;
     sqlx::query("DELETE FROM user_wallpapers WHERE slot = 'login'")
+        .execute(&mut *transaction)
+        .await?;
+    // The login screen is a singleton across every administrator, so an uploaded image
+    // clears applied walls too rather than competing with them on `updated_at`.
+    sqlx::query("DELETE FROM user_wallpaper_selections WHERE slot = 'login'")
         .execute(&mut *transaction)
         .await?;
     sqlx::query(
@@ -3223,6 +3719,25 @@ pub async fn find_user_wallpaper(
     user_id: &str,
     slot: &str,
 ) -> Result<Option<UserBackground>, sqlx::Error> {
+    // A slot resolves an applied wall first, then the owner's uploaded image. The status
+    // guard means a wall rejected after it was applied stops being served immediately,
+    // without a cleanup pass over the selections.
+    if let Some(wall) = sqlx::query_as::<_, UserBackground>(
+        "SELECT walls.mime_type, walls.image_data, user_wallpaper_selections.updated_at \
+         FROM user_wallpaper_selections \
+         JOIN walls ON walls.id = user_wallpaper_selections.wall_id \
+         WHERE user_wallpaper_selections.user_id = ? \
+           AND user_wallpaper_selections.slot = ? \
+           AND walls.status = 'approved'",
+    )
+    .bind(user_id)
+    .bind(slot)
+    .fetch_optional(pool)
+    .await?
+    {
+        return Ok(Some(wall));
+    }
+
     sqlx::query_as::<_, UserBackground>(
         "SELECT mime_type, image_data, updated_at FROM user_wallpapers \
          WHERE user_id = ? AND slot = ?",
@@ -3241,6 +3756,23 @@ pub async fn find_user_wallpaper(
 pub async fn find_login_wallpaper(
     pool: &SqlitePool,
 ) -> Result<Option<UserBackground>, sqlx::Error> {
+    // Both writers keep the login slot a singleton, so at most one of these two sources
+    // holds a row. The applied wall is tried first for symmetry with `find_user_wallpaper`.
+    if let Some(wall) = sqlx::query_as::<_, UserBackground>(
+        "SELECT walls.mime_type, walls.image_data, user_wallpaper_selections.updated_at \
+         FROM user_wallpaper_selections \
+         JOIN walls ON walls.id = user_wallpaper_selections.wall_id \
+         JOIN users ON users.id = user_wallpaper_selections.user_id \
+         WHERE user_wallpaper_selections.slot = 'login' \
+           AND walls.status = 'approved' AND users.role = 'administrator' \
+         ORDER BY user_wallpaper_selections.updated_at DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?
+    {
+        return Ok(Some(wall));
+    }
+
     sqlx::query_as::<_, UserBackground>(
         "SELECT user_wallpapers.mime_type, user_wallpapers.image_data, \
                 user_wallpapers.updated_at \
@@ -3263,15 +3795,24 @@ pub async fn delete_user_wallpaper(
     user_id: &str,
     slot: &str,
 ) -> Result<bool, sqlx::Error> {
-    Ok(
-        sqlx::query("DELETE FROM user_wallpapers WHERE user_id = ? AND slot = ?")
+    let mut transaction = pool.begin().await?;
+    // Resetting a slot has to clear both sources, or the slot falls back to a previously
+    // applied wall instead of the packaged default.
+    let uploaded = sqlx::query("DELETE FROM user_wallpapers WHERE user_id = ? AND slot = ?")
+        .bind(user_id)
+        .bind(slot)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+    let selected =
+        sqlx::query("DELETE FROM user_wallpaper_selections WHERE user_id = ? AND slot = ?")
             .bind(user_id)
             .bind(slot)
-            .execute(pool)
+            .execute(&mut *transaction)
             .await?
-            .rows_affected()
-            > 0,
-    )
+            .rows_affected();
+    transaction.commit().await?;
+    Ok(uploaded + selected > 0)
 }
 
 /// Removes the singleton login wallpaper.
@@ -3280,13 +3821,17 @@ pub async fn delete_user_wallpaper(
 ///
 /// Returns the underlying `SQLx` error when the delete cannot be completed.
 pub async fn delete_login_wallpaper(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
-    Ok(
-        sqlx::query("DELETE FROM user_wallpapers WHERE slot = 'login'")
-            .execute(pool)
-            .await?
-            .rows_affected()
-            > 0,
-    )
+    let mut transaction = pool.begin().await?;
+    let uploaded = sqlx::query("DELETE FROM user_wallpapers WHERE slot = 'login'")
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+    let selected = sqlx::query("DELETE FROM user_wallpaper_selections WHERE slot = 'login'")
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+    transaction.commit().await?;
+    Ok(uploaded + selected > 0)
 }
 
 /// Stores the authenticated user's avatar image.
@@ -3396,16 +3941,37 @@ pub async fn find_user_appearance(
     sqlx::query_as::<_, UserAppearance>(
         "SELECT user_id, EXISTS(SELECT 1 FROM user_wallpapers \
                 WHERE user_wallpapers.user_id = user_appearance.user_id \
-                  AND user_wallpapers.slot = 'dashboard') AS has_dashboard_wallpaper, \
+                  AND user_wallpapers.slot = 'dashboard') \
+                OR EXISTS(SELECT 1 FROM user_wallpaper_selections \
+                JOIN walls ON walls.id = user_wallpaper_selections.wall_id \
+                WHERE user_wallpaper_selections.user_id = user_appearance.user_id \
+                  AND user_wallpaper_selections.slot = 'dashboard' \
+                  AND walls.status = 'approved') AS has_dashboard_wallpaper, \
                 EXISTS(SELECT 1 FROM user_wallpapers \
                 WHERE user_wallpapers.user_id = user_appearance.user_id \
-                  AND user_wallpapers.slot = 'welcome') AS has_welcome_wallpaper, \
+                  AND user_wallpapers.slot = 'welcome') \
+                OR EXISTS(SELECT 1 FROM user_wallpaper_selections \
+                JOIN walls ON walls.id = user_wallpaper_selections.wall_id \
+                WHERE user_wallpaper_selections.user_id = user_appearance.user_id \
+                  AND user_wallpaper_selections.slot = 'welcome' \
+                  AND walls.status = 'approved') AS has_welcome_wallpaper, \
                 EXISTS(SELECT 1 FROM user_wallpapers \
                 WHERE user_wallpapers.user_id = user_appearance.user_id \
-                  AND user_wallpapers.slot = 'loading') AS has_loading_wallpaper, \
+                  AND user_wallpapers.slot = 'loading') \
+                OR EXISTS(SELECT 1 FROM user_wallpaper_selections \
+                JOIN walls ON walls.id = user_wallpaper_selections.wall_id \
+                WHERE user_wallpaper_selections.user_id = user_appearance.user_id \
+                  AND user_wallpaper_selections.slot = 'loading' \
+                  AND walls.status = 'approved') AS has_loading_wallpaper, \
                 EXISTS(SELECT 1 FROM user_wallpapers \
                 JOIN users ON users.id = user_wallpapers.user_id \
                 WHERE user_wallpapers.slot = 'login' \
+                  AND users.role = 'administrator') \
+                OR EXISTS(SELECT 1 FROM user_wallpaper_selections \
+                JOIN walls ON walls.id = user_wallpaper_selections.wall_id \
+                JOIN users ON users.id = user_wallpaper_selections.user_id \
+                WHERE user_wallpaper_selections.slot = 'login' \
+                  AND walls.status = 'approved' \
                   AND users.role = 'administrator') AS has_login_wallpaper, \
                 background_blur, background_brightness, \
                 background_contrast, background_saturation, updated_at \

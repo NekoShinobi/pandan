@@ -25,6 +25,7 @@ services:
       OIDC_PROVIDER_NAME: ${OIDC_PROVIDER_NAME:-}
       PANDAN_SECRET_KEY: ${PANDAN_SECRET_KEY:-}
       INVIDIOUS_BASE_URL: ${INVIDIOUS_BASE_URL:-}
+      INVIDIOUS_ALLOW_PRIVATE_NETWORK: ${INVIDIOUS_ALLOW_PRIVATE_NETWORK:-}
       DEV_CHOWN_PATHS: >-
         /app/target /app/.devdata /usr/local/cargo/registry /usr/local/cargo/git
     command: bacon --headless run

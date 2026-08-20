@@ -9,6 +9,13 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - Use `apply_patch` for manual file edits.
 - Preserve unrelated work in the working tree. Never reset, overwrite, or delete user changes.
 - Read a file before editing it and keep changes narrowly scoped.
+- `rust-toolchain.toml` supplies `rust-analyzer`, `rustfmt`, and Clippy. `just setup` installs
+  the pinned `cargo-nextest`, `cargo-machete`, and `cargo-mutants` releases; use
+  `just setup-tools` to refresh only those tools.
+- Use `just test-nextest` for a faster local Rust test loop, `just deps-unused` for a read-only
+  unused-dependency scan, and `just test-mutants` for deliberate mutation-testing runs. Mutation
+  testing is intentionally excluded from `just ci` because it runs the suite once per generated
+  mutation.
 
 ## Repository map
 
@@ -17,6 +24,7 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - `ui/src/lib/KanbanPage.svelte` — Kanban boards, card collaboration, workspace membership, and permission settings.
 - `ui/src/lib/PodcastsPage.svelte` — podcast catalogue, requests, listening views, and the administrator review queue.
 - `ui/src/lib/podcastPlayer.svelte.ts` — module-scoped playback state. The shell owns the single `<audio>` element so playback survives section changes; never move it into a page component.
+- `ui/src/lib/WallsPage.svelte` — shared wallpaper collection, submission composer, and the administrator review queue.
 - `ui/src/lib/` — feature pages and reusable widgets.
 - `ui/src/app.css` — shared visual system and component styling.
 - `ui/src/app.html` — document shell; owns the title, description, icons, and link-preview tags.
@@ -25,6 +33,7 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - `DESIGN.md` — persistent interface and interaction rules; read it before frontend changes.
 - `crates/server/` — Actix Web API, authentication, remote integrations, and static UI serving.
 - `crates/server/src/document.rs` — renders the application document and its absolute link-preview URLs.
+- `crates/server/src/walls.rs` — Walls HTTP surface: submission, moderation, image serving, and applying a wall to a wallpaper slot.
 - `crates/server/src/podcasts.rs` — podcast HTTP surface: catalogue, requests, subscriptions, playback, and listening state.
 - `crates/server/src/podcast_media.rs` — guarded feed and audio fetching, on-disk episode storage, eviction, startup reconciliation, and the refresh and download workers.
 - `crates/db/` — SQLx entities, queries, migrations, and SQLite connection lifecycle.
@@ -38,14 +47,21 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - Administrator checks are enforced by the server, never only by the interface.
 - The final administrator cannot be demoted or deleted.
 - The initial administrator setup is one-time and claimed atomically.
-- Sidebar navigation order is Dashboard, Tasks, Kanban, Contacts, Calendar, RSS, Journal, Lines, YouTube, Podcasts, Coding, Subscriptions, Trading. Kanban expands to Boards, Workspaces, and Invitations.
+- Sidebar navigation starts with Dashboard, Tasks, Kanban, Contacts, Calendar, RSS, Journal, Lines, Walls, YouTube, Podcasts, Coding, Subscriptions, and Trading. Kanban expands to Boards, Workspaces, and Invitations. Administrator-defined global embedded pages follow every built-in page, then the authenticated account's personal embedded pages. Global and personal entries retain their `GLOBAL · CUSTOM` / `PERSONAL · CUSTOM` indicators, with `G` / `U` markers in collapsed mode. Each embedded page keeps a responsive width and a persisted iframe height from 320–2,400 pixels, defaulting to 720.
 - Tasks Active and Archived views share the same page structure: keep New task and Focus Mode visible, and do not collapse the worklist grid when switching views.
 - The command palette is a global surface, not a dashboard feature. Keep its entry points page-independent: `Ctrl`/`Cmd` + `K`, the `/` key, and the header search control. Do not add palette triggers inside dashboard widgets or dashboard-only panels, and do not reintroduce the removed `search` web search widget; web search belongs in the palette's fallthrough row.
 - The Lines composer is avatar-first: the viewer's avatar sits beside the post entry with no heading above it, and the Private/Instance selector sits beside the Post button. Replies are composed in the centered reply modal, which quotes the parent post above the reply entry; do not restore the inline reply banner.
-- Lines has three screens inside its page: the timeline, a thread screen, and an author screen. A post timestamp or reply count opens the thread screen, `Replying to {author}` opens the parent post's thread screen, and an avatar or author name opens the author screen. These are full screens with a Back control, never modals, and the composer belongs to the timeline only.
+- Lines has three screens inside its page: the timeline, a thread screen, and an author screen. A post timestamp or reply count opens the thread screen, `Replying to {author}` opens the parent post's thread screen, and an avatar or author name opens the author screen. These are full screens with a Back control, never modals, and the composer belongs to the timeline only. Choosing Lines in the sidebar returns to the timeline even when Lines is already the active section, which the shell drives through the page's `homeToken` prop.
+- Walls is the shared wallpaper collection. Any account may submit; only an administrator may approve or reject, and that check is enforced on the server. A `pending` or `rejected` wall is readable only by its submitter and by administrators, and is reported as missing to everyone else so review state never leaks. Only an `approved` wall may be applied to a wallpaper slot, including by its own submitter.
+- The Walls search and tag filters are page furniture: they sit with the view tabs, outside the swapping body, and stay put between views. Every scope applies them, `mine` included, so keep `list_walls_by_submitter` in step with `list_walls` rather than short-circuiting the filters away.
+- A wall's title, description, and tags stay editable by its submitter and by administrators at any status, including after a decision. Editing is descriptive only: it must never change `status`, `decision_note`, `decided_by`, or `decided_at`, which only approve and reject may move.
+- Applying a wall to `login` requires an administrator. `apply` only ever writes a selection for the calling account plus that global slot; an administrator must never be able to change another user's background.
+- Deleting an account leaves its walls in place with `user_id` set to NULL, shown as an unattributed contribution, so other people's backgrounds keep working. Walls is deliberately not one of the `UserContentScope` bulk-delete scopes.
+- Wall submissions are decoded on the server to generate a thumbnail. Keep the decode inside `web::block` and keep the explicit `image::Limits` guard: the upload size limit bounds the compressed bytes only, and a small file can legitimately decode to gigabytes of pixel buffer.
 - Kanban workspaces are collaboration aggregates and are distinct from the removed dashboard `user_workspaces` partition UI. Every board, column, card, comment, checklist, label, and attachment authorization must resolve through active `kanban_workspace_members` membership.
 - Kanban roles are `admin`, `member`, and `guest` with the 24 kan.bn-compatible workspace/board/list/card/comment/member permissions. Admin grants are immutable, workspace manage/delete stay admin-only, per-member overrides are allowed for other permissions, and the final workspace admin cannot be demoted or removed.
 - Kanban invitations are in-app only and may target existing Pandan users; do not add email delivery or arbitrary addresses.
+- Deleting a Kanban column is refused by the server while it still holds active cards, and that message is what the board shows. Keep the check on the server rather than hiding the control, and keep the delete behind `list:delete`.
 - The podcast catalogue is one administrator-curated set shared by the whole instance. Members request a feed; only an administrator publishes one. Never let a member route create a `podcasts` row.
 - A feed already in the catalogue never becomes a request. Compare on the normalized URL and answer with a subscription instead.
 - Podcast requests keep their decision history. Rejections retain the administrator's reason for the requester, and only `pending` requests may be decided or withdrawn.
@@ -55,6 +71,8 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - The player bar is rendered by the shell as a sibling of `.dashboard-app`, not a descendant, so it does not inherit the tactical telemetry palette. It binds the terminal tokens itself in `ui/src/app.css`; without them its controls hover in the light root theme.
 - `podcastPlayer` tracks the loaded source separately from the current episode. A play that fails because the file was not cached yet leaves the episode set and the source unusable, so a retry after the download lands must reload rather than resume, and must adopt the reloaded record that finally carries a duration.
 - Eviction is least-recently-used on `last_accessed_at` and skips pinned files, in-flight transfers, and anything in a listener's play queue. When it cannot free enough, defer the download rather than exceeding the storage budget.
+- An episode description is remote feed HTML stored verbatim. Render it through the sanitizer before it reaches the DOM, and force its links to `target="_blank"`: following one in this tab tears down the page and stops playback.
+- Podcast volume runs from 0 to 200% and starts at 80%. `HTMLMediaElement.volume` is capped at 1, so anything above 100% runs through a lazily built `AudioContext` gain node; once that graph exists the element stays at unity and the gain carries the whole level, so the two never multiply. Build the graph only from a user gesture — created at mount it starts suspended and plays silently.
 - Podcast discovery is deliberately absent. Requests carry a feed URL that the server previews; do not add a directory search, playlists, or a streaming proxy for remote audio.
 
 ### Link previews
@@ -72,6 +90,8 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
   - `welcome` — private, per user, exposed in Account Settings as Main background, used by the authenticated `Welcome:{user}` loading transition and as the persistent background behind authenticated pages.
   - `loading` — legacy private slot retained for existing data and API compatibility; do not expose it as a separate selector.
   - `login` — global, administrator-managed, publicly readable before authentication.
+- Every wallpaper slot resolves in one order: an applied wall in `user_wallpaper_selections`, then the uploaded image in `user_wallpapers`, then the packaged default. Only a wall that is still `approved` resolves, so a wall rejected or deleted after it was applied falls back on its own with no cleanup pass. Uploading to a slot clears its selection and applying a wall clears its upload, so the two sources can never disagree.
+- The `login` slot stays a singleton across every administrator. Any writer — upload or apply — must clear both tables for that slot first, so the served image never depends on an `updated_at` tiebreak.
 - For an existing authenticated session, render the Welcome loading overlay in the initial server response so the dashboard surface never flashes before the boot transition.
 - Wallpaper formats are JPEG, PNG, WebP, and AVIF, with a 30 MB limit.
 - Avatars are private, per user, use the same image formats, and have a 10 MB limit. An OIDC `picture` claim may initialize a missing avatar through the guarded public HTTPS fetch path, but must never replace an existing avatar or block login when fetching fails.
@@ -95,11 +115,17 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 ### Remote content
 
 - RSS, ICS, Invidious, Gitea, and Forgejo URLs must use public HTTPS destinations.
+- Embedded-page destinations must be absolute HTTPS URLs without credentials. The server stores configuration only and never fetches or proxies them. Their iframes default to the restricted `allow-forms allow-popups allow-scripts` sandbox and `no-referrer` policy. A persisted, explicit trusted-page opt-in may additionally grant `allow-same-origin` so module scripts and storage can use the destination's real origin; keep it disabled by default and never add top-navigation, download, device, or location permissions.
 - Preserve DNS/IP validation against loopback, private, link-local, multicast, and reserved ranges.
+- `INVIDIOUS_ALLOW_PRIVATE_NETWORK` is the one exemption, for a self-hosted Invidious instance that resolves to a private address. It applies only to `INVIDIOUS_BASE_URL`, which is operator configuration and never user input, and only to URLs on that exact host and port; HTTPS and credential-free are still required. Every user-supplied URL, the OIDC `picture` fetch included, keeps the full guard. Do not widen the exemption to another provider or reuse it for a user-supplied destination.
 - Preserve bounded redirects, connection/request timeouts, response-size limits, and per-provider failure isolation.
 - RSS subscriptions refresh in a background worker every 30 minutes. Scheduling reads
   `rss_subscriptions.last_attempted_at`, which is stamped when a refresh is claimed, so a failing
   source backs off for a full window. Keep manual refresh available alongside it.
+- New RSS subscriptions default to auto-deleting read and unread items after seven days; Read Later
+  items stay exempt. Generated Reddit subscriptions use the public Atom `.rss` listing, and the
+  fetcher normalizes legacy `.json` listing URLs to Atom because Reddit rejects anonymous server-side
+  JSON requests. Do not restore direct anonymous JSON fetching.
 - YouTube channel metadata refreshes every two hours through configured Invidious first and the public YouTube feed second. Shared portrait images are stored in SQLite and refreshed at most every 24 hours; failed portrait responses must never populate the cache.
 - Render user Markdown through the existing sanitizer. Custom HTML and iframe widgets remain sandboxed.
 - Lines public posts are readable only by authenticated instance users. Private posts remain owner-only, including from administrators; administrators may force-delete public posts but must never gain private-post read access.
@@ -123,6 +149,10 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - Preserve keyboard access, visible focus states, minimum touch targets, reduced-motion behavior, and mobile reflow.
 - Keep the terminal visual language: near-black surfaces, restrained green accents, monospaced content, crisp borders, and translucent structure over wallpaper.
 - Reuse existing CSS tokens and components before adding new styles. Avoid isolated hardcoded colors.
+- A refresh must never blank what is already on screen. Only a first load may show a loading state; a later one keeps the current records up until the new set lands, and a failure reports itself beside them rather than replacing them. Track "has ever loaded" with a plain variable, not `$state`, so the loader does not depend on its own completion.
+- Product pages share one terminal header: `page-header` alongside the page's own class, a `$ {page} --{view}` title rendered by `$lib/TypedHeading.svelte`, and a muted mono standfirst ruled off from the body. The heading element belongs to the component, so style it through `.typed-heading` in `ui/src/app.css`; a page-scoped `h2` rule cannot reach it.
+- `TypedHeading` keeps the exact visible title in module scope behind a newest-instance ownership token. Page components may be created before the outgoing one is destroyed, so only the newest owner may update the handoff; this lets the incoming title backspace what the reader actually saw without a stale teardown reviving older text. The first hydrated heading starts empty and types once; reduced motion resolves it immediately.
+- Scrollbars are a shared surface, not a per-component one. Reuse the custom scrollbar in `ui/src/app.css` and give every layout-level scroll container `scrollbar-gutter: stable`; see `DESIGN.md`.
 - Keep modals centered, consistently structured, dismissible by their close control, and animated from the top with reduced-motion fallbacks.
 - Native `dialog` elements enter the browser top layer: never leave them on browser-default light colors or corner positioning. Use the shared modal class or explicitly bind the authenticated terminal tokens, plus `position: fixed`, `inset: 0`, and `margin: auto`; verify the open dialog is centered and dark in the rendered application.
 
@@ -150,5 +180,7 @@ rtk bun run check        # from ui/
 rtk bun run build        # from ui/
 rtk git diff --check
 ```
+
+Server-side AVIF decoding for Walls links against system libdav1d 1.3.0 or newer, which is why the container images are built on Debian trixie (`libdav1d-dev` in the builder, `libdav1d7` at runtime). A change touching image handling or the base images should be verified with `docker build .`, not only `cargo test`.
 
 Use `just ci` for the complete local gate. Update `README.md`, `SCHEMA.md`, and this guide when user-visible behavior, schema contracts, or contributor invariants change.

@@ -228,7 +228,8 @@
         loadError = `${failed} ${failed === 1 ? "city" : "cities"} could not be refreshed.`;
     } catch (reason: unknown) {
       if ((reason as Error).name !== "AbortError") {
-        snapshots = [];
+        // Keep the conditions already on screen. The template shows this beside them,
+        // and falls back to the full error card only when there is nothing to keep.
         loadError =
           reason instanceof Error ? reason.message : "Weather is unavailable";
       }

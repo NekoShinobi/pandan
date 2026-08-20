@@ -11,11 +11,11 @@ COPY ui/ ./
 RUN bun run prepare && bun run build
 
 # Build the Rust server and cache dependencies separately from application code.
-FROM rust:1-slim-bookworm AS rust-builder
+FROM rust:1-slim-trixie AS rust-builder
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates pkg-config \
+    && apt-get install -y --no-install-recommends ca-certificates pkg-config libdav1d-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
@@ -33,14 +33,14 @@ RUN touch crates/db/src/lib.rs crates/server/src/lib.rs crates/server/src/main.r
     && cargo build --release --locked --bin pandan
 
 # Keep the runtime image small while retaining curl for its container health check.
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 WORKDIR /app
 
 ARG PUID=99
 ARG PGID=100
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl libdav1d7 \
     && rm -rf /var/lib/apt/lists/* \
     && if ! getent group "${PGID}" >/dev/null; then groupadd --system --gid "${PGID}" pandan; fi \
     && useradd --system --non-unique --uid "${PUID}" --gid "${PGID}" --home-dir /app pandan \

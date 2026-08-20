@@ -41,18 +41,20 @@ Pandan brings planning, reading, contacts, calendars, notes, lightweight instanc
 | **Kanban** | Shared workspaces with multiple boards, Todo / In Progress / Finished defaults, drag-and-drop cards, sanitized Markdown descriptions, assignees, live labels, due dates, comments, checklists, attachments, favorites, archives, in-app invitations, and configurable Admin / Member / Guest permissions. |
 | **Contacts** | Search, tags, favorites, archives, portraits, yearless birthdays, important dates, Pandan/Monica JSON import, Pandan JSON export, and CardDAV synchronization. |
 | **Calendar** | Task due dates, multiple public HTTPS ICS feeds, recurring events, custom source colors, contact birthdays, a month grid, and a selected-day agenda. |
-| **RSS** | RSS and Atom subscriptions plus Reddit subreddit helpers, categories, source filters, article details, read state, a pruning-safe Read Later queue, automatic background refresh every 30 minutes, manual refresh, and age-based retention. |
+| **RSS** | RSS and Atom subscriptions plus Reddit subreddit helpers, categories, source filters, article details, read state, a pruning-safe Read Later queue, automatic background refresh every 30 minutes, manual refresh, and seven-day all-item retention by default. |
 | **Journal** | Nested documents that can contain Markdown content and child documents; rendered Markdown is sanitized before display. |
 | **Lines** | A Markdown timeline with account avatars, public or private posts, threaded replies composed in a modal, thread and author screens, hashtag discovery, search, file attachments, reactions, and administrator moderation of public posts. |
+| **Walls** | A shared wallpaper collection. Anyone can submit an image with a title, description, and tags; an administrator approves or rejects it with an optional note. Approved walls can be applied as your own background, or set by an administrator as the instance login screen. Submitters see their own pending and rejected entries with the reason, and can correct a wall's title, description, and tags at any time — before or after review. The search and tag filters sit with the view tabs and apply to the collection, your submissions, and the review queue alike. |
 | **YouTube** | Channel subscriptions, groups, a private Watch Later queue, thumbnail or compact layouts, manual refresh, and server-side shared metadata caching. |
-| **Podcasts** | An administrator-curated show catalogue for the whole instance, member requests with approve/reject review, per-account subscriptions, a play queue, saved episodes, and episodes downloaded once and then streamed from this server. Playback follows you across sections with skip-to-episode, rewind and forward, volume, and speed controls, and resumes where you left off. Administrators can queue a show's whole back catalogue in one action. |
+| **Podcasts** | An administrator-curated show catalogue for the whole instance, member requests with approve/reject review, per-account subscriptions, a play queue, saved episodes, expandable show notes on every episode, and episodes downloaded once and then streamed from this server. Playback follows you across sections with skip-to-episode, rewind and forward, volume, and speed controls, and resumes where you left off. Volume starts at 80% and can be pushed to 200% for a quietly mastered show. Administrators can queue a show's whole back catalogue in one action. |
 | **Coding** | Releases from GitHub, GitLab, Codeberg, Gitea, and Forgejo; connected accounts can also show owned repositories, open pull requests, and GitLab pipelines. |
 | **Subscriptions** | Recurring service costs, first-payment dates, filtering, and separate daily, weekly, monthly, and yearly totals for each currency. |
+| **Embedded pages** | Personal HTTPS webpages in the sidebar, plus administrator-managed global pages for every account. Each destination opens inside a restricted, responsive-width iframe with a configurable height, and remains available through an external-open link when the site blocks embedding. A per-page trusted-site opt-in can preserve the site's origin when its module scripts require it. |
 | **Trading** | A navigation placeholder for a future market workspace; watchlists and trade planning are not implemented yet. |
 
 A global command palette is available from every page with `Ctrl`/`Cmd` + `K`, the `/` key, or the header search control. It jumps to any product page or Kanban section, runs quick actions such as New task, Start focus session, and Account settings, and falls through to a web search on DuckDuckGo, Google, Bing, or Brave when the query matches nothing local.
 
-Accounts also have a private avatar, one to five sidebar monitor timezones, temperature and location preferences, a default Lines visibility, background adjustments, and a Main background used by the authenticated Welcome loading transition and behind authenticated pages. Administrators manage accounts, authentication policy, public Lines moderation, and the public Login wallpaper. Each user can permanently clear one content area at a time from Settings after explicit confirmation.
+Accounts also have a private avatar, one to five sidebar monitor timezones, temperature and location preferences, a default Lines visibility, background adjustments, and a Main background used by the authenticated Welcome loading transition and behind authenticated pages. A background can be an image you upload or one you pick from Walls; picking a wall stores it once for the whole instance rather than a copy per account. Custom sidebar pages always follow the built-in navigation: global pages use a `GLOBAL · CUSTOM` indicator, then personal pages use `PERSONAL · CUSTOM`. Administrators manage accounts, authentication policy, global embedded pages, public Lines moderation, the Walls review queue, and the public Login wallpaper. Each user can permanently clear one content area at a time from Settings after explicit confirmation.
 
 ## Dashboard widgets
 
@@ -140,7 +142,8 @@ Pandan prevents an administrator from deleting their active account or removing 
 | `COOKIE_SECURE` | `false` | Accepts `1`, `true`, or `yes` (case-insensitive) to mark session and OIDC state cookies as HTTPS-only. |
 | `PANDAN_BASE_URL` | unset in the server | Public absolute HTTP(S) application URL. Required when OIDC is enabled, where it derives the callback URL, and used for link-preview URLs. Without it, previews fall back to the address each request arrived on. |
 | `PANDAN_SECRET_KEY` | unset | Base64 text that decodes to exactly 32 bytes. Enables encrypted provider-credential storage. |
-| `INVIDIOUS_BASE_URL` | unset | Optional public HTTPS Invidious base URL used before YouTube's public uploads feed. |
+| `INVIDIOUS_BASE_URL` | unset | Optional HTTPS Invidious base URL used before YouTube's public uploads feed. |
+| `INVIDIOUS_ALLOW_PRIVATE_NETWORK` | `false` | Accepts `1`, `true`, or `yes` (case-insensitive). Exempts the `INVIDIOUS_BASE_URL` host from the private-network guard, for a self-hosted instance that resolves to a private address. Scoped to that exact host and port; every other outbound URL stays fully validated. |
 | `PANDAN_MEDIA_DIR` | `data/podcasts` | Directory for downloaded podcast episodes. Must be writable and on a volume with room for the storage budget. Production Compose sets `/app/data/podcasts`. |
 
 ### Production container settings
@@ -250,6 +253,7 @@ The `just db-reset` recipe permanently deletes the host and container-developmen
 | Content | Accepted formats | Limit |
 | --- | --- | --- |
 | Wallpapers | JPEG, PNG, WebP, AVIF | 30 MB |
+| Wall submissions | JPEG, PNG, WebP, AVIF | 30 MB |
 | Avatars and contact photos | JPEG, PNG, WebP, AVIF | 10 MB |
 | Task attachments | Any content type accepted by the task attachment endpoint | 10 MB |
 | Kanban card attachments | Any content type accepted by the Kanban attachment endpoint | 10 MB |
@@ -259,6 +263,11 @@ The `just db-reset` recipe permanently deletes the host and container-developmen
 Podcast episode limits are administrator-configurable from the Podcasts page. Episode audio is the
 only content Pandan stores outside SQLite: files are written under `PANDAN_MEDIA_DIR` so playback can
 be streamed and seeked, and access still goes through an authenticated handler.
+
+Wall submissions are decoded on the server to build a gallery thumbnail, so the accepted-format list
+is enforced by actually reading the image rather than trusting its declared type. Decoding is bounded
+independently of the 30 MB upload limit, because a small file can legitimately expand into a very
+large amount of pixel data.
 
 ## Remote content behavior
 
@@ -317,10 +326,12 @@ Both production and development containers use this endpoint for their Docker he
 
 Host development requires:
 
-- Rust stable with the project's MSRV of 1.85, plus `rustfmt` and Clippy;
+- Rust stable with the project's MSRV of 1.85, plus `rust-analyzer`, `rustfmt`, and Clippy;
 - Bun 1.3.10 and Node.js (Node 24 is used by the development container);
-- [Just](https://just.systems/); and
-- [Bacon](https://dystroy.org/bacon/) for Rust rebuild/restart behavior.
+- [Just](https://just.systems/);
+- [Bacon](https://dystroy.org/bacon/) for Rust rebuild/restart behavior; and
+- libdav1d 1.3.0 or newer with its development headers (`libdav1d-dev` on Debian/Ubuntu), which the
+  server links against to decode AVIF wall submissions. The containers already include it.
 
 Install locked dependencies and start both development servers:
 
@@ -329,6 +340,10 @@ just init
 just setup
 just dev
 ```
+
+`just setup` also installs the repository's pinned Rust development tools: `rust-analyzer`,
+`cargo-nextest`, `cargo-machete`, and `cargo-mutants`. Use `just setup-tools` to refresh only
+those tools.
 
 Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api` to the Rust server on port `9651`; edits to either side reload during development.
 
@@ -345,6 +360,8 @@ The development UI is published on `UI_PORT` (default `5173`) and the API on `PO
 ```sh
 just check          # Cargo check plus Svelte/TypeScript checks
 just test           # Rust workspace tests
+just test-nextest   # Faster process-per-test Rust runner
+just test-mutants   # Mutation testing across both Rust crates; intentionally slow
 just lint           # Clippy, ESLint, and Prettier checks
 just fmt            # Format Rust and frontend sources
 just fmt-check      # Verify formatting without changing files
@@ -352,6 +369,7 @@ just ci             # Complete local gate: format, check, lint, and test
 just build          # Static Svelte UI and release Rust binary
 just compose-check  # Validate production and development Compose files
 just deps-audit     # Audit Rust and frontend dependencies
+just deps-unused    # Report likely unused Rust dependencies
 ```
 
 A host production build places the binary at `target/release/pandan` and the static UI at `ui/build`. Run the binary from the repository root so its relative `./ui/build` path resolves correctly.

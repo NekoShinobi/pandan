@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # Rust development image. Bacon rebuilds and restarts the server on source changes.
-FROM rust:1-slim-bookworm
+FROM rust:1-slim-trixie
 
 ARG DEV_UID=1000
 ARG DEV_GID=1000
@@ -13,7 +13,7 @@ ENV DEV_UID=${DEV_UID} \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gosu \
+    && apt-get install -y --no-install-recommends ca-certificates curl gosu pkg-config libdav1d-dev \
     && rm -rf /var/lib/apt/lists/* \
     && cargo install --locked bacon \
     && if ! getent group "${DEV_GID}" >/dev/null; then groupadd --gid "${DEV_GID}" app; fi \

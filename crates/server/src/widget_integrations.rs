@@ -13,7 +13,7 @@ use futures_util::{
     stream::{self, StreamExt},
 };
 use quick_xml::{Reader, de::from_str, events::Event};
-use reqwest::{Client, Method, Url, header};
+use reqwest::{Client, Method, StatusCode, Url, header};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -23,7 +23,11 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::{net::lookup_host, sync::RwLock};
+use tokio::{
+    net::lookup_host,
+    sync::{RwLock, Semaphore},
+    time::sleep,
+};
 
 const CACHE_DURATION: Duration = Duration::from_secs(15 * 60);
 const MAX_RESPONSE_BYTES: usize = 2_000_000;
@@ -31,12 +35,16 @@ const MAX_YOUTUBE_CHANNEL_METADATA_BYTES: usize = 1_000_000;
 const MAX_OWNED_REPOSITORIES: usize = 500;
 const MAX_PROVIDER_PAGES: usize = 100;
 const PROVIDER_REQUEST_CONCURRENCY: usize = 8;
+const DEFAULT_REDDIT_RETRY_SECONDS: u64 = 15;
+const MAX_REDDIT_RETRY_SECONDS: u64 = 60;
 
 #[derive(Clone)]
 pub struct WidgetIntegrationService {
     client: Client,
     cipher: Option<XChaCha20Poly1305>,
     invidious_base_url: Option<Url>,
+    invidious_allows_private_network: bool,
+    reddit_request_gate: Arc<Semaphore>,
     cache: Arc<RwLock<HashMap<String, CachedData>>>,
 }
 
@@ -138,7 +146,18 @@ impl WidgetIntegrationService {
     pub fn from_env() -> Result<Self, String> {
         let key = std::env::var("PANDAN_SECRET_KEY").ok();
         let invidious_base_url = std::env::var("INVIDIOUS_BASE_URL").ok();
-        Self::new_with_invidious(key.as_deref(), invidious_base_url.as_deref())
+        let invidious_allows_private_network = std::env::var("INVIDIOUS_ALLOW_PRIVATE_NETWORK")
+            .is_ok_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes"
+                )
+            });
+        Self::new_with_invidious(
+            key.as_deref(),
+            invidious_base_url.as_deref(),
+            invidious_allows_private_network,
+        )
     }
 
     #[cfg(test)]
@@ -152,12 +171,13 @@ impl WidgetIntegrationService {
     }
 
     fn new(encoded_key: Option<&str>) -> Result<Self, String> {
-        Self::new_with_invidious(encoded_key, None)
+        Self::new_with_invidious(encoded_key, None, false)
     }
 
     fn new_with_invidious(
         encoded_key: Option<&str>,
         invidious_base_url: Option<&str>,
+        invidious_allows_private_network: bool,
     ) -> Result<Self, String> {
         let cipher = encoded_key
             .map(str::trim)
@@ -184,6 +204,8 @@ impl WidgetIntegrationService {
             client,
             cipher,
             invidious_base_url: parse_invidious_base_url(invidious_base_url)?,
+            invidious_allows_private_network,
+            reddit_request_gate: Arc::new(Semaphore::new(1)),
             cache: Arc::new(RwLock::new(HashMap::new())),
         })
     }
@@ -198,6 +220,12 @@ impl WidgetIntegrationService {
         self.invidious_base_url.is_some()
     }
 
+    /// Reports whether the configured `Invidious` instance is exempt from the private-network guard.
+    #[must_use]
+    pub fn invidious_allows_private_network(&self) -> bool {
+        self.invidious_base_url.is_some() && self.invidious_allows_private_network
+    }
+
     /// Fetches and parses one public HTTPS RSS, Atom, or recognized Reddit source for the reader.
     ///
     /// The same DNS and response-size protections used by RSS widgets are applied here.
@@ -207,19 +235,14 @@ impl WidgetIntegrationService {
     /// Returns a safe provider error when URL validation, fetching, or feed parsing fails.
     pub async fn fetch_rss_feed(&self, source: &str) -> Result<RssFeedSnapshot, String> {
         let url = validate_public_https_url(source).await?;
-        if let Some((subreddit, sort)) = reddit_listing_source(&url) {
-            let response = self
-                .client
-                .get(url.clone())
-                .send()
-                .await
-                .map_err(request_error)?;
-            let bytes = response_bytes(response).await?;
-            let payload: Value = serde_json::from_slice(&bytes)
-                .map_err(|_| "Reddit returned an invalid listing".to_owned())?;
-            return parse_reddit_feed_snapshot(&url, &subreddit, sort, &payload);
-        }
-        let response = self.client.get(url).send().await.map_err(request_error)?;
+        // Reddit rejects anonymous JSON listing requests from servers, while its public Atom
+        // endpoints remain available. Normalize both new `.rss` sources and older saved `.json`
+        // sources here so existing subscriptions recover without a data migration.
+        let response = if let Some(request_url) = reddit_rss_source(&url) {
+            self.fetch_reddit_rss(request_url).await?
+        } else {
+            self.client.get(url).send().await.map_err(request_error)?
+        };
         let bytes = response_bytes(response).await?;
         let feed = feed_rs::parser::parse(&bytes[..])
             .map_err(|error| format!("feed could not be parsed: {error}"))?;
@@ -270,6 +293,47 @@ impl WidgetIntegrationService {
         Ok(RssFeedSnapshot { title, items })
     }
 
+    /// Serializes anonymous Reddit feed requests and retries one throttled response after the
+    /// provider-advertised reset window. Reddit currently gives unauthenticated server traffic a
+    /// very small shared allowance, so the background worker and an interactive subscription can
+    /// otherwise consume the same window.
+    async fn fetch_reddit_rss(&self, url: Url) -> Result<reqwest::Response, String> {
+        let _permit = self
+            .reddit_request_gate
+            .acquire()
+            .await
+            .map_err(|_| "Reddit feed request could not be scheduled".to_owned())?;
+        let send = || {
+            self.client
+                .get(url.clone())
+                .header(
+                    header::ACCEPT,
+                    "application/atom+xml, application/xml;q=0.9",
+                )
+                .send()
+        };
+        let mut response = send().await.map_err(request_error)?;
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            sleep(reddit_retry_delay(response.headers())).await;
+            response = send().await.map_err(request_error)?;
+        }
+        match response.status() {
+            status if status.is_success() => Ok(response),
+            StatusCode::TOO_MANY_REQUESTS => {
+                let seconds = reddit_retry_delay(response.headers()).as_secs();
+                Err(format!(
+                    "Reddit rate limit reached; retry in {seconds} seconds"
+                ))
+            }
+            StatusCode::NOT_FOUND => Err("Reddit community or feed was not found".to_owned()),
+            StatusCode::FORBIDDEN => Err("Reddit refused the public feed request".to_owned()),
+            status => Err(format!(
+                "Reddit feed request failed with HTTP {}",
+                status.as_u16()
+            )),
+        }
+    }
+
     /// Fetches a channel through a configured `Invidious` API, then falls back to `YouTube`.
     ///
     /// The fallback uses the channel's `UULF` uploads playlist so Shorts are excluded.
@@ -309,7 +373,7 @@ impl WidgetIntegrationService {
         let endpoint = base_url
             .join(&format!("api/v1/channels/{channel_id}"))
             .map_err(|_| "Invidious channel URL is invalid".to_owned())?;
-        let endpoint = validate_public_https_url(endpoint.as_str()).await?;
+        let endpoint = self.validate_invidious_url(endpoint.as_str()).await?;
         let response = self
             .client
             .get(endpoint)
@@ -318,6 +382,35 @@ impl WidgetIntegrationService {
             .map_err(request_error)?;
         let text = response_text(response).await?;
         parse_invidious_snapshot(base_url, channel_id, &text)
+    }
+
+    /// Validates one URL that belongs to the operator-configured `Invidious` instance.
+    ///
+    /// A self-hosted instance usually resolves to a private address, which the shared SSRF
+    /// policy rejects. `INVIDIOUS_ALLOW_PRIVATE_NETWORK` exempts it, scoped to the configured
+    /// host and port: any other destination still goes through `validate_public_https_url`,
+    /// so a user-supplied URL can never reach the internal network through this path.
+    async fn validate_invidious_url(&self, value: &str) -> Result<Url, String> {
+        let Some(base_url) = self
+            .invidious_base_url
+            .as_ref()
+            .filter(|_| self.invidious_allows_private_network)
+        else {
+            return validate_public_https_url(value).await;
+        };
+        let url = Url::parse(value).map_err(|_| "URL is invalid".to_owned())?;
+        let is_configured_instance = url
+            .host_str()
+            .zip(base_url.host_str())
+            .is_some_and(|(host, instance)| host.eq_ignore_ascii_case(instance))
+            && url.port_or_known_default() == base_url.port_or_known_default();
+        if !is_configured_instance {
+            return validate_public_https_url(value).await;
+        }
+        if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+            return Err("only credential-free HTTPS URLs are allowed".to_owned());
+        }
+        Ok(url)
     }
 
     async fn fetch_youtube_atom_channel(
@@ -368,14 +461,17 @@ impl WidgetIntegrationService {
         response_bytes(response).await
     }
 
-    /// Fetches one bounded public channel portrait for the persistent 24-hour cache.
+    /// Fetches one bounded channel portrait for the persistent 24-hour cache.
+    ///
+    /// An `Invidious` instance may serve portraits from its own host, so this path resolves
+    /// through `validate_invidious_url` and honours the private-network exemption.
     ///
     /// # Errors
     ///
     /// Returns a safe provider error when the URL, media type, or response is invalid.
     pub async fn fetch_public_image(&self, source: &str) -> Result<(String, Vec<u8>), String> {
-        self.fetch_bounded_public_image(source, MAX_RESPONSE_BYTES)
-            .await
+        let url = self.validate_invidious_url(source).await?;
+        self.fetch_validated_image(url, MAX_RESPONSE_BYTES).await
     }
 
     /// Fetches one public HTTPS image with a caller-supplied response limit.
@@ -389,6 +485,14 @@ impl WidgetIntegrationService {
         max_bytes: usize,
     ) -> Result<(String, Vec<u8>), String> {
         let url = validate_public_https_url(source).await?;
+        self.fetch_validated_image(url, max_bytes).await
+    }
+
+    async fn fetch_validated_image(
+        &self,
+        url: Url,
+        max_bytes: usize,
+    ) -> Result<(String, Vec<u8>), String> {
         let response = self.client.get(url).send().await.map_err(request_error)?;
         let content_type = response
             .headers()
@@ -1975,7 +2079,10 @@ fn reddit_listing_source(url: &Url) -> Option<(String, &'static str)> {
     if !root.eq_ignore_ascii_case("r") || !valid_slug(subreddit) {
         return None;
     }
-    let sort = match listing.strip_suffix(".json")? {
+    let listing = listing
+        .strip_suffix(".json")
+        .or_else(|| listing.strip_suffix(".rss"))?;
+    let sort = match listing {
         "hot" => "hot",
         "new" => "new",
         "top" => "top",
@@ -1985,67 +2092,19 @@ fn reddit_listing_source(url: &Url) -> Option<(String, &'static str)> {
     Some(((*subreddit).to_owned(), sort))
 }
 
-fn parse_reddit_feed_snapshot(
-    source: &Url,
-    subreddit: &str,
-    sort: &str,
-    payload: &Value,
-) -> Result<RssFeedSnapshot, String> {
-    let fetched_at = chrono::Utc::now().to_rfc3339();
-    let children = payload["data"]["children"]
-        .as_array()
-        .ok_or_else(|| "Reddit returned an invalid listing".to_owned())?;
-    let items = children
-        .iter()
-        .filter_map(|child| child.get("data"))
-        .filter(|post| {
-            !post["stickied"].as_bool().unwrap_or(false)
-                && !post["pinned"].as_bool().unwrap_or(false)
-        })
-        .take(200)
-        .map(|post| {
-            let title = post["title"].as_str().unwrap_or("Untitled").to_owned();
-            let permalink = post["permalink"].as_str().unwrap_or_default();
-            let comments_url = format!("https://www.reddit.com{permalink}");
-            let url = post["url"]
-                .as_str()
-                .filter(|value| {
-                    Url::parse(value).is_ok_and(|url| {
-                        matches!(url.scheme(), "http" | "https")
-                            && url.username().is_empty()
-                            && url.password().is_none()
-                    })
-                })
-                .unwrap_or(&comments_url)
-                .to_owned();
-            let published_at = post["created_utc"]
-                .as_f64()
-                .and_then(|timestamp| {
-                    let seconds = timestamp.trunc() as i64;
-                    let nanos = (timestamp.fract().abs() * 1_000_000_000.0) as u32;
-                    chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, nanos)
-                })
-                .map_or_else(|| fetched_at.clone(), |date| date.to_rfc3339());
-            let external_id = post["id"]
-                .as_str()
-                .filter(|value| !value.is_empty())
-                .map_or_else(
-                    || format!("{title}:{published_at}"),
-                    |value| value.to_owned(),
-                );
-            RssFeedEntry {
-                external_id,
-                url,
-                title,
-                summary: post["selftext"].as_str().unwrap_or_default().to_owned(),
-                published_at,
-            }
-        })
-        .collect::<Vec<_>>();
-    if items.is_empty() {
-        return Err("Reddit returned no readable posts".to_owned());
-    }
-    let period = source
+fn reddit_rss_source(url: &Url) -> Option<Url> {
+    let (subreddit, sort) = reddit_listing_source(url)?;
+    let mut source =
+        Url::parse(&format!("https://www.reddit.com/r/{subreddit}/{sort}.rss")).ok()?;
+    let limit = url
+        .query_pairs()
+        .find_map(|(key, value)| (key == "limit").then_some(value.into_owned()))
+        .filter(|value| {
+            value
+                .parse::<u16>()
+                .is_ok_and(|limit| (1..=100).contains(&limit))
+        });
+    let period = url
         .query_pairs()
         .find_map(|(key, value)| (key == "t").then_some(value.into_owned()))
         .filter(|value| {
@@ -2054,17 +2113,31 @@ fn parse_reddit_feed_snapshot(
                 "hour" | "day" | "week" | "month" | "year" | "all"
             )
         });
-    let sort_label = match (sort, period.as_deref()) {
-        ("top", Some(period)) => format!("Top · {period}"),
-        ("new", _) => "New".to_owned(),
-        ("rising", _) => "Rising".to_owned(),
-        ("top", _) => "Top".to_owned(),
-        _ => "Hot".to_owned(),
-    };
-    Ok(RssFeedSnapshot {
-        title: format!("r/{subreddit} · {sort_label}"),
-        items,
-    })
+    {
+        let mut query = source.query_pairs_mut();
+        if let Some(limit) = limit {
+            query.append_pair("limit", &limit);
+        }
+        if sort == "top" {
+            if let Some(period) = period {
+                query.append_pair("t", &period);
+            }
+        }
+    }
+    Some(source)
+}
+
+fn reddit_retry_delay(headers: &header::HeaderMap) -> Duration {
+    let seconds = headers
+        .get(header::RETRY_AFTER)
+        .or_else(|| headers.get("x-ratelimit-reset"))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .map_or(DEFAULT_REDDIT_RETRY_SECONDS, |value| value.ceil() as u64)
+        .saturating_add(1)
+        .clamp(1, MAX_REDDIT_RETRY_SECONDS);
+    Duration::from_secs(seconds)
 }
 
 /// Validates one outbound URL against the shared SSRF policy.
@@ -2287,6 +2360,56 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn invidious_private_network_exemption_covers_only_the_configured_instance() {
+        let service =
+            WidgetIntegrationService::new_with_invidious(None, Some("https://inv.invalid/"), true)
+                .expect("service initializes");
+        assert!(service.invidious_allows_private_network());
+
+        let allowed = service
+            .validate_invidious_url("https://inv.invalid/api/v1/channels/UCexample")
+            .await
+            .expect("the configured instance skips the private-network guard");
+        assert_eq!(
+            allowed.as_str(),
+            "https://inv.invalid/api/v1/channels/UCexample"
+        );
+
+        for rejected in [
+            "http://inv.invalid/api/v1/channels/UCexample",
+            "https://operator:token@inv.invalid/api/v1/channels/UCexample",
+        ] {
+            assert_eq!(
+                service.validate_invidious_url(rejected).await.unwrap_err(),
+                "only credential-free HTTPS URLs are allowed"
+            );
+        }
+
+        // A different host, or the same host on another port, falls back to the shared policy.
+        for external in [
+            "https://elsewhere.invalid/api/v1/channels/UCexample",
+            "https://inv.invalid:8443/api/v1/channels/UCexample",
+        ] {
+            assert!(service.validate_invidious_url(external).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn invidious_requests_stay_guarded_without_the_opt_in() {
+        let service =
+            WidgetIntegrationService::new_with_invidious(None, Some("https://inv.invalid/"), false)
+                .expect("service initializes");
+        assert!(service.invidious_enabled());
+        assert!(!service.invidious_allows_private_network());
+        assert!(
+            service
+                .validate_invidious_url("https://inv.invalid/api/v1/channels/UCexample")
+                .await
+                .is_err()
+        );
+    }
+
     #[test]
     fn invidious_instance_requires_a_clean_https_root() {
         let configured = parse_invidious_base_url(Some("https://inv.example/"))
@@ -2367,6 +2490,12 @@ mod tests {
             reddit_listing_source(&source),
             Some(("selfhosted".to_owned(), "top"))
         );
+        assert_eq!(
+            reddit_listing_source(
+                &Url::parse("https://www.reddit.com/r/selfhosted/new.rss?limit=25").unwrap()
+            ),
+            Some(("selfhosted".to_owned(), "new"))
+        );
         assert!(
             reddit_listing_source(&Url::parse("https://www.reddit.com/search.json").unwrap())
                 .is_none()
@@ -2380,39 +2509,29 @@ mod tests {
     }
 
     #[test]
-    fn reddit_listings_become_reader_items_and_skip_pinned_posts() {
-        let source = Url::parse("https://www.reddit.com/r/selfhosted/new.json?limit=25").unwrap();
-        let payload = json!({
-            "data": { "children": [
-                { "data": {
-                    "id": "post-1",
-                    "title": "A useful project",
-                    "url": "https://example.com/project",
-                    "permalink": "/r/selfhosted/comments/post-1/a_useful_project/",
-                    "created_utc": 1_786_622_400.0,
-                    "selftext": "Project notes",
-                    "stickied": false,
-                    "pinned": false
-                } },
-                { "data": {
-                    "id": "rules",
-                    "title": "Community rules",
-                    "permalink": "/r/selfhosted/comments/rules/community_rules/",
-                    "created_utc": 1_786_622_300.0,
-                    "stickied": true
-                } }
-            ] }
-        });
+    fn reddit_json_listings_are_normalized_to_the_public_atom_feed() {
+        let source =
+            Url::parse("https://reddit.com/r/selfhosted/top.json?limit=25&raw_json=1&t=week")
+                .unwrap();
+        let normalized = reddit_rss_source(&source).expect("listing normalizes");
 
-        let snapshot = parse_reddit_feed_snapshot(&source, "selfhosted", "new", &payload)
-            .expect("listing parses");
+        assert_eq!(
+            normalized.as_str(),
+            "https://www.reddit.com/r/selfhosted/top.rss?limit=25&t=week"
+        );
+    }
 
-        assert_eq!(snapshot.title, "r/selfhosted · New");
-        assert_eq!(snapshot.items.len(), 1);
-        assert_eq!(snapshot.items[0].external_id, "post-1");
-        assert_eq!(snapshot.items[0].url, "https://example.com/project");
-        assert_eq!(snapshot.items[0].summary, "Project notes");
-        assert_eq!(snapshot.items[0].published_at, "2026-08-13T12:00:00+00:00");
+    #[test]
+    fn reddit_retry_delay_honors_the_provider_reset_window() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert("x-ratelimit-reset", header::HeaderValue::from_static("14"));
+        assert_eq!(reddit_retry_delay(&headers), Duration::from_secs(15));
+
+        headers.insert(header::RETRY_AFTER, header::HeaderValue::from_static("120"));
+        assert_eq!(
+            reddit_retry_delay(&headers),
+            Duration::from_secs(MAX_REDDIT_RETRY_SECONDS)
+        );
     }
 
     #[test]

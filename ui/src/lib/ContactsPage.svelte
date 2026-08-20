@@ -19,6 +19,7 @@
   import { onMount, tick } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import AnimatedList from "$lib/components/AnimatedList.svelte";
+  import TypedHeading from "$lib/TypedHeading.svelte";
   import {
     createContact,
     createContactDavSource,
@@ -163,9 +164,17 @@
     void loadContacts();
   });
 
+  /** Whether contacts have ever landed. Plain, so the loader never depends on itself. */
+  let hasLoaded = false;
+
+  /**
+   * Loads the ledger. Only the first load blanks it: a reload after a sync or an edit
+   * keeps the current contacts up until the new set lands, and on failure leaves them
+   * in place beside the error.
+   */
   async function loadContacts() {
     const requestedContactId = initialContactId;
-    loading = true;
+    if (!hasLoaded) loading = true;
     pageError = "";
     try {
       contactsData = await fetchContacts();
@@ -186,6 +195,7 @@
       pageError =
         reason instanceof Error ? reason.message : "Unable to load contacts";
     } finally {
+      hasLoaded = true;
       loading = false;
       if (requestedContactId) onInitialContactHandled();
     }
@@ -873,7 +883,7 @@
 <section class="contacts-page product-page" data-od-id="contacts-page">
   <header class="contacts-header page-header" data-od-id="contacts-heading">
     <div>
-      <h2>$ contacts --people</h2>
+      <TypedHeading text="$ contacts --people" odId="contacts-heading" />
       <p>
         A private directory for the people, context, and dates you want to
         remember.
@@ -1822,13 +1832,6 @@
     font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.09em;
-  }
-  .contacts-header h2 {
-    margin-top: 8px;
-    font-family: var(--font-mono);
-    font-size: clamp(26px, 3vw, 42px);
-    font-weight: 540;
-    letter-spacing: -0.04em;
   }
   .contacts-header p {
     margin-top: 7px;
@@ -2903,22 +2906,9 @@
     font-size: 10px !important;
     line-height: 1.6;
   }
-  :global(.spinning) {
-    animation: spin 0.8s linear infinite;
-  }
   :is(input, select, textarea, button:not(.ui-button)):focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    :global(.spinning) {
-      animation: none;
-    }
   }
   @media (max-width: 980px) {
     .contacts-header {

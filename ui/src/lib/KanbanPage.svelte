@@ -11,6 +11,7 @@
   import Archive from "lucide-svelte/icons/archive";
   import Check from "lucide-svelte/icons/check";
   import ChevronLeft from "lucide-svelte/icons/chevron-left";
+  import GripVertical from "lucide-svelte/icons/grip-vertical";
   import Paperclip from "lucide-svelte/icons/paperclip";
   import Pencil from "lucide-svelte/icons/pencil";
   import Plus from "lucide-svelte/icons/plus";
@@ -23,6 +24,7 @@
   import { MediaQuery } from "svelte/reactivity";
   import { createViewSwap } from "$lib/viewSwap.svelte";
   import KanbanCardSortable from "$lib/KanbanCardSortable.svelte";
+  import TypedHeading from "$lib/TypedHeading.svelte";
   import KanbanColumnDropzone from "$lib/KanbanColumnDropzone.svelte";
   import {
     archiveKanbanCard,
@@ -36,6 +38,7 @@
     createKanbanWorkspace,
     deleteKanbanAttachment,
     deleteKanbanChecklist,
+    deleteKanbanColumn,
     deleteKanbanComment,
     deleteKanbanWorkspace,
     fetchKanbanBoard,
@@ -53,12 +56,14 @@
     setKanbanRolePermission,
     updateKanbanBoard,
     updateKanbanCard,
+    updateKanbanColumn,
     updateKanbanChecklistItem,
     updateKanbanMemberRole,
     uploadKanbanAttachment,
     type KanbanBoard,
     type KanbanBoardSummary,
     type KanbanCard,
+    type KanbanColumn,
     type KanbanDirectoryUser,
     type KanbanLabelColor,
     type KanbanOverview,
@@ -101,15 +106,15 @@
       },
     }),
   ];
-  type CardDragHandlers = DragDropEventHandlers;
-  type CardDragStartEvent = Parameters<
-    NonNullable<CardDragHandlers["onDragStart"]>
+  type KanbanDragHandlers = DragDropEventHandlers;
+  type KanbanDragStartEvent = Parameters<
+    NonNullable<KanbanDragHandlers["onDragStart"]>
   >[0];
-  type CardDragOverEvent = Parameters<
-    NonNullable<CardDragHandlers["onDragOver"]>
+  type KanbanDragOverEvent = Parameters<
+    NonNullable<KanbanDragHandlers["onDragOver"]>
   >[0];
-  type CardDragEndEvent = Parameters<
-    NonNullable<CardDragHandlers["onDragEnd"]>
+  type KanbanDragEndEvent = Parameters<
+    NonNullable<KanbanDragHandlers["onDragEnd"]>
   >[0];
   type CardDraft = {
     title: string;
@@ -120,6 +125,7 @@
   };
 
   const kanbanSections: KanbanSection[] = ["boards", "workspaces", "invitations"];
+  const CARD_GROUP_PREFIX = "kanban-cards:";
   const viewSwap = createViewSwap();
   // Rendering lags the `section` prop by one leave animation so the outgoing
   // view can fade before the sidebar's choice takes over.
@@ -144,12 +150,24 @@
   let dueFilter = $state<"all" | "overdue" | "week" | "none">("all");
   let quickCardColumnId = $state("");
   let quickCardTitle = $state("");
-  let addingColumn = $state(false);
+  let closingQuickCardColumnId = $state("");
   let newColumnName = $state("");
+  /** Deleting a column is confirmed by pressing its control a second time. */
+  let pendingColumnDelete = $state("");
+  /**
+   * The records the reader just created. They carry a one-shot entrance so a new card or
+   * column is visibly the thing that arrived, rather than appearing between a refetch.
+   */
+  let enteringCardId = $state("");
+  let enteringColumnId = $state("");
+  let enteringTimer: ReturnType<typeof setTimeout> | undefined;
+  let quickCardComposerTimer: ReturnType<typeof setTimeout> | undefined;
 
   let workspaceDialog = $state<HTMLDialogElement>();
   let boardDialog = $state<HTMLDialogElement>();
   let archiveBoardDialog = $state<HTMLDialogElement>();
+  let columnDialog = $state<HTMLDialogElement>();
+  let columnNameInput = $state<HTMLInputElement>();
   let cardDialog = $state<HTMLDialogElement>();
   let workspaceName = $state("");
   let workspaceDescription = $state("");
@@ -171,6 +189,7 @@
   let memberQuery = $state("");
   let inviteRole = $state<KanbanRole>("member");
   let cardDragSnapshot: Record<string, KanbanCard[]> | null = null;
+  let columnDragSnapshot: KanbanColumn[] | null = null;
   let lastSavedCardSignature = "";
   let cardSavePromise: Promise<void> | null = null;
 
@@ -180,6 +199,8 @@
   let canCreateBoard = $derived(activeWorkspace?.permissions.includes("board:create") ?? false);
   let canEditBoard = $derived(board?.permissions.includes("board:edit") ?? false);
   let canCreateColumn = $derived(board?.permissions.includes("list:create") ?? false);
+  let canEditColumn = $derived(board?.permissions.includes("list:edit") ?? false);
+  let canDeleteColumn = $derived(board?.permissions.includes("list:delete") ?? false);
   let canEditCard = $derived(board?.permissions.includes("card:edit") ?? false);
   let cardFiltersActive = $derived(
     Boolean(cardSearch.trim() || assigneeFilter || labelFilter || dueFilter !== "all"),
@@ -364,8 +385,8 @@
   }
 
   async function openBoard(id: string) {
-    addingColumn = false;
-    newColumnName = "";
+    closeAddColumn();
+    pendingColumnDelete = "";
     let opened: KanbanBoard | null = null;
     const pending = run(async () => {
       opened = await fetchKanbanBoard(id);
@@ -396,13 +417,62 @@
     if (board) board = await fetchKanbanBoard(board.id);
   }
 
+  onDestroy(() => {
+    clearTimeout(enteringTimer);
+    clearTimeout(quickCardComposerTimer);
+  });
+
+  function openAddColumn() {
+    newColumnName = "";
+    columnDialog?.showModal();
+    columnNameInput?.focus();
+  }
+
+  function closeAddColumn() {
+    columnDialog?.close();
+  }
+
+  function resetAddColumn() {
+    newColumnName = "";
+  }
+
+  /**
+   * Marks a freshly created record so its entrance plays once. Clearing the flag keeps
+   * the animation off the same row when the board is refetched later.
+   */
+  function markEntering(card: string, column: string) {
+    clearTimeout(enteringTimer);
+    enteringCardId = card;
+    enteringColumnId = column;
+    enteringTimer = setTimeout(() => {
+      enteringCardId = "";
+      enteringColumnId = "";
+    }, 600);
+  }
+
   async function submitColumn(event: SubmitEvent) {
     event.preventDefault();
     if (!board || !newColumnName.trim()) return;
     await run(async () => {
-      await createKanbanColumn(board!.id, newColumnName);
-      newColumnName = "";
-      addingColumn = false;
+      const created = await createKanbanColumn(board!.id, newColumnName);
+      closeAddColumn();
+      await refreshBoard();
+      markEntering("", created.id);
+    });
+  }
+
+  /**
+   * Removes a column. The server refuses while it still holds active cards and says so,
+   * which is the message the board surfaces rather than a guess made here.
+   */
+  async function removeColumn(column: KanbanColumn) {
+    if (pendingColumnDelete !== column.id) {
+      pendingColumnDelete = column.id;
+      return;
+    }
+    pendingColumnDelete = "";
+    await run(async () => {
+      await deleteKanbanColumn(column.id);
       await refreshBoard();
     });
   }
@@ -446,11 +516,36 @@
   async function createQuickCard(columnId: string) {
     if (!quickCardTitle.trim()) return;
     await run(async () => {
-      await createKanbanCard(columnId, { title: quickCardTitle });
-      quickCardTitle = "";
-      quickCardColumnId = "";
+      const created = await createKanbanCard(columnId, {
+        title: quickCardTitle,
+      });
+      closeQuickCard();
       await refreshBoard();
+      markEntering(created.id, "");
     });
+  }
+
+  function openQuickCard(columnId: string) {
+    clearTimeout(quickCardComposerTimer);
+    closingQuickCardColumnId = "";
+    quickCardColumnId = columnId;
+  }
+
+  function closeQuickCard() {
+    clearTimeout(quickCardComposerTimer);
+    closingQuickCardColumnId = "";
+    quickCardColumnId = "";
+    quickCardTitle = "";
+  }
+
+  function dismissQuickCard() {
+    if (!quickCardColumnId || closingQuickCardColumnId) return;
+    if (reducedMotion.current) {
+      closeQuickCard();
+      return;
+    }
+    closingQuickCardColumnId = quickCardColumnId;
+    quickCardComposerTimer = setTimeout(closeQuickCard, 140);
   }
 
   async function openCard(card: KanbanCard) {
@@ -558,7 +653,10 @@
   function cardGroups() {
     if (!board) return {};
     return Object.fromEntries(
-      board.columns.map((column) => [column.id, column.cards.slice()]),
+      board.columns.map((column) => [
+        `${CARD_GROUP_PREFIX}${column.id}`,
+        column.cards.slice(),
+      ]),
     );
   }
 
@@ -567,37 +665,89 @@
     board = {
       ...board,
       columns: board.columns.map((column) =>
-        groups[column.id] ? { ...column, cards: groups[column.id] } : column,
+        groups[`${CARD_GROUP_PREFIX}${column.id}`]
+          ? {
+              ...column,
+              cards: groups[`${CARD_GROUP_PREFIX}${column.id}`],
+            }
+          : column,
       ),
     };
   }
 
   function cardLocation(groups: Record<string, KanbanCard[]>, cardId: string) {
-    for (const [columnId, cards] of Object.entries(groups)) {
+    for (const [groupId, cards] of Object.entries(groups)) {
       const position = cards.findIndex((card) => card.id === cardId);
-      if (position >= 0) return { columnId, position };
+      if (position >= 0) {
+        return {
+          columnId: groupId.slice(CARD_GROUP_PREFIX.length),
+          position,
+        };
+      }
     }
     return null;
   }
 
-  function startCardDrag(event: CardDragStartEvent) {
-    if (event.operation.source?.type !== "kanban-card" || !board) return;
-    cardDragSnapshot = cardGroups();
+  function applyColumns(columns: KanbanColumn[]) {
+    if (!board) return;
+    board = {
+      ...board,
+      columns: columns.map((column, position) => ({ ...column, position })),
+    };
   }
 
-  function previewCardMove(event: CardDragOverEvent) {
-    if (
-      !board ||
-      cardFiltersActive ||
-      !canEditCard ||
-      event.operation.source?.type !== "kanban-card"
-    ) return;
-    applyCardGroups(move(cardGroups(), event));
+  function startKanbanDrag(event: KanbanDragStartEvent) {
+    const sourceType = event.operation.source?.type;
+    if (!board) return;
+    if (sourceType === "kanban-card") {
+      cardDragSnapshot = cardGroups();
+    } else if (sourceType === "kanban-column" && canEditColumn) {
+      columnDragSnapshot = board.columns.slice();
+    }
   }
 
-  async function finishCardDrag(event: CardDragEndEvent) {
+  function previewKanbanMove(event: KanbanDragOverEvent) {
+    if (!board) return;
+    const sourceType = event.operation.source?.type;
+    if (sourceType === "kanban-card") {
+      if (cardFiltersActive || !canEditCard) return;
+      applyCardGroups(move(cardGroups(), event));
+    } else if (sourceType === "kanban-column" && canEditColumn) {
+      applyColumns(move(board.columns, event));
+    }
+  }
+
+  async function finishKanbanDrag(event: KanbanDragEndEvent) {
     const source = event.operation.source;
-    if (!board || source?.type !== "kanban-card") return;
+    if (!board || !source) return;
+
+    if (source.type === "kanban-column") {
+      if (event.canceled || !event.operation.target) {
+        if (columnDragSnapshot) applyColumns(columnDragSnapshot);
+        columnDragSnapshot = null;
+        return;
+      }
+
+      const nextColumns = move(board.columns, event);
+      applyColumns(nextColumns);
+      const columnId = String(source.id);
+      const nextPosition = nextColumns.findIndex((column) => column.id === columnId);
+      const previousPosition =
+        columnDragSnapshot?.findIndex((column) => column.id === columnId) ?? -1;
+      columnDragSnapshot = null;
+      if (nextPosition < 0 || nextPosition === previousPosition) return;
+
+      await run(async () => {
+        try {
+          await updateKanbanColumn(columnId, { position: nextPosition });
+        } finally {
+          await refreshBoard();
+        }
+      });
+      return;
+    }
+
+    if (source.type !== "kanban-card") return;
 
     if (event.canceled || !event.operation.target) {
       if (cardDragSnapshot) applyCardGroups(cardDragSnapshot);
@@ -795,14 +945,16 @@
 </script>
 
 <section class="kanban-page product-page" data-od-id="kanban-page">
-  <header class="kanban-page-header" data-od-id="kanban-header">
-    {#key displayedSection}
-      <div class="view-swap-copy">
-        <span class="kanban-kicker">PANDAN / KANBAN</span>
-        <h2>{displayedSection === "boards" ? "Boards" : displayedSection === "workspaces" ? "Workspaces" : "Invitations"}</h2>
-        <p>{displayedSection === "boards" ? "Move work from intent to finished." : displayedSection === "workspaces" ? "Members, roles, and workspace rules." : "Join shared workspaces from people already on Pandan."}</p>
-      </div>
-    {/key}
+  <header class="kanban-page-header page-header" data-od-id="kanban-header">
+    <div>
+      <TypedHeading
+        text={`$ kanban --${displayedSection}`}
+        odId="kanban-heading"
+      />
+      {#key displayedSection}
+        <p class="view-swap-copy">{displayedSection === "boards" ? "Move work from intent to finished." : displayedSection === "workspaces" ? "Members, roles, and workspace rules." : "Join shared workspaces from people already on Pandan."}</p>
+      {/key}
+    </div>
     {#if displayedSection === "workspaces"}
       <button class="ui-button ui-button--primary" type="button" onclick={() => workspaceDialog?.showModal()} data-od-id="create-workspace"><Plus size={16} />New workspace</button>
     {:else if displayedSection === "boards" && canCreateBoard && !board}
@@ -850,11 +1002,9 @@
                   <button
                     class="ui-button ui-button--secondary"
                     type="button"
-                    aria-expanded={addingColumn}
-                    onclick={() => {
-                      addingColumn = !addingColumn;
-                      if (!addingColumn) newColumnName = "";
-                    }}
+                    aria-haspopup="dialog"
+                    aria-controls="kanban-add-column-dialog"
+                    onclick={openAddColumn}
                     data-od-id="show-add-kanban-column"
                   ><Plus size={15} />Add column</button>
                 {/if}
@@ -869,14 +1019,6 @@
                 <p class="kanban-board-description-empty">No board description</p>
               {/if}
             </div>
-            {#if canCreateColumn && addingColumn}
-              <form class="kanban-add-column-form" onsubmit={submitColumn} data-od-id="add-kanban-column">
-                <label for="kanban-column-name">Column name</label>
-                <input id="kanban-column-name" required maxlength="80" placeholder="e.g. Review" bind:value={newColumnName} />
-                <button class="ui-button ui-button--primary" type="submit" disabled={busy || !newColumnName.trim()}>Add</button>
-                <button class="ui-button ui-button--ghost" type="button" onclick={() => { addingColumn = false; newColumnName = ""; }}>Cancel</button>
-              </form>
-            {/if}
             <div class="kanban-filters">
               <label><Search size={15} /><input aria-label="Search cards" placeholder="Search cards" bind:value={cardSearch} /></label>
               <select aria-label="Filter by assignee" bind:value={assigneeFilter}><option value="">All assignees</option>{#each board.members as member (member.user_id)}<option value={member.user_id}>{member.display_name}</option>{/each}</select>
@@ -884,12 +1026,12 @@
               <select aria-label="Filter by due date" bind:value={dueFilter}><option value="all">Any due date</option><option value="overdue">Overdue</option><option value="week">Due this week</option><option value="none">No due date</option></select>
               {#if canEditCard && cardFiltersActive}<span class="kanban-dnd-status">Clear filters to reorder cards.</span>{/if}
             </div>
-            <DragDropProvider sensors={kanbanSensors} onDragStart={startCardDrag} onDragOver={previewCardMove} onDragEnd={(event) => void finishCardDrag(event)}>
+            <DragDropProvider sensors={kanbanSensors} onDragStart={startKanbanDrag} onDragOver={previewKanbanMove} onDragEnd={(event) => void finishKanbanDrag(event)}>
               <div class="kanban-canvas" data-od-id="kanban-board-columns">
-                {#each board.columns as column (column.id)}
-                  <KanbanColumnDropzone id={column.id} label={`${column.name} column`} odId={`kanban-column-${column.id}`} disabled={!canEditCard || cardFiltersActive || busy}>
-                      {#snippet header()}
-                        <header><div><h4>{column.name}</h4><span>{visibleCards(column.cards).length}</span></div><button class="kanban-icon-button" type="button" aria-label={`Add card to ${column.name}`} onclick={() => (quickCardColumnId = column.id)}><Plus size={16} /></button></header>
+                {#each board.columns as column, columnIndex (column.id)}
+                  <KanbanColumnDropzone boardId={board.id} id={column.id} index={columnIndex} label={`${column.name} column`} odId={`kanban-column-${column.id}`} entering={enteringColumnId === column.id} cardDropDisabled={!canEditCard || cardFiltersActive || busy} columnDragDisabled={!canEditColumn || busy} reducedMotion={reducedMotion.current}>
+                      {#snippet header(columnHandle)}
+                        <header><button class="kanban-column-drag-handle" type="button" disabled={!canEditColumn || busy} aria-label={`Drag ${column.name} column to reorder`} {@attach columnHandle}><GripVertical size={15} aria-hidden="true" /><span class="kanban-column-title">{column.name}</span><span class="kanban-column-count">{visibleCards(column.cards).length}</span></button><div class="kanban-column-actions"><button class="kanban-icon-button" type="button" aria-label={`Add card to ${column.name}`} onclick={() => openQuickCard(column.id)}><Plus size={16} /></button>{#if canDeleteColumn}<button class="kanban-icon-button kanban-column-delete" class:confirm={pendingColumnDelete === column.id} type="button" disabled={busy} aria-label={pendingColumnDelete === column.id ? `Confirm deleting the ${column.name} column` : `Delete the ${column.name} column`} onclick={() => void removeColumn(column)}><Trash2 size={15} /></button>{/if}</div></header>
                       {/snippet}
                       {#snippet children()}
                         {#each visibleCards(column.cards) as card, index (card.id)}
@@ -899,15 +1041,17 @@
                             disabled={!canEditCard || cardFiltersActive || busy}
                             {index}
                             reducedMotion={reducedMotion.current}
+                            entering={enteringCardId === card.id}
+                            avatarUrl={kanbanMemberAvatarUrl}
                             onopen={openCard}
                           />
                         {/each}
                       {/snippet}
                       {#snippet footer()}
                         {#if quickCardColumnId === column.id}
-                          <form class="kanban-quick-card" onsubmit={(event) => { event.preventDefault(); void createQuickCard(column.id); }}><input aria-label="Card title" placeholder="Card title" bind:value={quickCardTitle} /><div><button class="ui-button ui-button--primary" type="submit" disabled={busy}>Add card</button><button class="ui-button ui-button--ghost" type="button" onclick={() => (quickCardColumnId = "")}>Cancel</button></div></form>
+                          <form class={["kanban-quick-card", closingQuickCardColumnId === column.id && "is-leaving"]} onsubmit={(event) => { event.preventDefault(); void createQuickCard(column.id); }}><input aria-label="Card title" placeholder="Card title" bind:value={quickCardTitle} /><div><button class="ui-button ui-button--ghost" type="button" disabled={Boolean(closingQuickCardColumnId)} onclick={dismissQuickCard} data-od-id={`cancel-add-card-${column.id}`}>Cancel</button><button class="ui-button ui-button--primary" type="submit" disabled={busy || Boolean(closingQuickCardColumnId)}>Add card</button></div></form>
                         {:else if board?.permissions.includes("card:create")}
-                          <button class="kanban-add-card" type="button" onclick={() => (quickCardColumnId = column.id)}><Plus size={15} />Add card</button>
+                          <button class="kanban-add-card" type="button" onclick={() => openQuickCard(column.id)}><Plus size={15} />Add card</button>
                         {/if}
                       {/snippet}
                     </KanbanColumnDropzone>
@@ -951,6 +1095,31 @@
     {/if}
   </div>
 </section>
+
+<dialog
+  class="ui-dialog kanban-dialog"
+  id="kanban-add-column-dialog"
+  bind:this={columnDialog}
+  aria-labelledby="kanban-add-column-title"
+  aria-describedby="kanban-add-column-description"
+  onclose={resetAddColumn}
+  data-od-id="add-kanban-column"
+>
+  <form method="dialog" class="dialog-close-row"><button class="kanban-icon-button" aria-label="Close add column"><X size={18} /></button></form>
+  <form class="kanban-dialog-form" onsubmit={submitColumn}>
+    <span class="kanban-kicker">BOARD STRUCTURE</span>
+    <h3 id="kanban-add-column-title">Create a new column</h3>
+    <p id="kanban-add-column-description">Add the next stage to the end of this board.</p>
+    <label for="kanban-column-name">
+      Column name
+      <input id="kanban-column-name" required maxlength="80" placeholder="e.g. Review" bind:this={columnNameInput} bind:value={newColumnName} />
+    </label>
+    <div class="kanban-add-column-actions">
+      <button class="ui-button ui-button--ghost" type="button" onclick={closeAddColumn} data-od-id="cancel-add-kanban-column">Cancel</button>
+      <button class="ui-button ui-button--primary" type="submit" disabled={busy || !newColumnName.trim()} data-od-id="create-kanban-column">Create column</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog class="ui-dialog kanban-dialog" bind:this={workspaceDialog} onclose={() => (error = "")} data-od-id="workspace-dialog"><form method="dialog" class="dialog-close-row"><button class="kanban-icon-button" aria-label="Close"><X size={18} /></button></form><form class="kanban-dialog-form" onsubmit={submitWorkspace}><span class="kanban-kicker">NEW WORKSPACE</span><h3>Create a shared workspace</h3><label>Name<input required maxlength="80" bind:value={workspaceName} /></label><label>Description<textarea rows="3" maxlength="1000" bind:value={workspaceDescription}></textarea></label><button class="ui-button ui-button--primary" type="submit" disabled={busy}>Create workspace</button></form></dialog>
 

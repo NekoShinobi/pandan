@@ -7,6 +7,7 @@
   import Trash2 from "lucide-svelte/icons/trash-2";
   import X from "lucide-svelte/icons/x";
   import { onMount, tick } from "svelte";
+  import TypedHeading from "$lib/TypedHeading.svelte";
   import {
     createPaymentSubscription,
     deletePaymentSubscription,
@@ -284,7 +285,10 @@
 <section class="subscriptions-page product-page" data-od-id="subscriptions-page">
   <header class="subscriptions-header page-header">
     <div>
-      <h2>$ subscriptions --list</h2>
+      <TypedHeading
+        text="$ subscriptions --list"
+        odId="subscriptions-heading"
+      />
       <p>Keep a private record of services that bill on a regular cadence.</p>
     </div>
     <button class="ui-button ui-button--primary subscriptions-primary" type="button" onclick={openCreate}>
@@ -587,13 +591,6 @@
     font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.09em;
-  }
-  .subscriptions-header h2 {
-    margin: 8px 0 0;
-    font-family: var(--font-mono);
-    font-size: clamp(26px, 3vw, 42px);
-    font-weight: 540;
-    letter-spacing: -0.04em;
   }
   .subscriptions-header p {
     margin: 7px 0 0;

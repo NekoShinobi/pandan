@@ -8,6 +8,14 @@ export default defineConfig(() => {
 
   return {
     plugins: [tailwindcss(), sveltekit()],
+    // `ogl` is reached only through `await import("ogl")` in the WebGL
+    // backdrops, so Vite's cold-start scanner never sees it. Without this it is
+    // discovered once the page is already running, which re-optimizes the
+    // dependency graph, invalidates every module URL the browser has loaded,
+    // and forces a full reload mid-boot.
+    optimizeDeps: {
+      include: ["ogl"],
+    },
     server: {
       watch: {
         usePolling: process.env.VITE_USE_POLLING === "true",

@@ -13,6 +13,7 @@
   import Trash2 from "lucide-svelte/icons/trash-2";
   import X from "lucide-svelte/icons/x";
   import { onMount, tick } from "svelte";
+  import TypedHeading from "$lib/TypedHeading.svelte";
   import {
     createYoutubeGroup,
     createYoutubeSubscription,
@@ -340,7 +341,10 @@
 <section class="youtube-page product-page" data-od-id="youtube-page">
   <header class="youtube-header page-header" data-od-id="youtube-heading">
     <div>
-      <h2>$ youtube --{activeView}</h2>
+      <TypedHeading
+        text={`$ youtube --${activeView}`}
+        odId="youtube-heading"
+      />
       <p>
         {activeView === "latest"
           ? `${reader.subscriptions.length} channels · ${reader.videos.length} stored uploads · refreshes every 2 hours`
@@ -799,14 +803,6 @@
     font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.09em;
-  }
-  .youtube-header h2 {
-    margin-top: 8px;
-    font-family: var(--font-mono);
-    font-size: clamp(26px, 3vw, 42px);
-    font-weight: 540;
-    letter-spacing: -0.04em;
-    line-height: 1.05;
   }
   .youtube-header p {
     margin-top: 8px;
@@ -1343,14 +1339,6 @@
     max-width: 44ch;
     font-size: 12px;
   }
-  :global(.spinning) {
-    animation: youtube-spin 0.8s linear infinite;
-  }
-  @keyframes youtube-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
   .youtube-dialog {
     width: min(620px, calc(100vw - 32px));
     max-height: min(780px, calc(100vh - 32px));
@@ -1573,9 +1561,6 @@
     }
     .youtube-thumbnail:hover img {
       transform: none;
-    }
-    :global(.spinning) {
-      animation: none;
     }
   }
 </style>

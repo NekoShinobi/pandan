@@ -861,6 +861,37 @@ export interface DashboardResponse {
   tasks: Task[];
   feeds: FeedItem[];
   widgets: DashboardWidget[];
+  embedded_pages: EmbeddedPagesResponse;
+}
+
+export type EmbeddedPageScope = "global" | "user";
+
+export interface EmbeddedPage {
+  id: string;
+  scope: EmbeddedPageScope;
+  owner_user_id: string | null;
+  created_by_user_id: string | null;
+  title: string;
+  description: string;
+  url: string;
+  allow_same_origin: boolean;
+  iframe_height: number;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EmbeddedPagesResponse {
+  global: EmbeddedPage[];
+  personal: EmbeddedPage[];
+}
+
+export interface EmbeddedPageInput {
+  title: string;
+  description: string;
+  url: string;
+  allow_same_origin: boolean;
+  iframe_height: number;
 }
 
 interface ApiErrorResponse {
@@ -926,6 +957,98 @@ export function fetchDashboard(
   fetcher: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<DashboardResponse> {
   return requestJson<DashboardResponse>("/api/dashboard", undefined, fetcher);
+}
+
+export function fetchEmbeddedPages(): Promise<EmbeddedPagesResponse> {
+  return requestJson<EmbeddedPagesResponse>("/api/embedded-pages");
+}
+
+export function createPersonalEmbeddedPage(
+  input: EmbeddedPageInput,
+): Promise<EmbeddedPage> {
+  return requestJson<EmbeddedPage>("/api/embedded-pages", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updatePersonalEmbeddedPage(
+  pageId: string,
+  input: EmbeddedPageInput,
+): Promise<EmbeddedPage> {
+  return requestJson<EmbeddedPage>(
+    `/api/embedded-pages/${encodeURIComponent(pageId)}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export function deletePersonalEmbeddedPage(pageId: string): Promise<void> {
+  return requestEmpty(
+    `/api/embedded-pages/${encodeURIComponent(pageId)}`,
+    { method: "DELETE", credentials: "same-origin" },
+  );
+}
+
+export function reorderPersonalEmbeddedPages(
+  pageIds: string[],
+): Promise<EmbeddedPage[]> {
+  return requestJson<EmbeddedPage[]>("/api/embedded-pages/order", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ page_ids: pageIds }),
+  });
+}
+
+export function createGlobalEmbeddedPage(
+  input: EmbeddedPageInput,
+): Promise<EmbeddedPage> {
+  return requestJson<EmbeddedPage>("/api/admin/embedded-pages", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateGlobalEmbeddedPage(
+  pageId: string,
+  input: EmbeddedPageInput,
+): Promise<EmbeddedPage> {
+  return requestJson<EmbeddedPage>(
+    `/api/admin/embedded-pages/${encodeURIComponent(pageId)}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export function deleteGlobalEmbeddedPage(pageId: string): Promise<void> {
+  return requestEmpty(
+    `/api/admin/embedded-pages/${encodeURIComponent(pageId)}`,
+    { method: "DELETE", credentials: "same-origin" },
+  );
+}
+
+export function reorderGlobalEmbeddedPages(
+  pageIds: string[],
+): Promise<EmbeddedPage[]> {
+  return requestJson<EmbeddedPage[]>("/api/admin/embedded-pages/order", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ page_ids: pageIds }),
+  });
 }
 
 export function createDashboardWidget(input: {
@@ -2670,5 +2793,133 @@ export function updatePodcastSettings(input: {
     headers: { "content-type": "application/json" },
     credentials: "same-origin",
     body: JSON.stringify(input),
+  });
+}
+
+// --- Walls ------------------------------------------------------------------
+
+export type WallStatus = "pending" | "approved" | "rejected";
+
+export type WallScope = "collection" | "mine" | "review";
+
+export type WallSlot = "welcome" | "login";
+
+export interface Wall {
+  id: string;
+  user_id: string | null;
+  submitted_by_name: string;
+  title: string;
+  description: string;
+  status: WallStatus;
+  decision_note: string;
+  decided_by_name: string | null;
+  decided_at: string | null;
+  mime_type: string;
+  byte_size: number;
+  width: number;
+  height: number;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WallSelections {
+  welcome: string | null;
+  login: string | null;
+}
+
+export function wallThumbnailUrl(wallId: string): string {
+  return `/api/walls/${encodeURIComponent(wallId)}/thumbnail`;
+}
+
+export function wallImageUrl(wallId: string): string {
+  return `/api/walls/${encodeURIComponent(wallId)}/image`;
+}
+
+export function fetchWalls(
+  options: {
+    scope?: WallScope;
+    status?: WallStatus | "";
+    q?: string;
+    tag?: string;
+  } = {},
+): Promise<Wall[]> {
+  const params = new URLSearchParams();
+  if (options.scope) params.set("scope", options.scope);
+  if (options.status) params.set("status", options.status);
+  if (options.q) params.set("q", options.q);
+  if (options.tag) params.set("tag", options.tag);
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return requestJson<Wall[]>(`/api/walls${suffix}`);
+}
+
+export function fetchWall(wallId: string): Promise<Wall> {
+  return requestJson<Wall>(`/api/walls/${encodeURIComponent(wallId)}`);
+}
+
+export function fetchWallSelections(): Promise<WallSelections> {
+  return requestJson<WallSelections>("/api/walls/selections");
+}
+
+export function submitWall(
+  file: File,
+  details: { title: string; description: string; tags: string[] },
+): Promise<Wall> {
+  const params = new URLSearchParams({
+    title: details.title,
+    description: details.description,
+    tags: details.tags.join(","),
+  });
+  return requestJson<Wall>(`/api/walls?${params.toString()}`, {
+    method: "POST",
+    headers: { "content-type": file.type },
+    credentials: "same-origin",
+    body: file,
+  });
+}
+
+export function updateWall(
+  wallId: string,
+  details: { title: string; description: string; tags: string[] },
+): Promise<Wall> {
+  return requestJson<Wall>(`/api/walls/${encodeURIComponent(wallId)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(details),
+  });
+}
+
+export function deleteWall(wallId: string): Promise<void> {
+  return requestEmpty(`/api/walls/${encodeURIComponent(wallId)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+
+export function approveWall(wallId: string, note: string): Promise<Wall> {
+  return requestJson<Wall>(`/api/walls/${encodeURIComponent(wallId)}/approve`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ note }),
+  });
+}
+
+export function rejectWall(wallId: string, note: string): Promise<Wall> {
+  return requestJson<Wall>(`/api/walls/${encodeURIComponent(wallId)}/reject`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ note }),
+  });
+}
+
+export function applyWall(wallId: string, slot: WallSlot): Promise<void> {
+  return requestEmpty(`/api/walls/${encodeURIComponent(wallId)}/apply`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ slot }),
   });
 }

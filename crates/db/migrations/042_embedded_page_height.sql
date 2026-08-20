@@ -1,0 +1,3 @@
+ALTER TABLE embedded_pages
+ADD COLUMN iframe_height INTEGER NOT NULL DEFAULT 720
+CHECK (iframe_height BETWEEN 320 AND 2400);

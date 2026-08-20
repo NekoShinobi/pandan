@@ -14,7 +14,7 @@
   import SmilePlus from "lucide-svelte/icons/smile-plus";
   import Trash2 from "lucide-svelte/icons/trash-2";
   import X from "lucide-svelte/icons/x";
-  import { onDestroy, onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
   import { SvelteMap } from "svelte/reactivity";
   import { createViewSwap } from "$lib/viewSwap.svelte";
   import {
@@ -43,11 +43,18 @@
     viewerName,
     viewerRole,
     defaultVisibility,
+    homeToken = 0,
   }: {
     viewerId: string;
     viewerName: string;
     viewerRole: "administrator" | "member";
     defaultVisibility: LineVisibility;
+    /**
+     * Bumped by the shell whenever Lines is chosen in the sidebar. The page owns three
+     * screens, so choosing Lines while a thread or an author is open has to come back
+     * to the timeline rather than leave the click looking inert.
+     */
+    homeToken?: number;
   } = $props();
 
   const reactionChoices = ["👍", "❤️", "😂", "🎉", "😕", "👀"] as const;
@@ -84,6 +91,10 @@
   let appliedSearch = $state("");
   let activeTag = $state("");
   let loading = $state(true);
+  /** A reload with posts already on screen, which must not blank the timeline. */
+  let refreshing = $state(false);
+  /** Whether posts have ever landed. Plain, so the loader never depends on itself. */
+  let hasLoaded = false;
   let error = $state("");
   let draftContent = $state("");
   let draftVisibility = $state<LineVisibility>("private");
@@ -301,6 +312,13 @@
     });
   }
 
+  $effect(() => {
+    // Only the token is a dependency: `returnToFeed` reads `view`, and tracking that
+    // would send the reader back to the timeline on every screen change.
+    void homeToken;
+    untrack(() => returnToFeed());
+  });
+
   function returnToFeed() {
     // Filter changes call this from the timeline itself, where there is no
     // screen change to cover.
@@ -324,8 +342,12 @@
     if (view.kind !== "feed") view = { ...view };
   }
 
+  /**
+   * Loads the timeline. Only the first load blanks the feed: a later one keeps the
+   * current posts up until the new set lands, and leaves them alone when it fails.
+   */
   async function loadPosts() {
-    loading = true;
+    if (hasLoaded) refreshing = true;
     error = "";
     try {
       posts = await fetchLinePosts({
@@ -339,7 +361,9 @@
           ? loadError.message
           : "Unable to load Lines.";
     } finally {
+      hasLoaded = true;
       loading = false;
+      refreshing = false;
     }
   }
 
@@ -1026,10 +1050,15 @@
         class="lines-refresh"
         type="button"
         aria-label="Refresh Lines"
-        disabled={loading}
+        disabled={loading || refreshing}
         onclick={loadPosts}
       >
-        <RefreshCw size={16} strokeWidth={1.8} aria-hidden="true" />
+        <RefreshCw
+          class={refreshing ? "spinning" : undefined}
+          size={16}
+          strokeWidth={1.8}
+          aria-hidden="true"
+        />
       </button>
     </nav>
 
@@ -1037,7 +1066,11 @@
       <p class="lines-error" role="alert">{error}</p>
     {/if}
 
-    <section class="lines-feed" aria-busy={loading} data-od-id="lines-feed">
+    <section
+      class="lines-feed"
+      aria-busy={loading || refreshing}
+      data-od-id="lines-feed"
+    >
       {#if loading}
         <div class="lines-status">
           <span></span>

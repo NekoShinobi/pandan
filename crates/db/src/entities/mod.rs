@@ -3,8 +3,10 @@ use sqlx::FromRow;
 
 mod kanban;
 mod podcasts;
+mod walls;
 pub use kanban::*;
 pub use podcasts::*;
+pub use walls::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
 pub struct AppMetadata {
@@ -235,6 +237,22 @@ pub struct SessionAccount {
     pub lines_default_visibility: String,
     pub podcast_playback_rate: f64,
     pub settings_updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct EmbeddedPage {
+    pub id: String,
+    pub scope: String,
+    pub owner_user_id: Option<String>,
+    pub created_by_user_id: Option<String>,
+    pub title: String,
+    pub description: String,
+    pub url: String,
+    pub allow_same_origin: bool,
+    pub iframe_height: i64,
+    pub position: i64,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, FromRow, PartialEq, Eq)]

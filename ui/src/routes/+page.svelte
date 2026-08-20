@@ -19,6 +19,7 @@
   import ImageIcon from "lucide-svelte/icons/image";
   import Menu from "lucide-svelte/icons/menu";
   import MessageSquareText from "lucide-svelte/icons/message-square-text";
+  import PanelTop from "lucide-svelte/icons/panel-top";
   import Paperclip from "lucide-svelte/icons/paperclip";
   import Pause from "lucide-svelte/icons/pause";
   import Pencil from "lucide-svelte/icons/pencil";
@@ -41,6 +42,7 @@
   import Volume1 from "lucide-svelte/icons/volume-1";
   import Volume2 from "lucide-svelte/icons/volume-2";
   import VolumeOff from "lucide-svelte/icons/volume-off";
+  import Wallpaper from "lucide-svelte/icons/wallpaper";
   import X from "lucide-svelte/icons/x";
   import Youtube from "lucide-svelte/icons/circle-play";
   import { onDestroy, onMount, tick } from "svelte";
@@ -52,6 +54,8 @@
   import CodingPage from "$lib/CodingPage.svelte";
   import ContactsPage from "$lib/ContactsPage.svelte";
   import DashboardWidgetCard from "$lib/DashboardWidgetCard.svelte";
+  import EmbeddedPage from "$lib/EmbeddedPage.svelte";
+  import EmbeddedPagesSettings from "$lib/EmbeddedPagesSettings.svelte";
   import JournalPage from "$lib/JournalPage.svelte";
   import KanbanPage from "$lib/KanbanPage.svelte";
   import LinesPage from "$lib/LinesPage.svelte";
@@ -59,8 +63,11 @@
   import RssReaderPage from "$lib/RssReaderPage.svelte";
   import SidebarUtilities from "$lib/SidebarUtilities.svelte";
   import SubscriptionsPage from "$lib/SubscriptionsPage.svelte";
+  import TypedHeading from "$lib/TypedHeading.svelte";
+  import WallsPage from "$lib/WallsPage.svelte";
   import YoutubePage from "$lib/YoutubePage.svelte";
   import {
+    MAX_PLAYBACK_VOLUME,
     SKIP_BACK_SECONDS,
     SKIP_FORWARD_SECONDS,
     formatPlaybackTime,
@@ -100,6 +107,8 @@
     uploadTaskAttachment,
     type AuthenticationConfig,
     type DashboardWidget,
+    type EmbeddedPage as EmbeddedPageRecord,
+    type EmbeddedPagesResponse,
     type FeedItem,
     type ManagedUser,
     type KanbanSection,
@@ -109,6 +118,7 @@
     type UserSettings,
     type UserContentScope,
     type WallpaperSlot,
+    type WallSlot,
     type WidgetKind,
     type WidgetSize,
   } from "$lib/api";
@@ -129,11 +139,15 @@
     | "rss"
     | "journal"
     | "lines"
+    | "walls"
     | "youtube"
     | "podcasts"
     | "coding"
     | "subscriptions"
     | "trading";
+  type ActivePage =
+    | { kind: "builtin"; id: ProductPage }
+    | { kind: "embedded"; id: string };
   type CommandGroup = "PAGES" | "ACTIONS" | "WEB";
   type CommandItem = {
     id: string;
@@ -469,38 +483,45 @@
       icon: MessageSquareText,
     },
     {
+      id: "walls",
+      label: "Walls",
+      description: "Browse shared wallpapers and submit your own.",
+      code: "09",
+      icon: Wallpaper,
+    },
+    {
       id: "youtube",
       label: "YouTube",
       description: "Follow channels and browse recent videos without distractions.",
-      code: "09",
+      code: "10",
       icon: Youtube,
     },
     {
       id: "podcasts",
       label: "Podcasts",
       description: "Listen to shows this instance hosts, and ask for new ones.",
-      code: "10",
+      code: "11",
       icon: Podcast,
     },
     {
       id: "coding",
       label: "Coding",
       description: "Track projects, repositories, and release activity.",
-      code: "11",
+      code: "12",
       icon: Code2,
     },
     {
       id: "subscriptions",
       label: "Subscriptions",
       description: "Monitor recurring services, costs, and renewal dates.",
-      code: "12",
+      code: "13",
       icon: ReceiptText,
     },
     {
       id: "trading",
       label: "Trading",
       description: "Plan watchlists, market notes, and trades.",
-      code: "13",
+      code: "14",
       icon: ChartCandlestick,
     },
   ] as const;
@@ -516,7 +537,12 @@
     },
   } as const;
 
-  let activeSection = $state<ProductPage>("dashboard");
+  let activePage = $state<ActivePage>({ kind: "builtin", id: "dashboard" });
+  let activeSection = $derived(
+    activePage.kind === "builtin" ? activePage.id : null,
+  );
+  /** Incremented on every Lines sidebar activation, to send the page back to its timeline. */
+  let linesHomeToken = $state(0);
   let contactDetailId = $state<string | null>(null);
   let calendarDetailDate = $state<string | null>(null);
   let kanbanSection = $state<KanbanSection>("boards");
@@ -533,6 +559,18 @@
   let initialLoadingPending = $state(true);
   let welcomeLeaving = $state(false);
   let dashboard = $derived(data.dashboard);
+  let activeEmbeddedPage = $derived.by<EmbeddedPageRecord | null>(() => {
+    if (activePage.kind !== "embedded") return null;
+    return (
+      dashboard?.embedded_pages.global.find(
+        (page) => page.id === activePage.id,
+      ) ??
+      dashboard?.embedded_pages.personal.find(
+        (page) => page.id === activePage.id,
+      ) ??
+      null
+    );
+  });
   let setupRequired = $derived(data.setup.required);
   let tasks = $derived<Task[]>(dashboard?.tasks ?? []);
   let archivedTasks = $state.raw<Task[]>([]);
@@ -612,6 +650,7 @@
   let commandIndex = $state(0);
   let searchEngine = $state<SearchEngineId>("duckduckgo");
   let settingsDialog = $state<HTMLDialogElement>();
+  let embeddedPagesSettingsOpen = $state(false);
   let settingsScrollContainer = $state<HTMLDivElement>();
   let destructiveDialog = $state<HTMLDialogElement>();
   let adminDialog = $state<HTMLDialogElement>();
@@ -732,7 +771,8 @@
       authConfig.password_registration_enabled,
   );
   let activeSectionLabel = $derived(
-    productPages.find((item) => item.id === activeSection)?.label ??
+    activeEmbeddedPage?.title ??
+      productPages.find((item) => item.id === activeSection)?.label ??
       "Dashboard",
   );
   let firstName = $derived(
@@ -749,7 +789,7 @@
       (authenticating && loadingScreenReady),
   );
   let placeholderPage = $derived(
-    activeSection in placeholderPages
+    activeSection && activeSection in placeholderPages
       ? placeholderPages[activeSection as keyof typeof placeholderPages]
       : null,
   );
@@ -771,6 +811,27 @@
         hint: "03",
         keywords: `kanban ${submenuItem.label} ${submenuItem.description}`,
         run: () => openKanbanSection(submenuItem.id),
+      });
+    }
+
+    for (const page of dashboard?.embedded_pages.global ?? []) {
+      items.push({
+        id: `embedded:global:${page.id}`,
+        group: "PAGES",
+        label: page.title,
+        hint: "GLOBAL · CUSTOM",
+        keywords: `${page.title} ${page.description} global custom embedded`,
+        run: () => openEmbeddedPage(page.id),
+      });
+    }
+    for (const page of dashboard?.embedded_pages.personal ?? []) {
+      items.push({
+        id: `embedded:personal:${page.id}`,
+        group: "PAGES",
+        label: page.title,
+        hint: "PERSONAL · CUSTOM",
+        keywords: `${page.title} ${page.description} personal custom embedded`,
+        run: () => openEmbeddedPage(page.id),
       });
     }
 
@@ -950,10 +1011,24 @@
   onMount(() => {
     sidebarCollapsed =
       localStorage.getItem("pandan-sidebar-collapsed") === "true";
-    const savedSection = localStorage.getItem("pandan-active-section");
-    if (productPages.some((item) => item.id === savedSection)) {
-      activeSection = savedSection as ProductPage;
-      kanbanMenuOpen = activeSection === "kanban";
+    const savedPage = localStorage.getItem("pandan-active-section");
+    const savedBuiltin = savedPage?.startsWith("builtin:")
+      ? savedPage.slice("builtin:".length)
+      : savedPage;
+    const savedEmbedded = savedPage?.startsWith("embedded:")
+      ? savedPage.slice("embedded:".length)
+      : null;
+    if (productPages.some((item) => item.id === savedBuiltin)) {
+      activePage = { kind: "builtin", id: savedBuiltin as ProductPage };
+      kanbanMenuOpen = savedBuiltin === "kanban";
+    } else if (
+      savedEmbedded &&
+      [
+        ...(dashboard?.embedded_pages.global ?? []),
+        ...(dashboard?.embedded_pages.personal ?? []),
+      ].some((page) => page.id === savedEmbedded)
+    ) {
+      activePage = { kind: "embedded", id: savedEmbedded };
     }
     const savedEngine = localStorage.getItem(searchEngineStorageKey);
     if (savedEngine && searchEngines.some((item) => item.id === savedEngine)) {
@@ -1356,6 +1431,35 @@
     wallpaperRevisions.loading = revision;
   }
 
+  function openWallsFromSettings() {
+    settingsDialog?.close();
+    openProductPage("walls");
+  }
+
+  async function handleWallApplied(slot: WallSlot) {
+    // Applying a wall does not change the wallpaper URL, so without a fresh revision the
+    // browser keeps serving the previous image and the background appears not to change.
+    wallpaperRevisions[slot] = Date.now();
+    if (slot === "login") {
+      if (dashboard) {
+        dashboard = {
+          ...dashboard,
+          appearance: { ...dashboard.appearance, has_login_wallpaper: true },
+        };
+      }
+      showToast("Login screen updated");
+      return;
+    }
+    if (dashboard) {
+      dashboard = {
+        ...dashboard,
+        appearance: { ...dashboard.appearance, has_welcome_wallpaper: true },
+      };
+    }
+    await prepareWelcomeWallpaper();
+    showToast("Background updated");
+  }
+
   $effect(() => {
     if (!podcastAudio) return;
     podcastPlayer.attach(podcastAudio);
@@ -1422,12 +1526,24 @@
   }
 
   function openProductPage(page: ProductPage) {
-    activeSection = page;
+    // Lines keeps its own screen stack, so choosing it in the sidebar has to ask the
+    // page for the timeline even when it is already the active section.
+    if (page === "lines") linesHomeToken += 1;
+    activePage = { kind: "builtin", id: page };
     if (page !== "contacts") contactDetailId = null;
     if (page !== "calendar") calendarDetailDate = null;
     sidebarOpen = false;
     pendingTaskDeleteId = "";
-    localStorage.setItem("pandan-active-section", page);
+    localStorage.setItem("pandan-active-section", `builtin:${page}`);
+  }
+
+  function openEmbeddedPage(pageId: string) {
+    activePage = { kind: "embedded", id: pageId };
+    contactDetailId = null;
+    calendarDetailDate = null;
+    sidebarOpen = false;
+    pendingTaskDeleteId = "";
+    localStorage.setItem("pandan-active-section", `embedded:${pageId}`);
   }
 
   function openKanbanSection(nextSection: KanbanSection) {
@@ -2240,7 +2356,8 @@
       avatarAvailable = true;
       resetAppearanceDraft();
       authPassword = "";
-      activeSection = "dashboard";
+      activePage = { kind: "builtin", id: "dashboard" };
+      localStorage.setItem("pandan-active-section", "builtin:dashboard");
       await finishLoadingScreen();
     } catch (reason: unknown) {
       authError =
@@ -2286,7 +2403,8 @@
       resetAppearanceDraft();
       setupRequired = false;
       authPassword = "";
-      activeSection = "dashboard";
+      activePage = { kind: "builtin", id: "dashboard" };
+      localStorage.setItem("pandan-active-section", "builtin:dashboard");
       await finishLoadingScreen();
     } catch (reason: unknown) {
       authError =
@@ -2310,6 +2428,31 @@
     settingsError = "";
     settingsDialog?.showModal();
     if (settingsScrollContainer) settingsScrollContainer.scrollTop = 0;
+  }
+
+  function openEmbeddedPagesSettings() {
+    if (!dashboard) return;
+    settingsDialog?.close();
+    embeddedPagesSettingsOpen = true;
+  }
+
+  async function closeEmbeddedPagesSettings(reopenSettings = false) {
+    embeddedPagesSettingsOpen = false;
+    if (reopenSettings) {
+      await tick();
+      openSettings();
+    }
+  }
+
+  function applyEmbeddedPages(pages: EmbeddedPagesResponse) {
+    if (!dashboard) return;
+    dashboard = { ...dashboard, embedded_pages: pages };
+  }
+
+  function handleEmbeddedPageDeleted(pageId: string) {
+    if (activePage.kind === "embedded" && activePage.id === pageId) {
+      openProductPage("dashboard");
+    }
   }
 
   function applySidebarSettings(settings: UserSettings) {
@@ -2539,7 +2682,7 @@
         resetTaskArchiveView();
       }
       if (activeSection === action.scope) {
-        activeSection = "dashboard";
+        openProductPage("dashboard");
       }
       pendingContentDeletion = null;
       showToast(
@@ -2793,7 +2936,8 @@
       clearAvatarDraft();
       avatarAvailable = true;
       avatarRevision = Date.now();
-      activeSection = "dashboard";
+      activePage = { kind: "builtin", id: "dashboard" };
+      localStorage.setItem("pandan-active-section", "builtin:dashboard");
       welcomeLeaving = false;
       authPassword = "";
       authError = "";
@@ -3373,6 +3517,64 @@
             >
           {/if}
         {/each}
+
+        {#if dashboard.embedded_pages.global.length}
+          <div
+            class="sidebar-custom-group"
+            data-od-id="nav-global-custom-pages"
+          >
+            <span class="sidebar-custom-group-label">Global custom</span>
+            {#each dashboard.embedded_pages.global as page (page.id)}
+              <button
+                class="sidebar-link sidebar-link--custom"
+                type="button"
+                aria-label={`${page.title}, global custom page`}
+                aria-current={activePage.kind === "embedded" &&
+                activePage.id === page.id
+                  ? "page"
+                  : undefined}
+                onclick={() => openEmbeddedPage(page.id)}
+                data-sidebar-title={page.title}
+                data-sidebar-description={`Global custom page · ${page.description}`}
+                data-od-id={`nav-global-custom-${page.id}`}
+              >
+                <b class="sidebar-custom-marker" aria-hidden="true">G</b>
+                <PanelTop size={18} strokeWidth={1.7} aria-hidden="true" />
+                <span class="sidebar-custom-title">{page.title}</span>
+                <span class="sidebar-custom-scope">GLOBAL · CUSTOM</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+
+        {#if dashboard.embedded_pages.personal.length}
+          <div
+            class="sidebar-custom-group"
+            data-od-id="nav-personal-custom-pages"
+          >
+            <span class="sidebar-custom-group-label">Personal custom</span>
+            {#each dashboard.embedded_pages.personal as page (page.id)}
+              <button
+                class="sidebar-link sidebar-link--custom"
+                type="button"
+                aria-label={`${page.title}, personal custom page`}
+                aria-current={activePage.kind === "embedded" &&
+                activePage.id === page.id
+                  ? "page"
+                  : undefined}
+                onclick={() => openEmbeddedPage(page.id)}
+                data-sidebar-title={page.title}
+                data-sidebar-description={`Personal custom page · ${page.description}`}
+                data-od-id={`nav-personal-custom-${page.id}`}
+              >
+                <b class="sidebar-custom-marker" aria-hidden="true">U</b>
+                <PanelTop size={18} strokeWidth={1.7} aria-hidden="true" />
+                <span class="sidebar-custom-title">{page.title}</span>
+                <span class="sidebar-custom-scope">PERSONAL · CUSTOM</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
       </nav>
 
       <div class="sidebar-footer">
@@ -3547,12 +3749,12 @@
             data-od-id="github-star-link"
           >
             <Star size={17} strokeWidth={1.7} aria-hidden="true" />
-            <span>Star on GitHub</span>
+            <span>GitHub Star</span>
           </a>
         </div>
       </header>
 
-      {#key activeSection}
+      {#key `${activePage.kind}:${activePage.id}`}
         <div
           class={[
             "product-view",
@@ -3738,18 +3940,19 @@
           {:else if activeSection === "tasks"}
             <section class="feature-page product-page" data-od-id="tasks-page">
               <div class="feature-page-intro task-page-intro page-header">
-                {#key taskView}
-                  <div class="view-swap-copy">
-                    <h2>
-                      $ tasks --{taskView === "active" ? "active" : "archived"}
-                    </h2>
-                    <p>
+                <div>
+                  <TypedHeading
+                    text={`$ tasks --${taskView}`}
+                    odId="tasks-heading"
+                  />
+                  {#key taskView}
+                    <p class="view-swap-copy">
                       {taskView === "active"
                         ? "Plan work with due dates, priorities, labels, recurring schedules, and subtasks."
                         : "Review tasks removed from the active plan, restore what matters, or delete them permanently."}
                     </p>
-                  </div>
-                {/key}
+                  {/key}
+                </div>
                 <div class="task-page-actions">
                   <label class="task-label-filter">
                     <span>
@@ -4357,6 +4560,13 @@
               viewerName={dashboard.settings.display_name}
               viewerRole={dashboard.user.role}
               defaultVisibility={dashboard.settings.lines_default_visibility}
+              homeToken={linesHomeToken}
+            />
+          {:else if activeSection === "walls"}
+            <WallsPage
+              viewerId={dashboard.user.id}
+              viewerRole={dashboard.user.role}
+              onwallapplied={handleWallApplied}
             />
           {:else if activeSection === "youtube"}
             <YoutubePage />
@@ -4366,13 +4576,18 @@
             <CodingPage />
           {:else if activeSection === "subscriptions"}
             <SubscriptionsPage />
+          {:else if activeEmbeddedPage}
+            <EmbeddedPage page={activeEmbeddedPage} />
           {:else if placeholderPage}
             <section
               class="feature-page placeholder-page product-page"
               data-od-id={`${activeSection}-page`}
             >
               <div class="feature-page-intro page-header">
-                <h2>$ {activeSection} --init</h2>
+                <TypedHeading
+                  text={`$ ${activeSection} --init`}
+                  odId={`${activeSection}-heading`}
+                />
                 <p>{placeholderPage.description}</p>
               </div>
               <div class="placeholder-page-layout">
@@ -4541,15 +4756,23 @@
             </button>
             <input
               type="range"
+              list="podcast-volume-marks"
               min="0"
-              max="1"
-              step="0.01"
+              max={MAX_PLAYBACK_VOLUME}
+              step="0.05"
               value={podcastPlayer.effectiveVolume}
               aria-label="Playback volume"
+              aria-valuetext={`${Math.round(podcastPlayer.effectiveVolume * 100)} percent`}
               oninput={(event) =>
                 podcastPlayer.setVolume(Number(event.currentTarget.value))}
             />
-            <span class="podcast-player-time">
+            <datalist id="podcast-volume-marks">
+              <option value="1" label="100%"></option>
+            </datalist>
+            <span
+              class="podcast-player-time"
+              class:is-boosted={podcastPlayer.effectiveVolume > 1}
+            >
               {Math.round(podcastPlayer.effectiveVolume * 100)}%
             </span>
           </div>
@@ -5323,6 +5546,13 @@
                     />
                   </label>
                   <button
+                    class="ui-button ui-button--secondary"
+                    type="button"
+                    onclick={openWallsFromSettings}
+                    data-od-id={`browse-walls-${option.id}`}
+                    >Browse Walls</button
+                  >
+                  <button
                     class="ui-button ui-button--danger background-reset"
                     type="button"
                     onclick={() => resetWallpaper(option.id)}
@@ -5402,6 +5632,22 @@
           <ImageIcon size={18} strokeWidth={1.8} aria-hidden="true" />
         </button>
 
+        <button
+          class="admin-entry"
+          type="button"
+          onclick={openEmbeddedPagesSettings}
+          data-od-id="open-embedded-pages-settings"
+        >
+          <span
+            ><strong>Embedded pages</strong><small
+              >Personal links{dashboard.user.role === "administrator"
+                ? " and global instance links"
+                : " in your sidebar"}</small
+            ></span
+          >
+          <PanelTop size={18} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+
         {#if dashboard.user.role === "administrator"}
           <button
             class="admin-entry"
@@ -5449,6 +5695,17 @@
       </div>
     </form>
   </dialog>
+
+  {#if embeddedPagesSettingsOpen}
+    <EmbeddedPagesSettings
+      pages={dashboard.embedded_pages}
+      isAdministrator={dashboard.user.role === "administrator"}
+      onPagesChange={applyEmbeddedPages}
+      onPageDeleted={handleEmbeddedPageDeleted}
+      onClose={() => closeEmbeddedPagesSettings()}
+      onBack={() => closeEmbeddedPagesSettings(true)}
+    />
+  {/if}
 
   <dialog
     class="settings-dialog destructive-dialog"

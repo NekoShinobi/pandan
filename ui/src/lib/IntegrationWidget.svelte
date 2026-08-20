@@ -46,6 +46,8 @@
   let data = $state.raw<WidgetData | null>(null);
   let loading = $state(false);
   let loadError = $state("");
+  /** A reload with provider data already on screen, which must not blank the widget. */
+  let refreshing = $state(false);
   let saving = $state(false);
   let formError = $state("");
   let secretStorageEnabled = $state(false);
@@ -397,19 +399,25 @@
     }
   }
 
+  /**
+   * Loads provider data. Only the first load has nothing to show; a refresh keeps the
+   * last good response on screen and reports a failure beside it rather than replacing
+   * it with an error card.
+   */
   async function loadData(refresh = false) {
-    loading = true;
+    if (data) refreshing = true;
+    else loading = true;
     loadError = "";
     try {
       data = await fetchWidgetData(widget.id, refresh);
     } catch (reason: unknown) {
-      data = null;
       loadError =
         reason instanceof Error
           ? reason.message
           : "Provider data is unavailable";
     } finally {
       loading = false;
+      refreshing = false;
     }
   }
 
@@ -442,9 +450,9 @@
         <button
           class="ui-button ui-button--ghost text-button"
           type="button"
-          disabled={loading}
+          disabled={loading || refreshing}
           onclick={() => loadData(true)}
-          >{loading ? "Loading…" : "Refresh"}</button
+          >{loading || refreshing ? "Loading…" : "Refresh"}</button
         >
       {/if}
       {#if widget.kind !== "bible-verse"}
@@ -456,6 +464,12 @@
       {/if}
     </div>
   </div>
+
+  {#if loadError && data}
+    <p class="integration-stale" role="status">
+      Showing the last response · {loadError}
+    </p>
+  {/if}
 
   {#if !isConfigured}
     <button class="integration-empty" type="button" onclick={openConfig}>
@@ -557,7 +571,7 @@
     <div class="integration-loading" aria-live="polite">
       Loading provider data…
     </div>
-  {:else if loadError}
+  {:else if loadError && !data}
     <div class="integration-error" role="status">
       <strong>Could not load this source</strong>
       <span>{loadError}</span>

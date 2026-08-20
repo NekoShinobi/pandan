@@ -1,6 +1,9 @@
 <script lang="ts">
+  import DOMPurify from "dompurify";
   import Bookmark from "lucide-svelte/icons/bookmark";
   import Check from "lucide-svelte/icons/check";
+  import ChevronDown from "lucide-svelte/icons/chevron-down";
+  import ChevronUp from "lucide-svelte/icons/chevron-up";
   import CircleAlert from "lucide-svelte/icons/circle-alert";
   import Download from "lucide-svelte/icons/download";
   import HardDrive from "lucide-svelte/icons/hard-drive";
@@ -44,6 +47,8 @@
     type PodcastSummary,
   } from "$lib/api";
   import { formatPlaybackTime, podcastPlayer } from "$lib/podcastPlayer.svelte";
+  import { SvelteSet } from "svelte/reactivity";
+  import TypedHeading from "$lib/TypedHeading.svelte";
 
   let { viewerRole }: { viewerRole: string } = $props();
 
@@ -65,12 +70,25 @@
 
   let overview = $state.raw<PodcastOverview>(emptyOverview);
   let loading = $state(true);
+  /**
+   * A reload the reader asked for. The catalogue already stays on screen while it runs,
+   * so this only drives the control's own busy state; background polling never sets it.
+   */
+  let refreshing = $state(false);
   let pageError = $state("");
   let activeView = $state<PodcastView>("listen");
   let reloadToken = $state(0);
   /** Newest reload whose response has been applied. Not reactive on purpose. */
   let loadedToken = -1;
   let busyEpisode = $state("");
+  /**
+   * Episodes whose description is open, by identifier.
+   *
+   * Keyed by episode rather than by row because the same episode appears in several
+   * lists at once — Up next, In progress, Saved, and the show dialog — and reading a
+   * description in one of them should not leave the others contradicting it.
+   */
+  const expandedEpisodes = new SvelteSet<string>();
 
   let feedUrl = $state("");
   let requestNote = $state("");
@@ -144,7 +162,10 @@
         pageError =
           error instanceof ApiError ? error.message : "Podcasts could not load.";
       } finally {
-        if (!cancelled) loading = false;
+        if (!cancelled) {
+          loading = false;
+          refreshing = false;
+        }
       }
     })();
     return () => {
@@ -235,6 +256,7 @@
   });
 
   function reload() {
+    refreshing = true;
     reloadToken += 1;
   }
 
@@ -258,6 +280,48 @@
     const gigabytes = bytes / 1024 ** 3;
     if (gigabytes >= 1) return `${gigabytes.toFixed(1)} GB`;
     return `${Math.round(bytes / 1024 ** 2)} MB`;
+  }
+
+  function toggleExpanded(episodeId: string) {
+    if (expandedEpisodes.has(episodeId)) {
+      expandedEpisodes.delete(episodeId);
+    } else {
+      expandedEpisodes.add(episodeId);
+    }
+  }
+
+  /**
+   * Renders one episode's show notes.
+   *
+   * A description is whatever the remote feed put in `summary` or `content`, which by
+   * convention is HTML, so it goes through the same sanitizer the rest of Pandan uses
+   * before it is ever inserted. Two details the sanitizer alone does not cover: a feed
+   * that ships plain text keeps its line breaks, and links are forced to open in a new
+   * tab, because following one in this tab would tear down the page and stop playback.
+   */
+  function renderDescription(description: string): string {
+    const trimmed = description.trim();
+    if (!trimmed) return "";
+    const markup = /<[a-z][^>]*>/i.test(trimmed)
+      ? trimmed
+      : trimmed.replace(/\n/g, "<br />");
+    const holder = document.createElement("template");
+    holder.innerHTML = DOMPurify.sanitize(markup, {
+      USE_PROFILES: { html: true },
+    });
+    for (const anchor of holder.content.querySelectorAll("a[href]")) {
+      anchor.setAttribute("target", "_blank");
+      anchor.setAttribute("rel", "noreferrer noopener");
+    }
+    return holder.innerHTML;
+  }
+
+  /** Inserts already-sanitized notes, matching how the rest of Pandan renders markup. */
+  function renderSanitizedNotes(html: string) {
+    return (node: HTMLElement) => {
+      node.innerHTML = html;
+      return () => node.replaceChildren();
+    };
   }
 
   /**
@@ -535,6 +599,8 @@
   {@const isCurrent = podcastPlayer.episode?.id === episode.id}
   {@const ratio = progressRatio(episode)}
   {@const queued = episode.queue_position !== null}
+  {@const notes = renderDescription(episode.description)}
+  {@const expanded = expandedEpisodes.has(episode.id)}
   <li class="podcast-episode" class:podcast-episode--current={isCurrent}>
     <div class="podcast-episode-main">
       <div class="podcast-episode-heading">
@@ -667,7 +733,38 @@
           <Trash2 size={15} strokeWidth={1.9} />
         </button>
       {/if}
+      <!--
+        Only offered when there is something behind it: a feed that shipped no notes
+        would otherwise give every one of its episodes a control that opens nothing.
+      -->
+      {#if notes}
+        <button
+          class="ui-button ui-button--ghost ui-button--icon podcast-episode-disclosure"
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={`podcast-notes-${episode.id}`}
+          aria-label={expanded
+            ? `Hide the description for ${episode.title}`
+            : `Show the description for ${episode.title}`}
+          title={expanded ? "Hide description" : "Show description"}
+          onclick={() => toggleExpanded(episode.id)}
+        >
+          {#if expanded}
+            <ChevronUp size={15} strokeWidth={1.9} />
+          {:else}
+            <ChevronDown size={15} strokeWidth={1.9} />
+          {/if}
+        </button>
+      {/if}
     </div>
+
+    {#if notes && expanded}
+      <div
+        class="podcast-episode-notes"
+        id={`podcast-notes-${episode.id}`}
+        {@attach renderSanitizedNotes(notes)}
+      ></div>
+    {/if}
   </li>
 {/snippet}
 
@@ -694,7 +791,10 @@
 >
   <header class="podcasts-header page-header" data-od-id="podcasts-header">
     <div>
-      <h2 data-od-id="podcasts-heading">$ podcasts --{activeView}</h2>
+      <TypedHeading
+        text={`$ podcasts --${activeView}`}
+        odId="podcasts-heading"
+      />
       <p>
         Shows are approved for the whole instance and downloaded once, then played
         from this server.
@@ -705,11 +805,16 @@
         class="ui-button ui-button--secondary"
         type="button"
         onclick={reload}
-        disabled={loading}
+        disabled={loading || refreshing}
         data-od-id="refresh-podcasts"
       >
-        <RefreshCw size={15} strokeWidth={1.8} aria-hidden="true" />
-        Refresh
+        <RefreshCw
+          class={refreshing ? "spinning" : undefined}
+          size={15}
+          strokeWidth={1.8}
+          aria-hidden="true"
+        />
+        {refreshing ? "Refreshing…" : "Refresh"}
       </button>
     </div>
   </header>
@@ -1216,14 +1321,6 @@
     padding-bottom: 18px;
     border-bottom: 1px solid var(--border);
   }
-  .podcasts-header h2 {
-    margin: 8px 0 0;
-    font-family: var(--font-mono);
-    font-size: clamp(26px, 3vw, 42px);
-    font-weight: 540;
-    line-height: 1.05;
-    letter-spacing: -0.04em;
-  }
   .podcasts-header p {
     max-width: 68ch;
     margin: 8px 0 0;
@@ -1428,6 +1525,79 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .podcast-episode-disclosure[aria-expanded="true"] {
+    border-color: var(--border);
+    background: var(--fg-soft);
+  }
+
+  /*
+   * Show notes take the full width of the row, below both of its columns, so the reading
+   * measure does not have to share a line with the transport controls.
+   */
+  .podcast-episode-notes {
+    flex: 1 0 100%;
+    max-width: 78ch;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-family: var(--font-body);
+    font-size: 13px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+    animation: podcast-notes-enter 160ms var(--ease-out) both;
+  }
+  /* Feed markup arrives with its own block structure; only the outer edges are ours. */
+  .podcast-episode-notes :global(> :first-child) {
+    margin-top: 0;
+  }
+  .podcast-episode-notes :global(> :last-child) {
+    margin-bottom: 0;
+  }
+  .podcast-episode-notes :global(p) {
+    margin: 0 0 10px;
+  }
+  .podcast-episode-notes :global(a) {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .podcast-episode-notes :global(a:hover) {
+    text-decoration-thickness: 2px;
+  }
+  .podcast-episode-notes :global(ul),
+  .podcast-episode-notes :global(ol) {
+    margin: 0 0 10px;
+    padding-left: 20px;
+  }
+  .podcast-episode-notes :global(li) {
+    margin-bottom: 4px;
+  }
+  .podcast-episode-notes :global(img) {
+    max-width: 100%;
+    height: auto;
+  }
+  .podcast-episode-notes :global(h1),
+  .podcast-episode-notes :global(h2),
+  .podcast-episode-notes :global(h3),
+  .podcast-episode-notes :global(h4) {
+    margin: 0 0 8px;
+    color: var(--fg);
+    font-family: var(--font-display);
+    font-size: 14px;
+    letter-spacing: -0.01em;
+  }
+
+  @keyframes podcast-notes-enter {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
   /*
    * A toggle that is on has to read as on before it is hovered, so the pressed state
    * carries the accent on the border and the glyph rather than colour alone on hover.
@@ -1467,6 +1637,10 @@
   @media (prefers-reduced-motion: reduce) {
     .podcast-progress span {
       transition: none;
+    }
+    /* The notes still appear; they just do not travel to get there. */
+    .podcast-episode-notes {
+      animation: none;
     }
   }
 

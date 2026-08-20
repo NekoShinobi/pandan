@@ -4,23 +4,39 @@
   import GripVertical from "lucide-svelte/icons/grip-vertical";
   import MessageSquare from "lucide-svelte/icons/message-square";
   import Paperclip from "lucide-svelte/icons/paperclip";
+  import Pilcrow from "lucide-svelte/icons/pilcrow";
   import type { KanbanCard } from "$lib/api";
+
+  const CARD_GROUP_PREFIX = "kanban-cards:";
 
   let {
     card,
     columnId,
     disabled,
+    entering = false,
     index,
     reducedMotion,
+    avatarUrl,
     onopen,
   }: {
     card: KanbanCard;
     columnId: string;
     disabled: boolean;
+    /** True for the one render after this card was created, to play its entrance. */
+    entering?: boolean;
     index: number;
     reducedMotion: boolean;
+    /** Resolves a workspace member's avatar endpoint. */
+    avatarUrl: (userId: string) => string;
     onopen: (card: KanbanCard) => void;
   } = $props();
+
+  /** Members without an uploaded avatar answer 404, which uncovers the initial beneath. */
+  function hideBrokenAvatar(event: Event) {
+    if (event.currentTarget instanceof HTMLImageElement) {
+      event.currentTarget.remove();
+    }
+  }
 
   const sortable = createSortable({
     get id() {
@@ -30,7 +46,7 @@
       return index;
     },
     get group() {
-      return columnId;
+      return `${CARD_GROUP_PREFIX}${columnId}`;
     },
     get disabled() {
       return disabled;
@@ -51,9 +67,12 @@
     !disabled && "is-draggable",
     sortable.isDragging && "is-dragging",
     sortable.isDropTarget && "is-drop-target",
+    entering && "is-entering",
   ]}
   type="button"
-  aria-label={card.title}
+  aria-label={card.description.trim()
+    ? `${card.title}, has description`
+    : card.title}
   onclick={() => onopen(card)}
   data-od-id={`kanban-card-${card.id}`}
   {@attach sortable.attach}
@@ -67,8 +86,10 @@
     </span>
   {/if}
   <strong>{card.title}</strong>
-  {#if card.description}<p>{card.description}</p>{/if}
   <footer>
+    {#if card.description.trim()}
+      <span title="Has description" aria-hidden="true"><Pilcrow size={13} /></span>
+    {/if}
     {#if card.due_date}
       <span class:overdue={new Date(`${card.due_date}T23:59:59`) < new Date()}
         ><CalendarClock size={13} />{card.due_date}</span
@@ -83,9 +104,16 @@
     {#if card.assignees.length}
       <span class="kanban-avatar-stack">
         {#each card.assignees.slice(0, 3) as assignee (assignee.user_id)}
-          <i title={assignee.display_name}
-            >{assignee.display_name.slice(0, 1).toUpperCase()}</i
-          >
+          <i class="kanban-member-avatar" title={assignee.display_name}>
+            <span aria-hidden="true"
+              >{assignee.display_name.slice(0, 1).toUpperCase()}</span
+            >
+            <img
+              src={avatarUrl(assignee.user_id)}
+              alt=""
+              onerror={hideBrokenAvatar}
+            />
+          </i>
         {/each}
       </span>
     {/if}

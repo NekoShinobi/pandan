@@ -13,6 +13,7 @@
   --button-on-accent: oklch(14% 0.018 165);
   --control-height: 44px;
   --control-padding-inline: 15px;
+  --scrollbar-size: 10px;
   --shadow: 0 18px 54px color-mix(in oklch, var(--fg) 14%, transparent);
   --spring: cubic-bezier(0.18, 1.22, 0.3, 1);
   --ease-out: cubic-bezier(0.2, 0, 0, 1);
@@ -30,6 +31,8 @@
   font-family: var(--font-body);
   color: var(--fg);
   font-synthesis: none;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--fg) 50%, var(--bg)) transparent;
 }
 
 *,
@@ -53,6 +56,54 @@ body {
   line-height: 1.5;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Custom scrollbars.
+
+   Every colour resolves from the scroll container's own theme tokens, so this
+   one rule set is correct in the light root scope and in each terminal scope
+   without being restated per theme.
+
+   Styling `::-webkit-scrollbar` opts the element out of macOS overlay
+   scrollbars, which means the scrollbar occupies real layout width. Pair this
+   with `scrollbar-gutter: stable` on every layout-level scroll container so a
+   page gaining or losing scroll never reflows the content beside it. */
+::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-track:vertical {
+  box-shadow: inset 1px 0 0 color-mix(in oklch, var(--fg) 10%, transparent);
+}
+
+::-webkit-scrollbar-track:horizontal {
+  box-shadow: inset 0 1px 0 color-mix(in oklch, var(--fg) 10%, transparent);
+}
+
+::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 0;
+  background: color-mix(in oklch, var(--fg) 50%, var(--bg));
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklch, var(--fg) 72%, var(--bg));
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: var(--accent);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 button,
@@ -426,6 +477,24 @@ p {
   border: 0;
 }
 
+/* Shared busy spinner for refresh and sync controls. Confirms that a request is
+   in flight while the control keeps whatever it was showing. */
+.spinning {
+  animation: pandan-spin 800ms linear infinite;
+}
+
+@keyframes pandan-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinning {
+    animation: none;
+  }
+}
+
 .auth-shell,
 .login-page-preview {
   --bg: oklch(11% 0.012 165);
@@ -439,6 +508,8 @@ p {
   --fg-soft: color-mix(in oklch, var(--fg) 5%, transparent);
   --radius: 0px;
   --radius-sm: 0px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--fg) 50%, var(--bg)) transparent;
 }
 
 .auth-shell {
@@ -449,6 +520,7 @@ p {
   grid-template-columns: minmax(0, 1fr) minmax(440px, 620px);
   align-items: stretch;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 0;
   background-color: var(--bg);
   background-image: var(
@@ -1155,12 +1227,11 @@ p {
   width: 100%;
   height: 100%;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 14px clamp(20px, 3vw, 48px) 46px;
   opacity: 0.42;
   transform: scale(0.972) rotateY(calc(var(--direction, 1) * -1.2deg));
   transform-origin: center;
-  scrollbar-color: var(--border) transparent;
-  scrollbar-width: thin;
   transition:
     opacity 220ms ease,
     transform 520ms var(--spring);
@@ -1374,6 +1445,7 @@ body
   min-width: 0;
   max-height: 100%;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: clamp(18px, 2vw, 28px);
 }
 
@@ -1555,6 +1627,21 @@ body
 }
 
 .integration-empty,
+/* A refresh that failed while data is already on screen: report it in place rather
+   than trading a working widget for an error card. */
+.integration-stale {
+  margin: 0 0 10px;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in oklch, var(--danger) 45%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--danger) 8%, transparent);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+}
+
 .integration-loading,
 .integration-error {
   width: 100%;
@@ -3246,6 +3333,7 @@ body
 .admin-directory {
   max-height: calc(100dvh - 180px);
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 20px 24px 24px;
 }
 
@@ -4074,6 +4162,8 @@ body
   box-shadow: 14px 14px 0 color-mix(in oklch, var(--bg) 72%, transparent);
   transform: translateX(-50%);
   animation: podcast-player-enter 240ms var(--ease-out) both;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--fg) 50%, var(--bg)) transparent;
 }
 
 .podcast-player-transport {
@@ -4181,14 +4271,19 @@ body
 }
 
 .podcast-player-volume-panel input[type="range"] {
-  width: 116px;
+  width: 148px;
   min-height: 44px;
   accent-color: var(--accent);
 }
 
 .podcast-player-volume-panel .podcast-player-time {
-  min-width: 34px;
+  min-width: 42px;
   text-align: right;
+}
+
+/* Anything past 100% is amplified rather than attenuated, so the readout says so. */
+.podcast-player-volume-panel .podcast-player-time.is-boosted {
+  color: var(--accent);
 }
 
 @keyframes podcast-volume-enter {
@@ -4595,9 +4690,8 @@ body
   min-width: 0;
   height: 100dvh;
   overflow: auto;
+  scrollbar-gutter: stable;
   background: color-mix(in oklch, var(--bg) 97%, transparent);
-  scrollbar-color: var(--border) transparent;
-  scrollbar-width: thin;
 }
 
 .dashboard-header {
@@ -5220,14 +5314,6 @@ body
   max-width: 720px;
 }
 
-.feature-page-intro h2 {
-  font-family: var(--font-display);
-  font-size: clamp(32px, 4vw, 48px);
-  font-weight: 570;
-  letter-spacing: -0.035em;
-  line-height: 1.06;
-}
-
 .feature-page-intro p {
   max-width: 62ch;
   margin-top: 12px;
@@ -5728,6 +5814,7 @@ body
   align-content: start;
   gap: 7px;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 16px;
 }
 
@@ -5888,6 +5975,8 @@ body
   background: #000;
   color: var(--fg);
   font-family: var(--font-mono);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--fg) 50%, var(--bg)) transparent;
 }
 
 .focus-session-dialog::backdrop {
@@ -6082,6 +6171,7 @@ body
   display: grid;
   gap: 18px;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   padding: 16px clamp(20px, 4vw, 64px);
   border-top: 1px solid var(--border);
   background: rgb(0 0 0 / 78%);
@@ -7305,6 +7395,8 @@ body
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-mono);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--fg) 50%, var(--bg)) transparent;
 }
 
 .dashboard-app::before {
@@ -7541,17 +7633,6 @@ body
     color-mix(in oklch, var(--fg) 1.5%, transparent) 3px,
     color-mix(in oklch, var(--fg) 1.5%, transparent) 4px
   );
-  scrollbar-color: oklch(9% 0 0) oklch(9% 0 0);
-}
-
-.dashboard-main::-webkit-scrollbar {
-  width: 10px;
-  background: oklch(9% 0 0);
-}
-
-.dashboard-main::-webkit-scrollbar-track,
-.dashboard-main::-webkit-scrollbar-thumb {
-  background: oklch(9% 0 0);
 }
 
 .dashboard-header {
@@ -7623,7 +7704,10 @@ body
 }
 
 .product-view {
-  min-height: calc(100dvh - 76px);
+  /* Height of the canvas below the sticky header. Published as a token so a page
+     that fills its column can size against it instead of restating the maths. */
+  --product-view-height: calc(100dvh - 76px);
+  min-height: var(--product-view-height);
   animation-name: terminal-view-enter;
   animation-duration: 220ms;
 }
@@ -7675,6 +7759,47 @@ body
 
 .view-swap-copy {
   animation: view-swap-copy-enter 260ms var(--ease-out) both;
+}
+
+/*
+ * The shared terminal page title, rendered by `$lib/TypedHeading.svelte`.
+ *
+ * Every product page opens with the same command-line heading at the same size, so a
+ * cross-fade between them reads as nothing happening. The heading instead backspaces the
+ * outgoing title and types the incoming one, which is the one moment a page announces
+ * itself. The type lives here rather than in each page's scoped styles because the
+ * element belongs to the component, not to the page that renders it.
+ */
+.typed-heading {
+  margin: 8px 0 0;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  font-size: clamp(26px, 3vw, 42px);
+  font-weight: 540;
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+}
+
+/* Present only while the caret is working, so nothing blinks indefinitely. */
+.typed-caret {
+  display: inline-block;
+  width: 0.46em;
+  height: 0.78em;
+  margin-left: 0.08em;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 160ms var(--ease-out);
+  translate: 0 0.04em;
+}
+
+.typed-caret.is-typing {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typed-caret {
+    transition: none;
+  }
 }
 
 @keyframes view-swap-leave {
@@ -7815,8 +7940,7 @@ body
 .custom-widget-heading h3,
 .rss-source-box h3,
 .large-empty-state h3,
-.rss-story h3,
-.feature-page-intro h2 {
+.rss-story h3 {
   font-family: var(--font-mono);
 }
 
@@ -7928,12 +8052,6 @@ body
 
 .feature-page-intro {
   padding: 10px 0 16px;
-}
-
-.feature-page-intro h2 {
-  font-size: clamp(30px, 4vw, 48px);
-  font-weight: 520;
-  letter-spacing: -0.045em;
 }
 
 .feature-page-intro p,
@@ -8082,17 +8200,8 @@ body
   color: var(--fg);
   font-family: var(--font-mono);
   box-shadow: 14px 14px 0 color-mix(in oklch, var(--bg) 72%, transparent);
-  scrollbar-color: oklch(9% 0 0) oklch(9% 0 0);
-}
-
-:where(.command-dialog, .settings-dialog)::-webkit-scrollbar {
-  width: 10px;
-  background: oklch(9% 0 0);
-}
-
-:where(.command-dialog, .settings-dialog)::-webkit-scrollbar-track,
-:where(.command-dialog, .settings-dialog)::-webkit-scrollbar-thumb {
-  background: oklch(9% 0 0);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--fg) 50%, var(--bg)) transparent;
 }
 
 :where(.command-dialog, .settings-dialog)::backdrop {
@@ -8539,26 +8648,31 @@ body
   gap: 20px;
 }
 
+/* Matches the terminal page headers on Walls, YouTube, RSS, and Journal: mono
+   command-line title over a muted mono standfirst, ruled off from the body. */
 .kanban-page-header {
+  flex-wrap: wrap;
+  align-items: flex-end;
   margin-bottom: 24px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
 }
 
-.kanban-page-header h2 {
-  margin: 4px 0 5px;
-  font-family: var(--font-display);
-  font-size: clamp(30px, 4vw, 48px);
-  font-weight: 600;
-  line-height: 1.08;
-  letter-spacing: -0.02em;
-}
-
-.kanban-page-header p,
 .kanban-board-toolbar p,
 .kanban-settings-panel header p,
 .kanban-dialog-form > p {
   max-width: 62ch;
   margin: 0;
   color: var(--muted);
+}
+
+.kanban-page-header p {
+  max-width: 68ch;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
 }
 
 .kanban-kicker {
@@ -8977,24 +9091,6 @@ body
   gap: 8px;
 }
 
-.kanban-add-column-form {
-  display: grid;
-  grid-template-columns: minmax(190px, 300px) auto auto;
-  align-items: end;
-  justify-content: end;
-  gap: 8px;
-  margin: -4px 0 18px;
-}
-
-.kanban-add-column-form > label {
-  grid-column: 1 / -1;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
 .kanban-filters {
   flex-wrap: wrap;
 }
@@ -9035,8 +9131,18 @@ body
   box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--fg) 32%, var(--border));
 }
 
+.kanban-column.is-column-dragging {
+  opacity: 0.58;
+}
+
+.kanban-column.is-column-drop-target {
+  border-color: color-mix(in oklch, var(--fg) 52%, var(--border));
+  background: color-mix(in oklch, var(--surface) 82%, var(--fg-soft));
+}
+
 .kanban-column > header,
-.kanban-column > header > div {
+.kanban-column > header > div,
+.kanban-column-drag-handle {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -9048,7 +9154,38 @@ body
   border-bottom: 1px solid var(--border);
 }
 
-.kanban-column h4,
+.kanban-column-drag-handle {
+  min-width: 0;
+  min-height: 44px;
+  flex: 1;
+  justify-content: flex-start;
+  padding: 0 8px 0 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: grab;
+  text-align: left;
+  transition:
+    border-color 120ms var(--ease-out),
+    background-color 120ms var(--ease-out),
+    color 120ms var(--ease-out);
+}
+
+.kanban-column-drag-handle:hover:not(:disabled) {
+  border-color: var(--border);
+  background: var(--fg-soft);
+  color: var(--fg);
+}
+
+.kanban-column-drag-handle:active:not(:disabled) {
+  cursor: grabbing;
+}
+
+.kanban-column-drag-handle:disabled {
+  cursor: default;
+}
+
+.kanban-column-title,
 .kanban-detail-section h4,
 .kanban-card-editor aside h4 {
   margin: 0;
@@ -9059,7 +9196,19 @@ body
   text-transform: uppercase;
 }
 
-.kanban-column > header span {
+.kanban-column-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kanban-column-drag-handle > svg {
+  flex: 0 0 auto;
+}
+
+.kanban-column-drag-handle .kanban-column-count {
   min-width: 24px;
   height: 22px;
   display: grid;
@@ -9140,17 +9289,6 @@ body
   line-height: 1.4;
 }
 
-.kanban-card > p {
-  display: -webkit-box;
-  margin: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
 .kanban-card footer {
   min-height: 24px;
   display: flex;
@@ -9226,6 +9364,111 @@ body
   color: var(--fg);
 }
 
+/* Beats `.kanban-column > header > div`, which spaces the title block apart. The two
+   controls are a pair and should sit together. */
+.kanban-column > header > .kanban-column-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.kanban-column-delete:hover:not(:disabled) {
+  border-color: color-mix(in oklch, var(--danger) 55%, var(--border));
+  background: color-mix(in oklch, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+
+/* Primed for the second press. The server still refuses a column that holds cards and
+   says why, so this only confirms intent. */
+.kanban-column-delete.confirm {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--bg);
+}
+
+.kanban-column-delete.confirm:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: color-mix(in oklch, var(--danger) 86%, var(--fg));
+  color: var(--bg);
+}
+
+/*
+ * Entrances for records the reader just created.
+ *
+ * A card wipes and fades without touching `transform`: dnd-kit owns that property on a
+ * sortable card, and an animation on it would fight a drag started mid-entrance. A
+ * column is only a droppable, so it can travel.
+ */
+.kanban-card.is-entering {
+  animation: kanban-card-enter 320ms var(--ease-out) both;
+}
+
+.kanban-column.is-entering {
+  animation: kanban-column-enter 300ms var(--spring) both;
+}
+
+@keyframes kanban-card-enter {
+  from {
+    opacity: 0;
+    clip-path: inset(0 0 100% 0);
+    border-color: var(--accent);
+  }
+  60% {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+    border-color: var(--accent);
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+@keyframes kanban-column-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+/* The quick-card composer replaces the add control in place, so it opens rather than
+   simply appearing. */
+.kanban-quick-card {
+  animation: kanban-composer-enter 180ms var(--ease-out) both;
+}
+
+.kanban-quick-card.is-leaving {
+  pointer-events: none;
+  animation: kanban-composer-exit 140ms ease-in both;
+}
+
+@keyframes kanban-composer-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes kanban-composer-exit {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+}
+
 .kanban-add-card {
   width: 100%;
   min-height: 44px;
@@ -9265,6 +9508,10 @@ body
   display: flex;
   align-items: center;
   gap: 7px;
+}
+
+.kanban-quick-card > div {
+  justify-content: flex-end;
 }
 
 .kanban-invitation-card {
@@ -9434,11 +9681,14 @@ body
   padding: 0;
   overflow: auto;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   border: 1px solid var(--border);
   border-radius: 0;
   background: color-mix(in oklch, var(--surface) 96%, var(--bg));
   color: var(--fg);
   box-shadow: 0 30px 90px color-mix(in oklch, var(--bg) 74%, transparent);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--fg) 50%, var(--bg)) transparent;
 }
 
 .ui-dialog::backdrop {
@@ -9462,6 +9712,12 @@ body
   display: grid;
   gap: 16px;
   padding: 4px 26px 27px;
+}
+
+.kanban-add-column-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .kanban-dialog-form h3 {
@@ -9502,6 +9758,7 @@ body
   padding: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .kanban-card-dialog *,
@@ -9941,11 +10198,6 @@ body
     width: 100%;
   }
 
-  .kanban-add-column-form {
-    grid-template-columns: 1fr auto auto;
-    justify-content: stretch;
-  }
-
   .kanban-workspace-switcher,
   .kanban-list-toolbar,
   .kanban-filters,
@@ -10009,5 +10261,502 @@ body
   .kanban-card:hover,
   .kanban-card:active {
     transform: none;
+  }
+
+  /* Keep the confirmation that something arrived, drop the travel. */
+  .kanban-card.is-entering,
+  .kanban-column.is-entering,
+  .kanban-quick-card {
+    animation-name: kanban-fade-enter;
+  }
+
+  .kanban-quick-card.is-leaving {
+    animation-name: kanban-fade-exit;
+  }
+}
+
+@keyframes kanban-fade-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes kanban-fade-exit {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* Embedded pages */
+.sidebar-custom-group {
+  min-width: 0;
+  display: grid;
+  gap: 0;
+  padding-top: 14px;
+}
+
+.sidebar-custom-group-label {
+  padding: 0 18px 8px;
+  color: color-mix(in oklch, var(--muted) 72%, transparent);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.sidebar-link--custom {
+  grid-template-columns: 28px 20px minmax(0, 1fr) auto;
+  min-height: 56px;
+}
+
+.sidebar-custom-marker {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in oklch, var(--muted) 62%, transparent);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.sidebar-custom-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-custom-scope {
+  padding: 3px 5px;
+  border: 1px solid color-mix(in oklch, var(--muted) 48%, transparent);
+  color: color-mix(in oklch, var(--muted) 88%, transparent);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.sidebar-link--custom[aria-current="page"] .sidebar-custom-marker {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.embedded-page {
+  min-height: var(--product-view-height);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 28px clamp(18px, 3vw, 42px) 34px;
+}
+
+.embedded-page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.embedded-page-header > div {
+  min-width: 0;
+}
+
+.embedded-page-header p {
+  max-width: 68ch;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.embedded-page-external {
+  flex: 0 0 auto;
+}
+
+.embedded-page-frame-shell {
+  height: var(--embedded-page-height, 720px);
+  min-height: 0;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 18px 44px color-mix(in oklch, var(--bg) 36%, transparent);
+}
+
+.embedded-page-frame-shell iframe {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: block;
+  border: 0;
+  background: var(--surface);
+}
+
+.embedded-pages-dialog {
+  width: min(940px, calc(100vw - 32px));
+  height: min(820px, calc(100dvh - 32px));
+  max-height: calc(100dvh - 32px);
+}
+
+.embedded-pages-dialog-body {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 24px;
+  overflow-y: auto;
+  padding: 22px;
+  scrollbar-gutter: stable;
+}
+
+.embedded-pages-group {
+  display: grid;
+  gap: 14px;
+}
+
+.embedded-pages-group + .embedded-pages-group {
+  padding-top: 22px;
+  border-top: 1px solid var(--border);
+}
+
+.embedded-pages-group-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.embedded-pages-group-heading h3,
+.embedded-page-form-heading h3 {
+  margin: 3px 0 0;
+  color: var(--fg);
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.embedded-pages-group-heading > div > p:last-child {
+  max-width: 62ch;
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.embedded-pages-list {
+  display: grid;
+  border-top: 1px solid var(--border);
+}
+
+.embedded-page-settings-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.embedded-page-settings-icon {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.embedded-page-settings-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.embedded-page-settings-copy > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.embedded-page-settings-copy strong,
+.embedded-page-settings-copy > span,
+.embedded-page-settings-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.embedded-page-settings-copy strong {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.embedded-page-settings-copy > span {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+}
+
+.embedded-page-settings-copy small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.embedded-page-scope-badge {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  line-height: 1.2;
+}
+
+.embedded-page-trust-badge {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 1px solid color-mix(in oklch, var(--fg) 32%, var(--border));
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  line-height: 1.2;
+}
+
+.embedded-page-settings-controls {
+  display: flex;
+  gap: 4px;
+}
+
+.embedded-page-delete-confirmation {
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px;
+  border: 1px solid var(--danger-border, var(--border));
+  background: color-mix(in oklch, var(--danger, var(--fg)) 8%, transparent);
+}
+
+.embedded-page-delete-confirmation p {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+}
+
+.embedded-page-delete-confirmation strong,
+.embedded-page-delete-confirmation span {
+  font-size: 12px;
+}
+
+.embedded-page-delete-confirmation span {
+  color: var(--muted);
+}
+
+.embedded-page-delete-confirmation > div {
+  display: flex;
+  gap: 8px;
+}
+
+.embedded-pages-empty {
+  margin: 0;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.embedded-page-form {
+  display: grid;
+  gap: 10px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  background: var(--fg-soft);
+}
+
+.embedded-page-form-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.embedded-page-form label {
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.embedded-page-form textarea {
+  min-height: 86px;
+  resize: vertical;
+}
+
+.embedded-page-form .field-note {
+  max-width: 70ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.embedded-page-height-control {
+  width: fit-content;
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.embedded-page-height-control span {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.embedded-page-trust-control {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 14px 0;
+  border-block: 1px solid var(--border);
+}
+
+.embedded-page-trust-toggle {
+  width: fit-content;
+}
+
+.embedded-page-trust-toggle > span:last-child {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+}
+
+.embedded-page-trust-toggle strong {
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.embedded-page-trust-toggle small {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+
+.embedded-page-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+@media (min-width: 721px) {
+  .dashboard-app.sidebar-is-collapsed .sidebar-custom-group-label,
+  .dashboard-app.sidebar-is-collapsed .sidebar-link--custom > svg {
+    display: none;
+  }
+
+  .dashboard-app.sidebar-is-collapsed .sidebar-link--custom {
+    min-height: 48px;
+  }
+}
+
+@media (max-width: 720px) {
+  .embedded-page {
+    gap: 16px;
+    padding: 20px 14px 24px;
+  }
+
+  .embedded-page-header,
+  .embedded-pages-group-heading,
+  .embedded-page-delete-confirmation {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .embedded-page-external,
+  .embedded-pages-group-heading > .ui-button {
+    align-self: flex-start;
+  }
+
+  .embedded-pages-dialog {
+    width: calc(100vw - 16px);
+    height: calc(100dvh - 16px);
+    max-height: calc(100dvh - 16px);
+  }
+
+  .embedded-pages-dialog-body {
+    padding: 16px;
+  }
+
+  .embedded-page-settings-row {
+    grid-template-columns: 38px minmax(0, 1fr);
+  }
+
+  .embedded-page-settings-controls,
+  .embedded-page-delete-confirmation {
+    grid-column: 1 / -1;
+  }
+
+  .embedded-page-settings-controls {
+    justify-content: flex-end;
+  }
+
+  .embedded-page-delete-confirmation > div {
+    justify-content: flex-end;
+  }
+}
+
+/* Safari added `scrollbar-gutter` in 18.2. Older versions still honour the
+   custom `::-webkit-scrollbar` styling above, which takes them off overlay
+   scrollbars, so keep the track permanently present instead of reserving a
+   gutter. Declared last so it wins over each container's own `overflow`. */
+@supports not (scrollbar-gutter: stable) {
+  .auth-shell,
+  .workspace,
+  .widget-content,
+  .command-dialog,
+  .settings-dialog,
+  .destructive-content,
+  .admin-directory,
+  .settings-form-scroll,
+  .embedded-pages-dialog-body,
+  .rss-subscription-scroll,
+  .dashboard-main,
+  .tasks-focus-panel,
+  .focus-settings-panel,
+  .task-editor-scroll,
+  .ui-dialog,
+  .kanban-card-dialog {
+    overflow-y: scroll;
   }
 }
