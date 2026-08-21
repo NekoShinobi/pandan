@@ -17,6 +17,7 @@
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import { SvelteMap } from "svelte/reactivity";
   import { createViewSwap } from "$lib/viewSwap.svelte";
+  import { motionPopover } from "$lib/motion.svelte";
   import {
     createLinePost,
     deleteLinePost,
@@ -262,9 +263,17 @@
   }
 
   function openView(next: LinesView) {
-    if (next.kind === "post" && view.kind === "post" && view.postId === next.postId)
+    if (
+      next.kind === "post" &&
+      view.kind === "post" &&
+      view.postId === next.postId
+    )
       return;
-    if (next.kind === "author" && view.kind === "author" && view.userId === next.userId)
+    if (
+      next.kind === "author" &&
+      view.kind === "author" &&
+      view.userId === next.userId
+    )
       return;
     const current = view;
     void viewSwap.run({
@@ -724,11 +733,7 @@
           data-od-id={`line-post-visibility-${post.id}`}
         >
           {#if post.visibility === "private"}
-            <LockKeyhole
-              size={13}
-              strokeWidth={1.8}
-              aria-hidden="true"
-            />
+            <LockKeyhole size={13} strokeWidth={1.8} aria-hidden="true" />
             <span class="sr-only">Private post</span>
           {:else}
             <Globe2 size={13} strokeWidth={1.8} aria-hidden="true" />
@@ -785,11 +790,7 @@
                 href={linePostAttachmentUrl(post.id, attachment.id)}
                 download={attachment.file_name}
               >
-                <FileText
-                  size={18}
-                  strokeWidth={1.7}
-                  aria-hidden="true"
-                />
+                <FileText size={18} strokeWidth={1.7} aria-hidden="true" />
                 <span>
                   <strong>{attachment.file_name}</strong>
                   <small>{fileSize(attachment.byte_size)}</small>
@@ -803,9 +804,7 @@
       {#if post.tags.length}
         <div class="line-post-tags" aria-label="Post hashtags">
           {#each post.tags as tag (tag)}
-            <button type="button" onclick={() => selectTag(tag)}
-              >#{tag}</button
-            >
+            <button type="button" onclick={() => selectTag(tag)}>#{tag}</button>
           {/each}
         </div>
       {/if}
@@ -849,27 +848,30 @@
             type="button"
             aria-label="Add a reaction"
             aria-expanded={reactionMenuPostId === post.id}
+            aria-controls={`line-reaction-picker-${post.id}`}
             onclick={() =>
               (reactionMenuPostId =
                 reactionMenuPostId === post.id ? "" : post.id)}
           >
             <SmilePlus size={16} strokeWidth={1.8} aria-hidden="true" />
           </button>
-          {#if reactionMenuPostId === post.id}
-            <div
-              class="line-reaction-picker"
-              aria-label="Choose a reaction"
-            >
-              {#each reactionChoices as emoji (emoji)}
-                <button
-                  type="button"
-                  aria-label={`React with ${emoji}`}
-                  onclick={() => toggleReaction(post, emoji)}
-                  >{emoji}</button
-                >
-              {/each}
-            </div>
-          {/if}
+          <div
+            id={`line-reaction-picker-${post.id}`}
+            class="line-reaction-picker"
+            aria-label="Choose a reaction"
+            aria-hidden={reactionMenuPostId !== post.id}
+            inert={reactionMenuPostId !== post.id}
+            data-od-id={`line-reaction-picker-${post.id}`}
+            {@attach motionPopover(reactionMenuPostId === post.id)}
+          >
+            {#each reactionChoices as emoji (emoji)}
+              <button
+                type="button"
+                aria-label={`React with ${emoji}`}
+                onclick={() => toggleReaction(post, emoji)}>{emoji}</button
+              >
+            {/each}
+          </div>
         </div>
 
         {#if post.user_id === viewerId || (viewerRole === "administrator" && post.visibility === "public")}
@@ -961,145 +963,145 @@
     {@attach viewSwap.attach}
   >
     {#if view.kind === "feed"}
-    <section class="lines-composer" data-od-id="lines-composer">
-      <div class="lines-composer-entry">
-        {@render lineAvatar(viewerName, "/api/settings/avatar")}
-        <div class="lines-composer-field">
-          <textarea
-            bind:this={composer}
-            bind:value={draftContent}
-            onkeydown={handleComposerKeydown}
-            maxlength="2000"
-            rows="3"
-            placeholder="Markdown is supported. Add #hashtags to make this post discoverable."
-            aria-label="Write a post"
-            data-od-id="lines-post-content"></textarea>
+      <section class="lines-composer" data-od-id="lines-composer">
+        <div class="lines-composer-entry">
+          {@render lineAvatar(viewerName, "/api/settings/avatar")}
+          <div class="lines-composer-field">
+            <textarea
+              bind:this={composer}
+              bind:value={draftContent}
+              onkeydown={handleComposerKeydown}
+              maxlength="2000"
+              rows="3"
+              placeholder="Markdown is supported. Add #hashtags to make this post discoverable."
+              aria-label="Write a post"
+              data-od-id="lines-post-content"></textarea>
 
-          {#if pendingFiles.length}
-            {@render pendingFileList(
-              pendingFiles,
-              removePendingFile,
-              "lines-pending-files",
-            )}
-          {/if}
+            {#if pendingFiles.length}
+              {@render pendingFileList(
+                pendingFiles,
+                removePendingFile,
+                "lines-pending-files",
+              )}
+            {/if}
+          </div>
         </div>
-      </div>
 
-      <div class="lines-composer-actions">
-        <div>
-          <input
-            bind:this={fileInput}
-            class="lines-file-input"
-            type="file"
-            multiple
-            onchange={chooseFiles}
-            data-od-id="lines-file-input"
-          />
-          <button
-            class="ui-button ui-button--ghost"
-            type="button"
-            onclick={() => fileInput?.click()}
-            data-od-id="attach-lines-files"
-          >
-            <Paperclip size={16} strokeWidth={1.8} aria-hidden="true" />
-            Attach
-          </button>
-          <span class:over-limit={characterCount > 2000}>
-            {characterCount} / 2000
-          </span>
-        </div>
-        <div class="lines-composer-publish">
-          {@render visibilityChoice(
-            draftVisibility,
-            (next) => (draftVisibility = next),
-            false,
-            "lines-visibility-control",
-          )}
-          <button
-            class="ui-button ui-button--primary"
-            type="button"
-            disabled={!canSubmit}
-            onclick={submitPost}
-            data-od-id="publish-line-post"
-          >
-            <Send size={16} strokeWidth={1.8} aria-hidden="true" />
-            {submitting ? "Posting…" : "Post"}
-          </button>
-        </div>
-      </div>
-    </section>
-
-    <nav
-      class="lines-feed-tabs"
-      aria-label="Lines feeds"
-      data-od-id="lines-feed-tabs"
-    >
-      <button
-        class:active={scope === "instance"}
-        type="button"
-        aria-current={scope === "instance" ? "page" : undefined}
-        onclick={() => selectScope("instance")}>Instance</button
-      >
-      <button
-        class:active={scope === "mine"}
-        type="button"
-        aria-current={scope === "mine" ? "page" : undefined}
-        onclick={() => selectScope("mine")}>Mine</button
-      >
-      <button
-        class="lines-refresh"
-        type="button"
-        aria-label="Refresh Lines"
-        disabled={loading || refreshing}
-        onclick={loadPosts}
-      >
-        <RefreshCw
-          class={refreshing ? "spinning" : undefined}
-          size={16}
-          strokeWidth={1.8}
-          aria-hidden="true"
-        />
-      </button>
-    </nav>
-
-    {#if error}
-      <p class="lines-error" role="alert">{error}</p>
-    {/if}
-
-    <section
-      class="lines-feed"
-      aria-busy={loading || refreshing}
-      data-od-id="lines-feed"
-    >
-      {#if loading}
-        <div class="lines-status">
-          <span></span>
-          Loading the timeline…
-        </div>
-      {:else if posts.length === 0}
-        <div class="lines-empty">
-          <strong>No posts found.</strong>
-          <p>
-            {appliedSearch || activeTag
-              ? "Clear the current search or hashtag filter."
-              : scope === "mine"
-                ? "Your first post starts in the composer above."
-                : "Be the first person to write on this instance."}
-          </p>
-          {#if appliedSearch || activeTag}
+        <div class="lines-composer-actions">
+          <div>
+            <input
+              bind:this={fileInput}
+              class="lines-file-input"
+              type="file"
+              multiple
+              onchange={chooseFiles}
+              data-od-id="lines-file-input"
+            />
             <button
-              class="ui-button ui-button--secondary"
+              class="ui-button ui-button--ghost"
               type="button"
-              onclick={clearFilters}>Clear filters</button
+              onclick={() => fileInput?.click()}
+              data-od-id="attach-lines-files"
             >
-          {/if}
+              <Paperclip size={16} strokeWidth={1.8} aria-hidden="true" />
+              Attach
+            </button>
+            <span class:over-limit={characterCount > 2000}>
+              {characterCount} / 2000
+            </span>
+          </div>
+          <div class="lines-composer-publish">
+            {@render visibilityChoice(
+              draftVisibility,
+              (next) => (draftVisibility = next),
+              false,
+              "lines-visibility-control",
+            )}
+            <button
+              class="ui-button ui-button--primary"
+              type="button"
+              disabled={!canSubmit}
+              onclick={submitPost}
+              data-od-id="publish-line-post"
+            >
+              <Send size={16} strokeWidth={1.8} aria-hidden="true" />
+              {submitting ? "Posting…" : "Post"}
+            </button>
+          </div>
         </div>
-      {:else}
-        {#each posts as post (post.id)}
-          {@render postCard(post, false)}
-        {/each}
+      </section>
+
+      <nav
+        class="lines-feed-tabs"
+        aria-label="Lines feeds"
+        data-od-id="lines-feed-tabs"
+      >
+        <button
+          class:active={scope === "instance"}
+          type="button"
+          aria-current={scope === "instance" ? "page" : undefined}
+          onclick={() => selectScope("instance")}>Instance</button
+        >
+        <button
+          class:active={scope === "mine"}
+          type="button"
+          aria-current={scope === "mine" ? "page" : undefined}
+          onclick={() => selectScope("mine")}>Mine</button
+        >
+        <button
+          class="lines-refresh"
+          type="button"
+          aria-label="Refresh Lines"
+          disabled={loading || refreshing}
+          onclick={loadPosts}
+        >
+          <RefreshCw
+            class={refreshing ? "spinning" : undefined}
+            size={16}
+            strokeWidth={1.8}
+            aria-hidden="true"
+          />
+        </button>
+      </nav>
+
+      {#if error}
+        <p class="lines-error" role="alert">{error}</p>
       {/if}
-    </section>
+
+      <section
+        class="lines-feed"
+        aria-busy={loading || refreshing}
+        data-od-id="lines-feed"
+      >
+        {#if loading}
+          <div class="lines-status">
+            <span></span>
+            Loading the timeline…
+          </div>
+        {:else if posts.length === 0}
+          <div class="lines-empty">
+            <strong>No posts found.</strong>
+            <p>
+              {appliedSearch || activeTag
+                ? "Clear the current search or hashtag filter."
+                : scope === "mine"
+                  ? "Your first post starts in the composer above."
+                  : "Be the first person to write on this instance."}
+            </p>
+            {#if appliedSearch || activeTag}
+              <button
+                class="ui-button ui-button--secondary"
+                type="button"
+                onclick={clearFilters}>Clear filters</button
+              >
+            {/if}
+          </div>
+        {:else}
+          {#each posts as post (post.id)}
+            {@render postCard(post, false)}
+          {/each}
+        {/if}
+      </section>
     {:else}
       <header class="lines-screen-head" data-od-id="lines-screen-head">
         <button
@@ -1267,7 +1269,6 @@
         <p>Hashtags from visible posts will collect here.</p>
       {/if}
     </section>
-
   </aside>
 </section>
 
@@ -2177,6 +2178,11 @@
     border: 1px solid var(--border);
     background: var(--surface);
     box-shadow: var(--shadow);
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(6px);
+    will-change: opacity, transform;
   }
 
   .line-reaction-picker button {

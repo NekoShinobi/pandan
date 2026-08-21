@@ -163,6 +163,19 @@ pub struct AuthenticationSettings {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct NetworkAccessRule {
+    pub id: String,
+    pub action: String,
+    pub scheme: String,
+    pub host: String,
+    pub port: i64,
+    pub integration: String,
+    pub created_by_user_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, FromRow, PartialEq, Eq)]
 pub struct UserCredentials {
     pub id: String,
@@ -248,6 +261,7 @@ pub struct EmbeddedPage {
     pub title: String,
     pub description: String,
     pub url: String,
+    pub allow_scripts: bool,
     pub allow_same_origin: bool,
     pub iframe_height: i64,
     pub position: i64,
@@ -298,6 +312,7 @@ pub struct RssItem {
     pub category: String,
     pub base_url: String,
     pub url: String,
+    pub comments_url: String,
     pub title: String,
     pub summary: String,
     pub published_at: String,
@@ -327,6 +342,7 @@ pub struct RssRefreshTarget {
 pub struct RssItemDraft {
     pub external_id: String,
     pub url: String,
+    pub comments_url: String,
     pub title: String,
     pub summary: String,
     pub published_at: String,
@@ -608,4 +624,56 @@ pub struct DashboardWidget {
     pub has_secret: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
+pub struct NtfyConnection {
+    pub user_id: String,
+    pub base_url: String,
+    pub token_ciphertext: Option<String>,
+    pub last_synced_at: Option<String>,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct NtfyTopic {
+    pub id: String,
+    pub topic: String,
+    pub label: String,
+    pub last_message_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct NtfyNotification {
+    pub id: String,
+    pub topic_id: String,
+    pub topic: String,
+    pub topic_label: String,
+    pub remote_id: String,
+    pub occurred_at: i64,
+    pub title: String,
+    pub message: String,
+    pub priority: i64,
+    pub tags_json: String,
+    pub click_url: Option<String>,
+    pub actions_json: String,
+    pub seen_at: Option<String>,
+    pub archived_at: Option<String>,
+    pub received_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NtfyNotificationDraft {
+    pub remote_id: String,
+    pub occurred_at: i64,
+    pub title: String,
+    pub message: String,
+    pub priority: i64,
+    pub tags_json: String,
+    pub click_url: Option<String>,
+    pub actions_json: String,
 }

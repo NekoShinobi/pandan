@@ -1,5 +1,6 @@
 pub mod contact_queries;
 pub mod entities;
+pub mod ntfy_queries;
 mod podcast_queries;
 pub mod queries;
 pub mod wall_queries;
@@ -158,6 +159,26 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "042_embedded_page_height",
         include_str!("../migrations/042_embedded_page_height.sql"),
     ),
+    (
+        "043_embedded_page_scripts",
+        include_str!("../migrations/043_embedded_page_scripts.sql"),
+    ),
+    (
+        "044_rss_item_comments_url",
+        include_str!("../migrations/044_rss_item_comments_url.sql"),
+    ),
+    (
+        "045_ntfy_notifications",
+        include_str!("../migrations/045_ntfy_notifications.sql"),
+    ),
+    (
+        "046_network_access_rules",
+        include_str!("../migrations/046_network_access_rules.sql"),
+    ),
+    (
+        "047_ntfy_remove_archived",
+        include_str!("../migrations/047_ntfy_remove_archived.sql"),
+    ),
 ];
 
 /// Maps migration names used by earlier development builds to their canonical names.
@@ -315,6 +336,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rss_comments_url_migration_preserves_existing_items() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::from_str("sqlite::memory:")
+                    .expect("memory url parses")
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("database connects");
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS _migrations (\
+             name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("migration ledger creates");
+
+        let comments_index = MIGRATIONS
+            .iter()
+            .position(|(name, _)| *name == "044_rss_item_comments_url")
+            .expect("RSS comments URL migration is registered");
+        for (name, migration_sql) in MIGRATIONS.iter().take(comments_index) {
+            let mut transaction = pool.begin().await.expect("migration starts");
+            sqlx::raw_sql(*migration_sql)
+                .execute(&mut *transaction)
+                .await
+                .expect("existing migration applies");
+            sqlx::query("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)")
+                .bind(*name)
+                .bind(chrono::Utc::now().to_rfc3339())
+                .execute(&mut *transaction)
+                .await
+                .expect("existing migration records");
+            transaction.commit().await.expect("migration commits");
+        }
+
+        let (owner, _) = queries::create_account(
+            &pool,
+            "rss-comments-upgrade@example.com",
+            "$argon2id$upgrade",
+            "RSS Comments Upgrade",
+        )
+        .await
+        .expect("owner creates");
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO rss_subscriptions \
+             (id, user_id, url, base_url, title, category, auto_delete_days, auto_delete_mode, \
+              last_fetched_at, last_attempted_at, created_at, updated_at) \
+             VALUES ('legacy-rss', ?, 'https://example.com/feed.xml', 'https://example.com', \
+                     'Legacy feed', 'General', 7, 'all', ?, ?, ?, ?)",
+        )
+        .bind(&owner.id)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("legacy subscription stores");
+        sqlx::query(
+            "INSERT INTO rss_items \
+             (id, subscription_id, external_id, url, title, summary, published_at, fetched_at) \
+             VALUES ('legacy-item', 'legacy-rss', 'legacy-entry', \
+                     'https://example.com/article', 'Legacy article', '', ?, ?)",
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("legacy item stores");
+
+        run_migrations(&pool)
+            .await
+            .expect("RSS comments URL migration applies");
+
+        let comments_url: String =
+            sqlx::query_scalar("SELECT comments_url FROM rss_items WHERE id = 'legacy-item'")
+                .fetch_one(&pool)
+                .await
+                .expect("migrated item loads");
+        assert!(comments_url.is_empty());
+    }
+
+    #[tokio::test]
     async fn the_walls_migration_applies_over_an_existing_database() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -397,7 +504,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn embedded_page_height_migration_defaults_existing_pages() {
+    async fn embedded_page_option_migrations_default_existing_pages() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(
@@ -461,14 +568,16 @@ mod tests {
         run_migrations(&pool)
             .await
             .expect("height migration applies");
-        let iframe_height: i64 = sqlx::query_scalar(
-            "SELECT iframe_height FROM embedded_pages WHERE id = 'legacy-embedded-page'",
+        let (iframe_height, allow_scripts): (i64, bool) = sqlx::query_as(
+            "SELECT iframe_height, allow_scripts FROM embedded_pages \
+             WHERE id = 'legacy-embedded-page'",
         )
         .fetch_one(&pool)
         .await
-        .expect("migrated height loads");
+        .expect("migrated embedded-page options load");
 
         assert_eq!(iframe_height, 720);
+        assert!(!allow_scripts);
     }
 
     #[tokio::test]
@@ -506,6 +615,7 @@ mod tests {
             "Instance status",
             "https://status.example.com/",
             false,
+            false,
             720,
         )
         .await
@@ -516,6 +626,7 @@ mod tests {
             "Notes",
             "Private notes",
             "https://notes.example.com/",
+            true,
             true,
             960,
         )
@@ -528,6 +639,7 @@ mod tests {
             "Private reports",
             "https://reports.example.com/",
             false,
+            false,
             640,
         )
         .await
@@ -538,6 +650,7 @@ mod tests {
             "Other",
             "Another account's page",
             "https://other.example.com/",
+            false,
             false,
             720,
         )
@@ -556,6 +669,8 @@ mod tests {
         );
         assert!(owner_pages[0].allow_same_origin);
         assert!(!owner_pages[1].allow_same_origin);
+        assert!(owner_pages[0].allow_scripts);
+        assert!(!owner_pages[1].allow_scripts);
         assert_eq!(owner_pages[0].iframe_height, 960);
         assert_eq!(owner_pages[1].iframe_height, 640);
         assert!(
@@ -1285,6 +1400,7 @@ mod tests {
             &[entities::RssItemDraft {
                 external_id: "old-entry".to_owned(),
                 url: "https://example.com/old".to_owned(),
+                comments_url: "https://example.com/old/comments".to_owned(),
                 title: "Old entry".to_owned(),
                 summary: String::new(),
                 published_at: "2000-01-01T00:00:00Z".to_owned(),
@@ -1310,18 +1426,18 @@ mod tests {
             .await
             .unwrap()
             .remove(0);
+        assert_eq!(item.comments_url, "https://example.com/old/comments");
         assert!(
             queries::set_rss_item_read(&pool, &other.id, &item.id, true)
                 .await
                 .unwrap()
                 .is_none()
         );
-        assert!(
-            queries::set_rss_item_read(&pool, &owner.id, &item.id, true)
-                .await
-                .unwrap()
-                .is_some()
-        );
+        let read_item = queries::set_rss_item_read(&pool, &owner.id, &item.id, true)
+            .await
+            .unwrap()
+            .expect("owner can mark the item read");
+        assert_eq!(read_item.comments_url, item.comments_url);
         assert!(
             queries::set_rss_item_saved(&pool, &other.id, &item.id, true)
                 .await

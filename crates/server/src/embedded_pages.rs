@@ -31,6 +31,8 @@ struct EmbeddedPageInput {
     description: String,
     url: String,
     #[serde(default)]
+    allow_scripts: bool,
+    #[serde(default)]
     allow_same_origin: bool,
     #[serde(default = "default_iframe_height")]
     iframe_height: i64,
@@ -107,6 +109,7 @@ async fn create_personal_page(
         &title,
         &description,
         &url,
+        payload.allow_scripts,
         payload.allow_same_origin,
         iframe_height,
     )
@@ -128,6 +131,7 @@ async fn create_global_page(
         &title,
         &description,
         &url,
+        payload.allow_scripts,
         payload.allow_same_origin,
         iframe_height,
     )
@@ -150,6 +154,7 @@ async fn update_personal_page(
         &title,
         &description,
         &url,
+        payload.allow_scripts,
         payload.allow_same_origin,
         iframe_height,
     )
@@ -172,6 +177,7 @@ async fn update_global_page(
         &title,
         &description,
         &url,
+        payload.allow_scripts,
         payload.allow_same_origin,
         iframe_height,
     )
@@ -331,6 +337,7 @@ mod tests {
             title: "Status".to_owned(),
             description: String::new(),
             url: "https://example.com/embed?view=compact".to_owned(),
+            allow_scripts: true,
             allow_same_origin: true,
             iframe_height: DEFAULT_IFRAME_HEIGHT,
         };
@@ -347,6 +354,7 @@ mod tests {
                 title: "Status".to_owned(),
                 description: String::new(),
                 url: url.to_owned(),
+                allow_scripts: false,
                 allow_same_origin: false,
                 iframe_height: DEFAULT_IFRAME_HEIGHT,
             };
@@ -355,12 +363,13 @@ mod tests {
     }
 
     #[test]
-    fn embedded_page_trust_is_opt_in_for_older_clients() {
+    fn embedded_page_permissions_are_opt_in_for_older_clients() {
         let input: EmbeddedPageInput = serde_json::from_str(
             r#"{"title":"Status","description":"","url":"https://example.com/"}"#,
         )
         .expect("embedded page input deserializes");
 
+        assert!(!input.allow_scripts);
         assert!(!input.allow_same_origin);
         assert_eq!(input.iframe_height, DEFAULT_IFRAME_HEIGHT);
     }
@@ -372,6 +381,7 @@ mod tests {
                 title: "Status".to_owned(),
                 description: String::new(),
                 url: "https://example.com/".to_owned(),
+                allow_scripts: false,
                 allow_same_origin: false,
                 iframe_height,
             };

@@ -5,10 +5,11 @@ use crate::entities::{
     KanbanChecklist, KanbanChecklistItem, KanbanColumn, KanbanComment, KanbanDirectoryUser,
     KanbanInvitation, KanbanLabel, KanbanMember, KanbanMemberPermission, KanbanOverview,
     KanbanRolePermission, KanbanWorkspace, KanbanWorkspaceSettings, LineAuthorProfile, LinePost,
-    LinePostAttachment, LinePostDraft, LinePostReaction, ManagedUser, OidcAuthorization,
-    PaymentSubscription, RssItem, RssItemDraft, RssRefreshTarget, RssSubscription,
-    RssSubscriptionDraft, SessionAccount, Task, TaskAttachment, TaskDraft, TaskSubtask, User,
-    UserAppearance, UserAvatar, UserBackground, UserCredentials, UserSettings, Workspace,
+    LinePostAttachment, LinePostDraft, LinePostReaction, ManagedUser, NetworkAccessRule,
+    OidcAuthorization, PaymentSubscription, RssItem, RssItemDraft, RssRefreshTarget,
+    RssSubscription, RssSubscriptionDraft, SessionAccount, Task, TaskAttachment, TaskDraft,
+    TaskSubtask, User, UserAppearance, UserAvatar, UserBackground, UserCredentials, UserSettings,
+    Workspace,
 };
 pub use crate::podcast_queries::*;
 pub use crate::youtube_queries::*;
@@ -1838,7 +1839,7 @@ pub async fn list_rss_subscriptions(
 pub async fn list_rss_items(pool: &SqlitePool, user_id: &str) -> Result<Vec<RssItem>, sqlx::Error> {
     sqlx::query_as::<_, RssItem>(
         "SELECT i.id, i.subscription_id, s.title AS source, s.category, s.base_url, i.url, \
-         i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at \
+         i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at \
          FROM rss_items i JOIN rss_subscriptions s ON s.id = i.subscription_id \
          LEFT JOIN rss_read_later rl ON rl.item_id = i.id AND rl.user_id = ? \
          WHERE s.user_id = ? ORDER BY datetime(i.published_at) DESC, i.fetched_at DESC",
@@ -1928,16 +1929,18 @@ async fn upsert_rss_items(
     for item in items {
         sqlx::query(
             "INSERT INTO rss_items \
-             (id, subscription_id, external_id, url, title, summary, published_at, fetched_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+             (id, subscription_id, external_id, url, comments_url, title, summary, published_at, fetched_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(subscription_id, external_id) DO UPDATE SET \
-             url = excluded.url, title = excluded.title, summary = excluded.summary, \
+             url = excluded.url, comments_url = excluded.comments_url, \
+             title = excluded.title, summary = excluded.summary, \
              published_at = excluded.published_at, fetched_at = excluded.fetched_at",
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(subscription_id)
         .bind(&item.external_id)
         .bind(&item.url)
+        .bind(&item.comments_url)
         .bind(&item.title)
         .bind(&item.summary)
         .bind(&item.published_at)
@@ -2129,7 +2132,7 @@ pub async fn set_rss_item_read(
     }
     sqlx::query_as::<_, RssItem>(
         "SELECT i.id, i.subscription_id, s.title AS source, s.category, s.base_url, i.url, \
-         i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at \
+         i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at \
          FROM rss_items i JOIN rss_subscriptions s ON s.id = i.subscription_id \
          LEFT JOIN rss_read_later rl ON rl.item_id = i.id AND rl.user_id = ? \
          WHERE i.id = ? AND s.user_id = ?",
@@ -2182,7 +2185,7 @@ pub async fn set_rss_item_saved(
     }
     sqlx::query_as::<_, RssItem>(
         "SELECT i.id, i.subscription_id, s.title AS source, s.category, s.base_url, i.url, \
-         i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at \
+         i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at \
          FROM rss_items i JOIN rss_subscriptions s ON s.id = i.subscription_id \
          LEFT JOIN rss_read_later rl ON rl.item_id = i.id AND rl.user_id = ? \
          WHERE i.id = ? AND s.user_id = ?",
@@ -2885,7 +2888,7 @@ pub async fn list_global_embedded_pages(
 ) -> Result<Vec<EmbeddedPage>, sqlx::Error> {
     sqlx::query_as::<_, EmbeddedPage>(
         "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
-         allow_same_origin, iframe_height, position, created_at, updated_at \
+         allow_scripts, allow_same_origin, iframe_height, position, created_at, updated_at \
          FROM embedded_pages \
          WHERE scope = 'global' AND owner_user_id IS NULL \
          ORDER BY position ASC, created_at ASC, id ASC",
@@ -2905,7 +2908,7 @@ pub async fn list_personal_embedded_pages(
 ) -> Result<Vec<EmbeddedPage>, sqlx::Error> {
     sqlx::query_as::<_, EmbeddedPage>(
         "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
-         allow_same_origin, iframe_height, position, created_at, updated_at \
+         allow_scripts, allow_same_origin, iframe_height, position, created_at, updated_at \
          FROM embedded_pages \
          WHERE scope = 'user' AND owner_user_id = ? \
          ORDER BY position ASC, created_at ASC, id ASC",
@@ -2958,6 +2961,7 @@ pub async fn create_personal_embedded_page(
     title: &str,
     description: &str,
     url: &str,
+    allow_scripts: bool,
     allow_same_origin: bool,
     iframe_height: i64,
 ) -> Result<EmbeddedPage, sqlx::Error> {
@@ -2969,6 +2973,7 @@ pub async fn create_personal_embedded_page(
         title,
         description,
         url,
+        allow_scripts,
         allow_same_origin,
         iframe_height,
     )
@@ -2986,6 +2991,7 @@ pub async fn create_global_embedded_page(
     title: &str,
     description: &str,
     url: &str,
+    allow_scripts: bool,
     allow_same_origin: bool,
     iframe_height: i64,
 ) -> Result<EmbeddedPage, sqlx::Error> {
@@ -2997,6 +3003,7 @@ pub async fn create_global_embedded_page(
         title,
         description,
         url,
+        allow_scripts,
         allow_same_origin,
         iframe_height,
     )
@@ -3011,6 +3018,7 @@ async fn create_embedded_page(
     title: &str,
     description: &str,
     url: &str,
+    allow_scripts: bool,
     allow_same_origin: bool,
     iframe_height: i64,
 ) -> Result<EmbeddedPage, sqlx::Error> {
@@ -3037,8 +3045,8 @@ async fn create_embedded_page(
     sqlx::query(
         "INSERT INTO embedded_pages \
          (id, scope, owner_user_id, created_by_user_id, title, description, url, \
-          allow_same_origin, iframe_height, position, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          allow_scripts, allow_same_origin, iframe_height, position, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(scope)
@@ -3047,6 +3055,7 @@ async fn create_embedded_page(
     .bind(title)
     .bind(description)
     .bind(url)
+    .bind(allow_scripts)
     .bind(allow_same_origin)
     .bind(iframe_height)
     .bind(position)
@@ -3064,6 +3073,7 @@ async fn create_embedded_page(
         title: title.to_owned(),
         description: description.to_owned(),
         url: url.to_owned(),
+        allow_scripts,
         allow_same_origin,
         iframe_height,
         position,
@@ -3084,18 +3094,20 @@ pub async fn update_personal_embedded_page(
     title: &str,
     description: &str,
     url: &str,
+    allow_scripts: bool,
     allow_same_origin: bool,
     iframe_height: i64,
 ) -> Result<Option<EmbeddedPage>, sqlx::Error> {
     let updated_at = chrono::Utc::now().to_rfc3339();
     let result = sqlx::query(
         "UPDATE embedded_pages SET title = ?, description = ?, url = ?, \
-         allow_same_origin = ?, iframe_height = ?, updated_at = ? \
+         allow_scripts = ?, allow_same_origin = ?, iframe_height = ?, updated_at = ? \
          WHERE id = ? AND scope = 'user' AND owner_user_id = ?",
     )
     .bind(title)
     .bind(description)
     .bind(url)
+    .bind(allow_scripts)
     .bind(allow_same_origin)
     .bind(iframe_height)
     .bind(&updated_at)
@@ -3109,7 +3121,7 @@ pub async fn update_personal_embedded_page(
 
     sqlx::query_as::<_, EmbeddedPage>(
         "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
-         allow_same_origin, iframe_height, position, created_at, updated_at \
+         allow_scripts, allow_same_origin, iframe_height, position, created_at, updated_at \
          FROM embedded_pages WHERE id = ?",
     )
     .bind(page_id)
@@ -3128,18 +3140,20 @@ pub async fn update_global_embedded_page(
     title: &str,
     description: &str,
     url: &str,
+    allow_scripts: bool,
     allow_same_origin: bool,
     iframe_height: i64,
 ) -> Result<Option<EmbeddedPage>, sqlx::Error> {
     let updated_at = chrono::Utc::now().to_rfc3339();
     let result = sqlx::query(
         "UPDATE embedded_pages SET title = ?, description = ?, url = ?, \
-         allow_same_origin = ?, iframe_height = ?, updated_at = ? \
+         allow_scripts = ?, allow_same_origin = ?, iframe_height = ?, updated_at = ? \
          WHERE id = ? AND scope = 'global' AND owner_user_id IS NULL",
     )
     .bind(title)
     .bind(description)
     .bind(url)
+    .bind(allow_scripts)
     .bind(allow_same_origin)
     .bind(iframe_height)
     .bind(&updated_at)
@@ -3152,7 +3166,7 @@ pub async fn update_global_embedded_page(
 
     sqlx::query_as::<_, EmbeddedPage>(
         "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
-         allow_same_origin, iframe_height, position, created_at, updated_at \
+         allow_scripts, allow_same_origin, iframe_height, position, created_at, updated_at \
          FROM embedded_pages WHERE id = ?",
     )
     .bind(page_id)
@@ -4070,6 +4084,118 @@ pub async fn update_authentication_settings(
     .execute(pool)
     .await?;
     get_authentication_settings(pool).await
+}
+
+/// Lists the administrator-managed outbound network rules in deterministic order.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the rules cannot be loaded.
+pub async fn list_network_access_rules(
+    pool: &SqlitePool,
+) -> Result<Vec<NetworkAccessRule>, sqlx::Error> {
+    sqlx::query_as::<_, NetworkAccessRule>(
+        "SELECT id, action, scheme, host, port, integration, created_by_user_id, \
+                created_at, updated_at \
+         FROM network_access_rules \
+         ORDER BY action = 'deny' DESC, integration ASC, scheme ASC, host ASC, port ASC",
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// Loads exact-origin rules that apply to one outbound integration.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the rules cannot be loaded.
+pub async fn find_network_access_rules(
+    pool: &SqlitePool,
+    scheme: &str,
+    host: &str,
+    port: i64,
+    integration: &str,
+) -> Result<Vec<NetworkAccessRule>, sqlx::Error> {
+    sqlx::query_as::<_, NetworkAccessRule>(
+        "SELECT id, action, scheme, host, port, integration, created_by_user_id, \
+                created_at, updated_at \
+         FROM network_access_rules \
+         WHERE scheme = ? AND host = ? AND port = ? \
+           AND integration IN ('all', ?) \
+         ORDER BY action = 'deny' DESC",
+    )
+    .bind(scheme)
+    .bind(host)
+    .bind(port)
+    .bind(integration)
+    .fetch_all(pool)
+    .await
+}
+
+/// Creates one exact-origin outbound network rule.
+///
+/// Returns `None` when the same rule already exists or the instance has reached the 128-rule
+/// safety limit.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the rule cannot be created or reloaded.
+#[allow(clippy::too_many_arguments)]
+pub async fn create_network_access_rule(
+    pool: &SqlitePool,
+    id: &str,
+    action: &str,
+    scheme: &str,
+    host: &str,
+    port: i64,
+    integration: &str,
+    created_by_user_id: &str,
+) -> Result<Option<NetworkAccessRule>, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let result = sqlx::query(
+        "INSERT INTO network_access_rules (\
+             id, action, scheme, host, port, integration, created_by_user_id, created_at, updated_at\
+         ) \
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? \
+         WHERE (SELECT COUNT(*) FROM network_access_rules) < 128 \
+         ON CONFLICT(action, scheme, host, port, integration) DO NOTHING",
+    )
+    .bind(id)
+    .bind(action)
+    .bind(scheme)
+    .bind(host)
+    .bind(port)
+    .bind(integration)
+    .bind(created_by_user_id)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    sqlx::query_as::<_, NetworkAccessRule>(
+        "SELECT id, action, scheme, host, port, integration, created_by_user_id, \
+                created_at, updated_at \
+         FROM network_access_rules WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Deletes one outbound network rule.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the rule cannot be deleted.
+pub async fn delete_network_access_rule(pool: &SqlitePool, id: &str) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query("DELETE FROM network_access_rules WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected()
+        == 1)
 }
 
 /// Changes another user's role while preserving at least one administrator.

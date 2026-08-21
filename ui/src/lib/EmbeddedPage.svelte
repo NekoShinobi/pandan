@@ -4,11 +4,12 @@
   import type { EmbeddedPage } from "$lib/api";
 
   let { page } = $props<{ page: EmbeddedPage }>();
-  let sandboxPermissions = $derived(
-    page.allow_same_origin
-      ? "allow-forms allow-popups allow-scripts allow-same-origin"
-      : "allow-forms allow-popups allow-scripts",
-  );
+  let sandboxPermissions = $derived.by(() => {
+    const permissions = ["allow-forms", "allow-popups"];
+    if (page.allow_scripts) permissions.push("allow-scripts");
+    if (page.allow_same_origin) permissions.push("allow-same-origin");
+    return permissions.join(" ");
+  });
 </script>
 
 <section

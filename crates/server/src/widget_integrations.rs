@@ -1,3 +1,4 @@
+use crate::CodingResponse;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
@@ -13,23 +14,25 @@ use futures_util::{
     stream::{self, StreamExt},
 };
 use quick_xml::{Reader, de::from_str, events::Event};
-use reqwest::{Client, Method, StatusCode, Url, header};
+use reqwest::{Client, ClientBuilder, Method, StatusCode, Url, header};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sqlx::SqlitePool;
 use std::{
     cmp::Reverse,
     collections::{HashMap, HashSet},
-    net::IpAddr,
     sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::{
-    net::lookup_host,
     sync::{RwLock, Semaphore},
     time::sleep,
 };
 
+use crate::network_policy::{NetworkAccessScope, NetworkPolicy};
+
 const CACHE_DURATION: Duration = Duration::from_secs(15 * 60);
+const CODING_CACHE_DURATION: Duration = Duration::from_secs(60 * 60);
 const MAX_RESPONSE_BYTES: usize = 2_000_000;
 const MAX_YOUTUBE_CHANNEL_METADATA_BYTES: usize = 1_000_000;
 const MAX_OWNED_REPOSITORIES: usize = 500;
@@ -40,17 +43,29 @@ const MAX_REDDIT_RETRY_SECONDS: u64 = 60;
 
 #[derive(Clone)]
 pub struct WidgetIntegrationService {
-    client: Client,
+    network_policy: NetworkPolicy,
     cipher: Option<XChaCha20Poly1305>,
     invidious_base_url: Option<Url>,
     invidious_allows_private_network: bool,
     reddit_request_gate: Arc<Semaphore>,
     cache: Arc<RwLock<HashMap<String, CachedData>>>,
+    coding_cache: Arc<RwLock<CodingCache>>,
 }
 
 struct CachedData {
     stored_at: Instant,
     value: Value,
+}
+
+#[derive(Default)]
+struct CodingCache {
+    entries: HashMap<String, CachedCodingData>,
+    generations: HashMap<String, u64>,
+}
+
+struct CachedCodingData {
+    stored_at: Instant,
+    value: CodingResponse,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +78,7 @@ pub struct RssFeedSnapshot {
 pub struct RssFeedEntry {
     pub external_id: String,
     pub url: String,
+    pub comments_url: String,
     pub title: String,
     pub summary: String,
     pub published_at: String,
@@ -137,13 +153,51 @@ pub struct CodingPipeline {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct NtfyMessage {
+    pub id: String,
+    pub time: i64,
+    #[serde(default)]
+    pub event: String,
+    pub topic: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default = "default_ntfy_priority")]
+    pub priority: i64,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub click: Option<String>,
+    #[serde(default)]
+    pub actions: Vec<NtfyAction>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct NtfyAction {
+    pub action: String,
+    pub label: String,
+    pub url: Option<String>,
+    pub method: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    pub body: Option<String>,
+    pub value: Option<String>,
+    #[serde(default)]
+    pub clear: bool,
+}
+
+const fn default_ntfy_priority() -> i64 {
+    3
+}
+
 impl WidgetIntegrationService {
     /// Builds the provider client and optional credential cipher from environment configuration.
     ///
     /// # Errors
     ///
     /// Returns an error when the encryption key or HTTP client configuration is invalid.
-    pub fn from_env() -> Result<Self, String> {
+    pub fn from_env(pool: SqlitePool) -> Result<Self, String> {
         let key = std::env::var("PANDAN_SECRET_KEY").ok();
         let invidious_base_url = std::env::var("INVIDIOUS_BASE_URL").ok();
         let invidious_allows_private_network = std::env::var("INVIDIOUS_ALLOW_PRIVATE_NETWORK")
@@ -153,10 +207,11 @@ impl WidgetIntegrationService {
                     "1" | "true" | "yes"
                 )
             });
-        Self::new_with_invidious(
+        Self::new_with_policy(
             key.as_deref(),
             invidious_base_url.as_deref(),
             invidious_allows_private_network,
+            NetworkPolicy::new(pool),
         )
     }
 
@@ -166,18 +221,34 @@ impl WidgetIntegrationService {
     /// # Errors
     ///
     /// Returns an error if the test HTTP client cannot be initialized.
-    pub fn for_tests() -> Result<Self, String> {
-        Self::new(None)
+    pub fn for_tests(pool: SqlitePool) -> Result<Self, String> {
+        Self::new_with_policy(None, None, false, NetworkPolicy::new(pool))
     }
 
+    #[cfg(test)]
     fn new(encoded_key: Option<&str>) -> Result<Self, String> {
-        Self::new_with_invidious(encoded_key, None, false)
+        Self::new_with_policy(encoded_key, None, false, NetworkPolicy::without_rules())
     }
 
+    #[cfg(test)]
     fn new_with_invidious(
         encoded_key: Option<&str>,
         invidious_base_url: Option<&str>,
         invidious_allows_private_network: bool,
+    ) -> Result<Self, String> {
+        Self::new_with_policy(
+            encoded_key,
+            invidious_base_url,
+            invidious_allows_private_network,
+            NetworkPolicy::without_rules(),
+        )
+    }
+
+    fn new_with_policy(
+        encoded_key: Option<&str>,
+        invidious_base_url: Option<&str>,
+        invidious_allows_private_network: bool,
+        network_policy: NetworkPolicy,
     ) -> Result<Self, String> {
         let cipher = encoded_key
             .map(str::trim)
@@ -193,21 +264,25 @@ impl WidgetIntegrationService {
                     .map_err(|_| "PANDAN_SECRET_KEY is invalid".to_owned())
             })
             .transpose()?;
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(4))
-            .timeout(Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent("Pandan/0.1 widget fetcher")
-            .build()
-            .map_err(|error| format!("widget HTTP client failed: {error}"))?;
         Ok(Self {
-            client,
+            network_policy,
             cipher,
             invidious_base_url: parse_invidious_base_url(invidious_base_url)?,
             invidious_allows_private_network,
             reddit_request_gate: Arc::new(Semaphore::new(1)),
             cache: Arc::new(RwLock::new(HashMap::new())),
+            coding_cache: Arc::new(RwLock::new(CodingCache::default())),
         })
+    }
+
+    async fn client_for(
+        &self,
+        source: &str,
+        scope: NetworkAccessScope,
+    ) -> Result<(Client, Url), String> {
+        let target = self.network_policy.validate(source, scope).await?;
+        let client = target.build_client(widget_client_builder())?;
+        Ok((client, target.into_url()))
     }
 
     #[must_use]
@@ -226,7 +301,7 @@ impl WidgetIntegrationService {
         self.invidious_base_url.is_some() && self.invidious_allows_private_network
     }
 
-    /// Fetches and parses one public HTTPS RSS, Atom, or recognized Reddit source for the reader.
+    /// Fetches and parses one policy-approved RSS, Atom, or recognized Reddit source.
     ///
     /// The same DNS and response-size protections used by RSS widgets are applied here.
     ///
@@ -234,77 +309,38 @@ impl WidgetIntegrationService {
     ///
     /// Returns a safe provider error when URL validation, fetching, or feed parsing fails.
     pub async fn fetch_rss_feed(&self, source: &str) -> Result<RssFeedSnapshot, String> {
-        let url = validate_public_https_url(source).await?;
+        let (client, url) = self.client_for(source, NetworkAccessScope::Rss).await?;
         // Reddit rejects anonymous JSON listing requests from servers, while its public Atom
         // endpoints remain available. Normalize both new `.rss` sources and older saved `.json`
         // sources here so existing subscriptions recover without a data migration.
         let response = if let Some(request_url) = reddit_rss_source(&url) {
-            self.fetch_reddit_rss(request_url).await?
+            let (client, request_url) = self
+                .client_for(request_url.as_str(), NetworkAccessScope::Rss)
+                .await?;
+            self.fetch_reddit_rss(&client, request_url).await?
         } else {
-            self.client.get(url).send().await.map_err(request_error)?
+            client.get(url).send().await.map_err(request_error)?
         };
         let bytes = response_bytes(response).await?;
-        let feed = feed_rs::parser::parse(&bytes[..])
-            .map_err(|error| format!("feed could not be parsed: {error}"))?;
-        let title = feed
-            .title
-            .as_ref()
-            .map_or_else(|| "Untitled feed".to_owned(), |value| value.content.clone());
-        let fetched_at = chrono::Utc::now().to_rfc3339();
-        let items = feed
-            .entries
-            .into_iter()
-            .take(200)
-            .map(|entry| {
-                let url = entry
-                    .links
-                    .first()
-                    .map_or_else(String::new, |link| link.href.clone());
-                let published_at = entry
-                    .published
-                    .or(entry.updated)
-                    .map_or_else(|| fetched_at.clone(), |date| date.to_rfc3339());
-                let title = entry
-                    .title
-                    .map_or_else(|| "Untitled".to_owned(), |value| value.content);
-                let external_id = if entry.id.trim().is_empty() {
-                    if url.is_empty() {
-                        format!("{title}:{published_at}")
-                    } else {
-                        url.clone()
-                    }
-                } else {
-                    entry.id
-                };
-                let content = entry
-                    .content
-                    .and_then(|value| value.body)
-                    .or_else(|| entry.summary.map(|value| value.content))
-                    .unwrap_or_default();
-                RssFeedEntry {
-                    external_id,
-                    url,
-                    title,
-                    summary: content,
-                    published_at,
-                }
-            })
-            .collect();
-        Ok(RssFeedSnapshot { title, items })
+        parse_rss_feed_snapshot(&bytes)
     }
 
     /// Serializes anonymous Reddit feed requests and retries one throttled response after the
     /// provider-advertised reset window. Reddit currently gives unauthenticated server traffic a
     /// very small shared allowance, so the background worker and an interactive subscription can
     /// otherwise consume the same window.
-    async fn fetch_reddit_rss(&self, url: Url) -> Result<reqwest::Response, String> {
+    async fn fetch_reddit_rss(
+        &self,
+        client: &Client,
+        url: Url,
+    ) -> Result<reqwest::Response, String> {
         let _permit = self
             .reddit_request_gate
             .acquire()
             .await
             .map_err(|_| "Reddit feed request could not be scheduled".to_owned())?;
         let send = || {
-            self.client
+            client
                 .get(url.clone())
                 .header(
                     header::ACCEPT,
@@ -373,13 +409,8 @@ impl WidgetIntegrationService {
         let endpoint = base_url
             .join(&format!("api/v1/channels/{channel_id}"))
             .map_err(|_| "Invidious channel URL is invalid".to_owned())?;
-        let endpoint = self.validate_invidious_url(endpoint.as_str()).await?;
-        let response = self
-            .client
-            .get(endpoint)
-            .send()
-            .await
-            .map_err(request_error)?;
+        let (client, endpoint) = self.validate_invidious_url(endpoint.as_str()).await?;
+        let response = client.get(endpoint).send().await.map_err(request_error)?;
         let text = response_text(response).await?;
         parse_invidious_snapshot(base_url, channel_id, &text)
     }
@@ -388,29 +419,37 @@ impl WidgetIntegrationService {
     ///
     /// A self-hosted instance usually resolves to a private address, which the shared SSRF
     /// policy rejects. `INVIDIOUS_ALLOW_PRIVATE_NETWORK` exempts it, scoped to the configured
-    /// host and port: any other destination still goes through `validate_public_https_url`,
+    /// host and port: any other destination still goes through the shared network policy,
     /// so a user-supplied URL can never reach the internal network through this path.
-    async fn validate_invidious_url(&self, value: &str) -> Result<Url, String> {
-        let Some(base_url) = self
+    async fn validate_invidious_url(&self, value: &str) -> Result<(Client, Url), String> {
+        let parsed = Url::parse(value).map_err(|_| "Invidious URL is invalid".to_owned())?;
+        if parsed.scheme() != "https"
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+        {
+            return Err("only credential-free HTTPS URLs are allowed".to_owned());
+        }
+        let configured_private_origin = self
             .invidious_base_url
             .as_ref()
             .filter(|_| self.invidious_allows_private_network)
-        else {
-            return validate_public_https_url(value).await;
-        };
-        let url = Url::parse(value).map_err(|_| "URL is invalid".to_owned())?;
-        let is_configured_instance = url
-            .host_str()
-            .zip(base_url.host_str())
-            .is_some_and(|(host, instance)| host.eq_ignore_ascii_case(instance))
-            && url.port_or_known_default() == base_url.port_or_known_default();
-        if !is_configured_instance {
-            return validate_public_https_url(value).await;
-        }
-        if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
-            return Err("only credential-free HTTPS URLs are allowed".to_owned());
-        }
-        Ok(url)
+            .is_some_and(|base_url| {
+                parsed
+                    .host_str()
+                    .zip(base_url.host_str())
+                    .is_some_and(|(host, instance)| host.eq_ignore_ascii_case(instance))
+                    && parsed.port_or_known_default() == base_url.port_or_known_default()
+            });
+        let target = self
+            .network_policy
+            .validate_with_operator_override(
+                value,
+                NetworkAccessScope::Youtube,
+                configured_private_origin,
+            )
+            .await?;
+        let client = target.build_client(widget_client_builder())?;
+        Ok((client, target.into_url()))
     }
 
     async fn fetch_youtube_atom_channel(
@@ -418,14 +457,13 @@ impl WidgetIntegrationService {
         channel_id: &str,
     ) -> Result<YoutubeFeedSnapshot, String> {
         let uploads_playlist = channel_id.replacen("UC", "UULF", 1);
-        let response = self
-            .client
-            .get(format!(
-                "https://www.youtube.com/feeds/videos.xml?playlist_id={uploads_playlist}"
-            ))
-            .send()
-            .await
-            .map_err(request_error)?;
+        let (client, url) = self
+            .client_for(
+                &format!("https://www.youtube.com/feeds/videos.xml?playlist_id={uploads_playlist}"),
+                NetworkAccessScope::Youtube,
+            )
+            .await?;
+        let response = client.get(url).send().await.map_err(request_error)?;
         let text = response_text(response).await?;
         parse_youtube_snapshot(&text)
     }
@@ -438,9 +476,14 @@ impl WidgetIntegrationService {
         &self,
         channel_id: &str,
     ) -> Result<Vec<String>, String> {
-        let response = self
-            .client
-            .get(format!("https://www.youtube.com/channel/{channel_id}"))
+        let (client, url) = self
+            .client_for(
+                &format!("https://www.youtube.com/channel/{channel_id}"),
+                NetworkAccessScope::Youtube,
+            )
+            .await?;
+        let response = client
+            .get(url)
             .header(header::ACCEPT, "text/html")
             .send()
             .await
@@ -454,10 +497,12 @@ impl WidgetIntegrationService {
         }
     }
 
-    /// Fetches one public HTTPS iCalendar document using the shared SSRF and size guards.
+    /// Fetches one policy-approved iCalendar document using the shared SSRF and size guards.
     pub async fn fetch_calendar_file(&self, source: &str) -> Result<Vec<u8>, String> {
-        let url = validate_public_https_url(source).await?;
-        let response = self.client.get(url).send().await.map_err(request_error)?;
+        let (client, url) = self
+            .client_for(source, NetworkAccessScope::Calendar)
+            .await?;
+        let response = client.get(url).send().await.map_err(request_error)?;
         response_bytes(response).await
     }
 
@@ -470,11 +515,12 @@ impl WidgetIntegrationService {
     ///
     /// Returns a safe provider error when the URL, media type, or response is invalid.
     pub async fn fetch_public_image(&self, source: &str) -> Result<(String, Vec<u8>), String> {
-        let url = self.validate_invidious_url(source).await?;
-        self.fetch_validated_image(url, MAX_RESPONSE_BYTES).await
+        let (client, url) = self.validate_invidious_url(source).await?;
+        self.fetch_validated_image(&client, url, MAX_RESPONSE_BYTES)
+            .await
     }
 
-    /// Fetches one public HTTPS image with a caller-supplied response limit.
+    /// Fetches one policy-approved image with a caller-supplied response limit.
     ///
     /// # Errors
     ///
@@ -484,16 +530,17 @@ impl WidgetIntegrationService {
         source: &str,
         max_bytes: usize,
     ) -> Result<(String, Vec<u8>), String> {
-        let url = validate_public_https_url(source).await?;
-        self.fetch_validated_image(url, max_bytes).await
+        let (client, url) = self.client_for(source, NetworkAccessScope::Images).await?;
+        self.fetch_validated_image(&client, url, max_bytes).await
     }
 
     async fn fetch_validated_image(
         &self,
+        client: &Client,
         url: Url,
         max_bytes: usize,
     ) -> Result<(String, Vec<u8>), String> {
-        let response = self.client.get(url).send().await.map_err(request_error)?;
+        let response = client.get(url).send().await.map_err(request_error)?;
         let content_type = response
             .headers()
             .get(header::CONTENT_TYPE)
@@ -516,11 +563,18 @@ impl WidgetIntegrationService {
     }
 
     /// Validates one remote integration URL without fetching it.
-    pub async fn validate_public_https_source(&self, source: &str) -> Result<(), String> {
-        validate_public_https_url(source).await.map(|_| ())
+    pub async fn validate_source(
+        &self,
+        source: &str,
+        scope: NetworkAccessScope,
+    ) -> Result<(), String> {
+        self.network_policy
+            .validate(source, scope)
+            .await
+            .map(|_| ())
     }
 
-    /// Pulls vCards from one public HTTPS CardDAV address-book resource.
+    /// Pulls vCards from one policy-approved CardDAV address-book resource.
     ///
     /// The caller supplies a direct address-book URL. Network access uses the same DNS/IP,
     /// timeout, redirect, and response-size restrictions as other remote Pandan integrations.
@@ -531,7 +585,9 @@ impl WidgetIntegrationService {
         username: &str,
         encrypted_password: Option<&str>,
     ) -> Result<Vec<ContactDraft>, String> {
-        let url = validate_public_https_url(source).await?;
+        let (client, url) = self
+            .client_for(source, NetworkAccessScope::Contacts)
+            .await?;
         let password = encrypted_password
             .map(|value| self.decrypt_secret(value))
             .transpose()?;
@@ -541,8 +597,7 @@ impl WidgetIntegrationService {
 </card:addressbook-query>"#;
         let method = Method::from_bytes(b"REPORT")
             .map_err(|_| "CardDAV request method is invalid".to_owned())?;
-        let mut request = self
-            .client
+        let mut request = client
             .request(method, url)
             .header("Depth", "1")
             .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
@@ -574,6 +629,187 @@ impl WidgetIntegrationService {
         Ok(STANDARD.encode(packed))
     }
 
+    /// Polls ntfy topics through the shared network policy and response-size guards.
+    pub async fn fetch_ntfy_topics(
+        &self,
+        account_id: &str,
+        base_url: &str,
+        topics: &[&str],
+        since: Option<&str>,
+        encrypted_token: Option<&str>,
+    ) -> Result<Vec<NtfyMessage>, String> {
+        let endpoint = ntfy_poll_endpoint(base_url, topics, since)?;
+        let (client, endpoint) = self
+            .client_for(endpoint.as_str(), NetworkAccessScope::Notifications)
+            .await?;
+        let token = encrypted_token
+            .map(|value| self.decrypt_secret(value))
+            .transpose()?;
+        let has_token = token.as_deref().is_some_and(|value| !value.is_empty());
+        let context = NtfyRequestLogContext::new(
+            account_id,
+            "recovery_poll",
+            &endpoint,
+            topics.len(),
+            has_token,
+        );
+        let mut request = client
+            .get(endpoint)
+            .header(header::ACCEPT, "application/x-ndjson, application/json");
+        if let Some(token) = token.as_deref().filter(|value| !value.is_empty()) {
+            request = request.bearer_auth(token);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| ntfy_transport_error(error, &context))?;
+        log_ntfy_response(&response, &context);
+        let response = response
+            .error_for_status()
+            .map_err(|error| ntfy_request_error(error, has_token))?;
+        let body = response_text(response).await?;
+        parse_ntfy_messages(&body)
+    }
+
+    /// Opens a long-lived ntfy JSON subscription without exposing the stored token to the browser.
+    pub async fn open_ntfy_stream(
+        &self,
+        account_id: &str,
+        base_url: &str,
+        topics: &[&str],
+        since: &str,
+        encrypted_token: Option<&str>,
+    ) -> Result<reqwest::Response, String> {
+        let endpoint = ntfy_stream_endpoint(base_url, topics, since)?;
+        let target = self
+            .network_policy
+            .validate(endpoint.as_str(), NetworkAccessScope::Notifications)
+            .await?;
+        let client = target.build_client(ntfy_stream_client_builder())?;
+        let token = encrypted_token
+            .map(|value| self.decrypt_secret(value))
+            .transpose()?;
+        let has_token = token.as_deref().is_some_and(|value| !value.is_empty());
+        let context = NtfyRequestLogContext::new(
+            account_id,
+            "realtime_stream",
+            &endpoint,
+            topics.len(),
+            has_token,
+        );
+        let mut request = client
+            .get(target.into_url())
+            .header(header::ACCEPT, "application/x-ndjson");
+        if let Some(token) = token.as_deref().filter(|value| !value.is_empty()) {
+            request = request.bearer_auth(token);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| ntfy_transport_error(error, &context))?;
+        log_ntfy_response(&response, &context);
+        response
+            .error_for_status()
+            .map_err(|error| ntfy_request_error(error, has_token))
+    }
+
+    /// Permanently deletes one ntfy message sequence through the guarded provider client.
+    pub async fn delete_ntfy_notification(
+        &self,
+        account_id: &str,
+        base_url: &str,
+        topic: &str,
+        sequence_id: &str,
+        encrypted_token: Option<&str>,
+    ) -> Result<(), String> {
+        let mut endpoint =
+            Url::parse(base_url).map_err(|_| "ntfy server URL is invalid".to_owned())?;
+        endpoint
+            .path_segments_mut()
+            .map_err(|_| "ntfy server URL cannot contain message paths".to_owned())?
+            .pop_if_empty()
+            .push(topic)
+            .push(sequence_id);
+        let (client, endpoint) = self
+            .client_for(endpoint.as_str(), NetworkAccessScope::Notifications)
+            .await?;
+        let token = encrypted_token
+            .map(|value| self.decrypt_secret(value))
+            .transpose()?;
+        let has_token = token.as_deref().is_some_and(|value| !value.is_empty());
+        let context = NtfyRequestLogContext::new(account_id, "delete", &endpoint, 1, has_token);
+        let mut request = client.delete(endpoint);
+        if let Some(token) = token.as_deref().filter(|value| !value.is_empty()) {
+            request = request.bearer_auth(token);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| ntfy_transport_error(error, &context))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        log_ntfy_response(&response, &context);
+        response
+            .error_for_status()
+            .map_err(|error| ntfy_request_error(error, has_token))?;
+        Ok(())
+    }
+
+    /// Executes one user-triggered ntfy HTTP action against a policy-approved destination.
+    pub async fn execute_ntfy_http_action(&self, action: &NtfyAction) -> Result<u16, String> {
+        if action.action != "http" {
+            return Err("this ntfy action does not make an HTTP request".to_owned());
+        }
+        let destination = action
+            .url
+            .as_deref()
+            .ok_or_else(|| "ntfy action URL is missing".to_owned())?;
+        let (client, destination) = self
+            .client_for(destination, NetworkAccessScope::Notifications)
+            .await?;
+        let method_name = action
+            .method
+            .as_deref()
+            .unwrap_or("POST")
+            .to_ascii_uppercase();
+        if !matches!(
+            method_name.as_str(),
+            "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+        ) {
+            return Err("ntfy action method is unsupported".to_owned());
+        }
+        let method = Method::from_bytes(method_name.as_bytes())
+            .map_err(|_| "ntfy action method is invalid".to_owned())?;
+        let mut request = client.request(method, destination);
+        for (name, value) in &action.headers {
+            let normalized = name.trim().to_ascii_lowercase();
+            if matches!(
+                normalized.as_str(),
+                "connection" | "cookie" | "host" | "content-length" | "transfer-encoding"
+            ) {
+                continue;
+            }
+            let name = header::HeaderName::from_bytes(name.trim().as_bytes())
+                .map_err(|_| "ntfy action contains an invalid header".to_owned())?;
+            let value = header::HeaderValue::from_str(value)
+                .map_err(|_| "ntfy action contains an invalid header value".to_owned())?;
+            request = request.header(name, value);
+        }
+        if let Some(body) = action.body.as_deref() {
+            if body.len() > 16_384 {
+                return Err("ntfy action body is too large".to_owned());
+            }
+            request = request.body(body.to_owned());
+        }
+        let response = request.send().await.map_err(request_error)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!("ntfy action returned HTTP {}", status.as_u16()));
+        }
+        Ok(status.as_u16())
+    }
+
     /// Loads the latest release for one Coding-page project subscription.
     pub async fn fetch_coding_release(
         &self,
@@ -593,7 +829,7 @@ impl WidgetIntegrationService {
         } else {
             format!("{}:{}", project.provider, project.repository)
         };
-        let payload = fetch_release(&self.client, &source, secret.as_deref()).await?;
+        let payload = fetch_release(self, &source, secret.as_deref()).await?;
         Ok(CodingRelease {
             project_id: project.id.clone(),
             version: payload["version"].as_str().unwrap_or("Latest").to_owned(),
@@ -609,12 +845,11 @@ impl WidgetIntegrationService {
         encrypted_secret: &str,
     ) -> Result<Vec<CodingMergeRequest>, String> {
         let token = self.decrypt_secret(encrypted_secret)?;
-        let url = validate_public_https_url(&format!(
+        let (client, url) = self.client_for(&format!(
             "https://{host}/api/v4/merge_requests?scope=created_by_me&state=opened&order_by=updated_at&sort=desc&per_page=20"
-        ))
+        ), NetworkAccessScope::Coding)
         .await?;
-        let payload: Vec<Value> = self
-            .client
+        let payload: Vec<Value> = client
             .get(url)
             .header("PRIVATE-TOKEN", token)
             .send()
@@ -659,10 +894,10 @@ impl WidgetIntegrationService {
     ) -> Result<CodingOwnedRepositories, String> {
         let token = self.decrypt_secret(encrypted_secret)?;
         match provider {
-            "github" => fetch_github_owned_repositories(&self.client, host, &token).await,
-            "gitlab" => fetch_gitlab_owned_repositories(&self.client, host, &token).await,
+            "github" => fetch_github_owned_repositories(self, host, &token).await,
+            "gitlab" => fetch_gitlab_owned_repositories(self, host, &token).await,
             "codeberg" | "gitea" | "forgejo" => {
-                fetch_forge_owned_repositories(&self.client, provider, host, &token).await
+                fetch_forge_owned_repositories(self, provider, host, &token).await
             }
             _ => Err("code provider is unsupported".to_owned()),
         }
@@ -679,13 +914,12 @@ impl WidgetIntegrationService {
         }
         let token = self.decrypt_secret(encrypted_secret)?;
         let encoded_repository = project.repository.replace('/', "%2F");
-        let url = validate_public_https_url(&format!(
+        let (client, url) = self.client_for(&format!(
             "https://{}/api/v4/projects/{encoded_repository}/pipelines?per_page=1&order_by=id&sort=desc",
             project.host
-        ))
+        ), NetworkAccessScope::Coding)
         .await?;
-        let payload: Vec<Value> = self
-            .client
+        let payload: Vec<Value> = client
             .get(url)
             .header("PRIVATE-TOKEN", token)
             .send()
@@ -732,6 +966,55 @@ impl WidgetIntegrationService {
 
     pub async fn clear_cache(&self, widget_id: &str) {
         self.cache.write().await.remove(widget_id);
+    }
+
+    /// Returns the current generation and any fresh Coding response for one account.
+    pub async fn coding_cache_snapshot(&self, account_id: &str) -> (u64, Option<CodingResponse>) {
+        let cache = self.coding_cache.read().await;
+        let generation = cache
+            .generations
+            .get(account_id)
+            .copied()
+            .unwrap_or_default();
+        let response = cache
+            .entries
+            .get(account_id)
+            .filter(|cached| cached.stored_at.elapsed() < CODING_CACHE_DURATION)
+            .map(|cached| cached.value.clone());
+        (generation, response)
+    }
+
+    /// Invalidates one account's Coding response and returns its new generation.
+    pub async fn clear_coding_cache(&self, account_id: &str) -> u64 {
+        let mut cache = self.coding_cache.write().await;
+        cache.entries.remove(account_id);
+        let generation = cache.generations.entry(account_id.to_owned()).or_default();
+        *generation = generation.wrapping_add(1);
+        *generation
+    }
+
+    /// Stores a Coding response unless the account changed while it was being fetched.
+    pub async fn cache_coding_if_current(
+        &self,
+        account_id: &str,
+        generation: u64,
+        response: &CodingResponse,
+    ) {
+        let mut cache = self.coding_cache.write().await;
+        let current_generation = cache
+            .generations
+            .get(account_id)
+            .copied()
+            .unwrap_or_default();
+        if current_generation == generation {
+            cache.entries.insert(
+                account_id.to_owned(),
+                CachedCodingData {
+                    stored_at: Instant::now(),
+                    value: response.clone(),
+                },
+            );
+        }
     }
 
     /// Loads fresh or cached data for one owned provider widget.
@@ -798,7 +1081,7 @@ impl WidgetIntegrationService {
             return Err("add at least one YouTube channel or playlist ID".to_owned());
         }
         let requests = sources.into_iter().map(|source| {
-            let client = self.client.clone();
+            let service = self.clone();
             async move {
                 let url = if let Some(playlist) = source.strip_prefix("playlist:") {
                     format!("https://www.youtube.com/feeds/videos.xml?playlist_id={playlist}")
@@ -810,6 +1093,9 @@ impl WidgetIntegrationService {
                 } else {
                     format!("https://www.youtube.com/feeds/videos.xml?channel_id={source}")
                 };
+                let (client, url) = service
+                    .client_for(&url, NetworkAccessScope::Youtube)
+                    .await?;
                 let response = client.get(url).send().await.map_err(request_error)?;
                 let text = response_text(response).await?;
                 parse_youtube_feed(&text)
@@ -837,9 +1123,9 @@ impl WidgetIntegrationService {
             return Err("add at least one RSS or Atom feed URL".to_owned());
         }
         let requests = urls.into_iter().map(|source| {
-            let client = self.client.clone();
+            let service = self.clone();
             async move {
-                let url = validate_public_https_url(&source).await?;
+                let (client, url) = service.client_for(&source, NetworkAccessScope::Rss).await?;
                 let response = client.get(url).send().await.map_err(request_error)?;
                 let bytes = response_bytes(response).await?;
                 let feed = feed_rs::parser::parse(&bytes[..])
@@ -887,9 +1173,14 @@ impl WidgetIntegrationService {
         let limit = config_limit(config, 15);
         let mut request =
             if let (Some(client_id), Some(secret)) = (config_string(config, "client_id"), secret) {
-                let token: Value = self
-                    .client
-                    .post("https://www.reddit.com/api/v1/access_token")
+                let (client, token_url) = self
+                    .client_for(
+                        "https://www.reddit.com/api/v1/access_token",
+                        NetworkAccessScope::Rss,
+                    )
+                    .await?;
+                let token: Value = client
+                    .post(token_url)
                     .basic_auth(client_id, Some(secret))
                     .form(&[("grant_type", "client_credentials")])
                     .send()
@@ -903,12 +1194,21 @@ impl WidgetIntegrationService {
                 let access = token["access_token"]
                     .as_str()
                     .ok_or_else(|| "Reddit did not issue an access token".to_owned())?;
-                self.client
-                    .get(format!("https://oauth.reddit.com/r/{subreddit}/{sort}"))
-                    .bearer_auth(access)
+                let (client, url) = self
+                    .client_for(
+                        &format!("https://oauth.reddit.com/r/{subreddit}/{sort}"),
+                        NetworkAccessScope::Rss,
+                    )
+                    .await?;
+                client.get(url).bearer_auth(access)
             } else {
-                self.client
-                    .get(format!("https://www.reddit.com/r/{subreddit}/{sort}.json"))
+                let (client, url) = self
+                    .client_for(
+                        &format!("https://www.reddit.com/r/{subreddit}/{sort}.json"),
+                        NetworkAccessScope::Rss,
+                    )
+                    .await?;
+                client.get(url)
             };
         request = request.query(&[("limit", limit.to_string()), ("raw_json", "1".to_owned())]);
         let payload: Value = request
@@ -945,9 +1245,14 @@ impl WidgetIntegrationService {
         if symbols.is_empty() {
             return Err("add at least one market symbol".to_owned());
         }
-        let payload: Value = self
-            .client
-            .get("https://query1.finance.yahoo.com/v7/finance/quote")
+        let (client, url) = self
+            .client_for(
+                "https://query1.finance.yahoo.com/v7/finance/quote",
+                NetworkAccessScope::Widgets,
+            )
+            .await?;
+        let payload: Value = client
+            .get(url)
             .query(&[("symbols", symbols.join(","))])
             .send()
             .await
@@ -982,9 +1287,9 @@ impl WidgetIntegrationService {
             return Err("add at least one provider:owner/repository entry".to_owned());
         }
         let requests = repositories.into_iter().map(|repository| {
-            let client = self.client.clone();
+            let service = self.clone();
             let token = secret.map(str::to_owned);
-            async move { fetch_release(&client, &repository, token.as_deref()).await }
+            async move { fetch_release(&service, &repository, token.as_deref()).await }
         });
         let mut items = join_all(requests)
             .await
@@ -1012,10 +1317,16 @@ impl WidgetIntegrationService {
 
     async fn fetch_kick_streams(&self, channels: Vec<String>) -> Result<Value, String> {
         let requests = channels.into_iter().map(|channel| {
-            let client = self.client.clone();
+            let service = self.clone();
             async move {
+                let (client, url) = service
+                    .client_for(
+                        &format!("https://kick.com/api/v2/channels/{channel}"),
+                        NetworkAccessScope::Widgets,
+                    )
+                    .await?;
                 let payload: Value = client
-                    .get(format!("https://kick.com/api/v2/channels/{channel}"))
+                    .get(url)
                     .send()
                     .await
                     .map_err(request_error)?
@@ -1051,9 +1362,14 @@ impl WidgetIntegrationService {
         let client_id = config_string(config, "client_id")
             .ok_or_else(|| "Twitch requires a client ID".to_owned())?;
         let secret = secret.ok_or_else(|| "Twitch requires a stored client secret".to_owned())?;
-        let token: Value = self
-            .client
-            .post("https://id.twitch.tv/oauth2/token")
+        let (token_client, token_url) = self
+            .client_for(
+                "https://id.twitch.tv/oauth2/token",
+                NetworkAccessScope::Widgets,
+            )
+            .await?;
+        let token: Value = token_client
+            .post(token_url)
             .query(&[
                 ("client_id", client_id.as_str()),
                 ("client_secret", secret),
@@ -1075,8 +1391,10 @@ impl WidgetIntegrationService {
         for channel in &channels {
             url.query_pairs_mut().append_pair("user_login", channel);
         }
-        let payload: Value = self
-            .client
+        let (client, url) = self
+            .client_for(url.as_str(), NetworkAccessScope::Widgets)
+            .await?;
+        let payload: Value = client
             .get(url)
             .header("Client-Id", client_id)
             .bearer_auth(access)
@@ -1112,6 +1430,185 @@ impl WidgetIntegrationService {
             .collect::<Vec<_>>();
         Ok(json!({ "items": items }))
     }
+}
+
+fn parse_rss_feed_snapshot(bytes: &[u8]) -> Result<RssFeedSnapshot, String> {
+    let feed = feed_rs::parser::parse(bytes)
+        .map_err(|error| format!("feed could not be parsed: {error}"))?;
+    let title = feed
+        .title
+        .as_ref()
+        .map_or_else(|| "Untitled feed".to_owned(), |value| value.content.clone());
+    let scanned_comments = scan_rss_comments_urls(bytes);
+    let comments_align = scanned_comments.len() == feed.entries.len().min(200);
+    let fetched_at = chrono::Utc::now().to_rfc3339();
+    let items = feed
+        .entries
+        .into_iter()
+        .take(200)
+        .enumerate()
+        .map(|(index, entry)| {
+            let raw_comments = comments_align
+                .then(|| scanned_comments[index].as_deref())
+                .flatten();
+            let (url, comments_url) = reader_entry_links(&entry, raw_comments);
+            let published_at = entry
+                .published
+                .or(entry.updated)
+                .map_or_else(|| fetched_at.clone(), |date| date.to_rfc3339());
+            let title = entry
+                .title
+                .map_or_else(|| "Untitled".to_owned(), |value| value.content);
+            let external_id = if entry.id.trim().is_empty() {
+                if url.is_empty() {
+                    format!("{title}:{published_at}")
+                } else {
+                    url.clone()
+                }
+            } else {
+                entry.id
+            };
+            let content = entry
+                .content
+                .and_then(|value| value.body)
+                .or_else(|| entry.summary.map(|value| value.content))
+                .unwrap_or_default();
+            RssFeedEntry {
+                external_id,
+                url,
+                comments_url,
+                title,
+                summary: content,
+                published_at,
+            }
+        })
+        .collect();
+    Ok(RssFeedSnapshot { title, items })
+}
+
+fn reader_entry_links(entry: &Entry, raw_comments: Option<&str>) -> (String, String) {
+    let comments_link = entry
+        .links
+        .iter()
+        .find(|link| {
+            link.rel
+                .as_deref()
+                .is_some_and(|rel| rel.eq_ignore_ascii_case("replies"))
+        })
+        .map(|link| link.href.as_str())
+        .or(raw_comments);
+    let url = entry
+        .links
+        .iter()
+        .find(|link| {
+            link.rel
+                .as_deref()
+                .is_none_or(|rel| rel.is_empty() || rel.eq_ignore_ascii_case("alternate"))
+        })
+        .or_else(|| {
+            entry.links.iter().find(|link| {
+                !link
+                    .rel
+                    .as_deref()
+                    .is_some_and(|rel| rel.eq_ignore_ascii_case("replies"))
+            })
+        })
+        .map_or_else(String::new, |link| safe_rss_entry_url(&link.href));
+    let mut comments_url = comments_link.map_or_else(String::new, safe_rss_entry_url);
+    if comments_url.is_empty() && is_reddit_comments_url(&url) {
+        comments_url.clone_from(&url);
+    }
+    (url, comments_url)
+}
+
+fn safe_rss_entry_url(value: &str) -> String {
+    let Ok(url) = Url::parse(value.trim()) else {
+        return String::new();
+    };
+    if matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+    {
+        url.into()
+    } else {
+        String::new()
+    }
+}
+
+fn is_reddit_comments_url(value: &str) -> bool {
+    Url::parse(value).is_ok_and(|url| {
+        url.host_str().is_some_and(|host| {
+            (host.eq_ignore_ascii_case("reddit.com")
+                || host.to_ascii_lowercase().ends_with(".reddit.com"))
+                && url.path().contains("/comments/")
+        })
+    })
+}
+
+/// Collects one RSS 2.0 `<comments>` destination per feed item in document order.
+///
+/// `feed-rs` intentionally omits this RSS-only field, so it is scanned separately and aligned
+/// only when the scanner and parser agree on the entry count. Namespaced `slash:comments` values
+/// are comment counts and deliberately do not match the exact element name below.
+fn scan_rss_comments_urls(bytes: &[u8]) -> Vec<Option<String>> {
+    let mut reader = Reader::from_reader(bytes);
+    reader.config_mut().trim_text(true);
+    let mut buffer = Vec::new();
+    let mut comments = Vec::new();
+    let mut in_entry = false;
+    let mut capturing = false;
+    let mut pending = String::new();
+
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Start(element)) => match element.name().as_ref() {
+                b"item" | b"entry" => {
+                    in_entry = true;
+                    pending.clear();
+                }
+                b"comments" if in_entry => capturing = true,
+                _ => {}
+            },
+            Ok(Event::Text(text)) if capturing => {
+                if let Ok(decoded) = text.decode()
+                    && let Ok(unescaped) = quick_xml::escape::unescape(&decoded)
+                {
+                    pending.push_str(&unescaped);
+                }
+            }
+            Ok(Event::CData(text)) if capturing => {
+                if let Ok(decoded) = text.decode() {
+                    pending.push_str(&decoded);
+                }
+            }
+            Ok(Event::GeneralRef(reference)) if capturing => {
+                if let Ok(name) = std::str::from_utf8(reference.as_ref()) {
+                    let encoded = format!("&{name};");
+                    if let Ok(decoded) = quick_xml::escape::unescape(&encoded) {
+                        pending.push_str(&decoded);
+                    }
+                }
+            }
+            Ok(Event::End(element)) => match element.name().as_ref() {
+                b"item" | b"entry" => {
+                    let value = pending.trim();
+                    comments.push((!value.is_empty()).then(|| value.to_owned()));
+                    in_entry = false;
+                    capturing = false;
+                    if comments.len() >= 200 {
+                        break;
+                    }
+                }
+                b"comments" => capturing = false,
+                _ => {}
+            },
+            Ok(Event::Eof) | Err(_) => break,
+            Ok(_) => {}
+        }
+        buffer.clear();
+    }
+    comments
 }
 
 fn parse_carddav_response(source_id: &str, bytes: &[u8]) -> Result<Vec<ContactDraft>, String> {
@@ -1657,7 +2154,7 @@ fn rss_entry(source: &str, entry: Entry) -> Value {
 }
 
 async fn fetch_github_owned_repositories(
-    client: &Client,
+    service: &WidgetIntegrationService,
     host: &str,
     token: &str,
 ) -> Result<CodingOwnedRepositories, String> {
@@ -1688,8 +2185,11 @@ async fn fetch_github_owned_repositories(
     let mut cursor: Option<String> = None;
 
     for _ in 0..MAX_PROVIDER_PAGES {
+        let (client, endpoint) = service
+            .client_for(endpoint.as_str(), NetworkAccessScope::Coding)
+            .await?;
         let response = client
-            .post(endpoint.clone())
+            .post(endpoint)
             .bearer_auth(token)
             .header(header::ACCEPT, "application/vnd.github+json")
             .json(&json!({ "query": QUERY, "variables": { "cursor": cursor } }))
@@ -1743,16 +2243,16 @@ async fn fetch_github_owned_repositories(
 }
 
 async fn fetch_gitlab_owned_repositories(
-    client: &Client,
+    service: &WidgetIntegrationService,
     host: &str,
     token: &str,
 ) -> Result<CodingOwnedRepositories, String> {
     let mut page = 1_u64;
     let mut projects = Vec::new();
     for _ in 0..MAX_PROVIDER_PAGES {
-        let url = validate_public_https_url(&format!(
+        let (client, url) = service.client_for(&format!(
             "https://{host}/api/v4/projects?owned=true&simple=true&order_by=path&sort=asc&per_page=100&page={page}"
-        ))
+        ), NetworkAccessScope::Coding)
         .await?;
         let response = client
             .get(url)
@@ -1793,7 +2293,7 @@ async fn fetch_gitlab_owned_repositories(
     let results = stream::iter(projects)
         .map(|(project_id, mut repository)| async move {
             let count =
-                fetch_gitlab_open_merge_request_count(client, host, token, project_id).await;
+                fetch_gitlab_open_merge_request_count(service, host, token, project_id).await;
             if let Ok(count) = count {
                 repository.open_pull_requests = Some(count);
             }
@@ -1816,14 +2316,14 @@ async fn fetch_gitlab_owned_repositories(
 }
 
 async fn fetch_gitlab_open_merge_request_count(
-    client: &Client,
+    service: &WidgetIntegrationService,
     host: &str,
     token: &str,
     project_id: i64,
 ) -> Result<u64, String> {
-    let url = validate_public_https_url(&format!(
+    let (client, url) = service.client_for(&format!(
         "https://{host}/api/v4/projects/{project_id}/merge_requests?state=opened&per_page=100&page=1"
-    ))
+    ), NetworkAccessScope::Coding)
     .await?;
     let response = client
         .get(url)
@@ -1845,12 +2345,17 @@ async fn fetch_gitlab_open_merge_request_count(
 }
 
 async fn fetch_forge_owned_repositories(
-    client: &Client,
+    service: &WidgetIntegrationService,
     provider: &str,
     host: &str,
     token: &str,
 ) -> Result<CodingOwnedRepositories, String> {
-    let profile_url = validate_public_https_url(&format!("https://{host}/api/v1/user")).await?;
+    let (client, profile_url) = service
+        .client_for(
+            &format!("https://{host}/api/v1/user"),
+            NetworkAccessScope::Coding,
+        )
+        .await?;
     let response = client
         .get(profile_url)
         .bearer_auth(token)
@@ -1871,10 +2376,12 @@ async fn fetch_forge_owned_repositories(
     let mut repositories = Vec::new();
     let mut page = 1_u64;
     for _ in 0..MAX_PROVIDER_PAGES {
-        let url = validate_public_https_url(&format!(
-            "https://{host}/api/v1/user/repos?limit=50&page={page}"
-        ))
-        .await?;
+        let (client, url) = service
+            .client_for(
+                &format!("https://{host}/api/v1/user/repos?limit=50&page={page}"),
+                NetworkAccessScope::Coding,
+            )
+            .await?;
         let response = client
             .get(url)
             .bearer_auth(token)
@@ -1952,7 +2459,7 @@ fn sort_owned_repositories(repositories: &mut [CodingOwnedRepository]) {
 }
 
 async fn fetch_release(
-    client: &Client,
+    service: &WidgetIntegrationService,
     repository: &str,
     token: Option<&str>,
 ) -> Result<Value, String> {
@@ -1960,13 +2467,15 @@ async fn fetch_release(
     let provider = parsed.provider.as_str();
     let repository = parsed.repository.as_str();
     let custom_host = matches!(provider, "gitea" | "forgejo").then_some(parsed.host.as_str());
-    let url = if let Some(host) = custom_host {
-        validate_public_https_url(&format!(
-            "https://{host}/api/v1/repos/{repository}/releases/latest"
-        ))
-        .await?
+    let (client, url) = if let Some(host) = custom_host {
+        service
+            .client_for(
+                &format!("https://{host}/api/v1/repos/{repository}/releases/latest"),
+                NetworkAccessScope::Coding,
+            )
+            .await?
     } else {
-        Url::parse(&match provider {
+        let url = match provider {
             "github" => format!("https://api.github.com/repos/{repository}/releases/latest"),
             "gitlab" => format!(
                 "https://gitlab.com/api/v4/projects/{}/releases/permalink/latest",
@@ -1974,8 +2483,8 @@ async fn fetch_release(
             ),
             "codeberg" => format!("https://codeberg.org/api/v1/repos/{repository}/releases/latest"),
             _ => return Err("release provider is unsupported".to_owned()),
-        })
-        .map_err(|_| "release provider URL is invalid".to_owned())?
+        };
+        service.client_for(&url, NetworkAccessScope::Coding).await?
     };
     let mut request = client.get(url).header(header::ACCEPT, "application/json");
     if let Some(token) = token {
@@ -2140,60 +2649,65 @@ fn reddit_retry_delay(headers: &header::HeaderMap) -> Duration {
     Duration::from_secs(seconds)
 }
 
-/// Validates one outbound URL against the shared SSRF policy.
-///
-/// Exposed to the crate so the podcast downloader can re-run it on every redirect hop.
-pub(crate) async fn validate_public_https_url(value: &str) -> Result<Url, String> {
-    let url = Url::parse(value).map_err(|_| "URL is invalid".to_owned())?;
-    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
-        return Err("only credential-free HTTPS URLs are allowed".to_owned());
-    }
-    let host = url
-        .host_str()
-        .ok_or_else(|| "URL host is missing".to_owned())?;
-    if host.eq_ignore_ascii_case("localhost")
-        || host
-            .rsplit('.')
-            .next()
-            .is_some_and(|suffix| suffix.eq_ignore_ascii_case("local"))
+fn ntfy_endpoint(base_url: &str, topics: &[&str]) -> Result<Url, String> {
+    if topics.is_empty()
+        || topics.len() > 32
+        || topics
+            .iter()
+            .any(|topic| topic.is_empty() || topic.contains(','))
     {
-        return Err("local network URLs are not allowed".to_owned());
+        return Err("ntfy subscriptions require between 1 and 32 valid topics".to_owned());
     }
-    let port = url.port_or_known_default().unwrap_or(443);
-    let addresses = lookup_host((host, port))
-        .await
-        .map_err(|_| "URL host could not be resolved".to_owned())?
-        .collect::<Vec<_>>();
-    if addresses.is_empty() || addresses.iter().any(|address| !public_ip(address.ip())) {
-        return Err("private or reserved network URLs are not allowed".to_owned());
+    let mut endpoint = Url::parse(base_url).map_err(|_| "ntfy server URL is invalid".to_owned())?;
+    endpoint.set_query(None);
+    endpoint.set_fragment(None);
+    let joined_topics = topics.join(",");
+    {
+        let mut segments = endpoint
+            .path_segments_mut()
+            .map_err(|_| "ntfy server URL cannot be used as a base".to_owned())?;
+        segments.pop_if_empty();
+        segments.push(&joined_topics);
+        segments.push("json");
     }
-    Ok(url)
+    Ok(endpoint)
 }
 
-fn public_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            let [a, b, ..] = ip.octets();
-            !(ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_broadcast()
-                || ip.is_documentation()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-                || a == 0
-                || a >= 224
-                || (a == 100 && (64..=127).contains(&b)))
-        }
-        IpAddr::V6(ip) => {
-            let first = ip.segments()[0];
-            !(ip.is_loopback()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-                || (first & 0xfe00) == 0xfc00
-                || (first & 0xffc0) == 0xfe80)
+fn ntfy_poll_endpoint(base_url: &str, topics: &[&str], since: Option<&str>) -> Result<Url, String> {
+    let mut endpoint = ntfy_endpoint(base_url, topics)?;
+    endpoint
+        .query_pairs_mut()
+        .append_pair("poll", "1")
+        .append_pair("since", since.unwrap_or("all"));
+    Ok(endpoint)
+}
+
+fn ntfy_stream_endpoint(base_url: &str, topics: &[&str], since: &str) -> Result<Url, String> {
+    let mut endpoint = ntfy_endpoint(base_url, topics)?;
+    endpoint.query_pairs_mut().append_pair("since", since);
+    Ok(endpoint)
+}
+
+pub(crate) fn parse_ntfy_message_line(line: &str) -> Result<Option<NtfyMessage>, String> {
+    if line.trim().is_empty() {
+        return Ok(None);
+    }
+    let message: NtfyMessage = serde_json::from_str(line)
+        .map_err(|_| "ntfy returned an invalid message stream".to_owned())?;
+    Ok((message.event == "message").then_some(message))
+}
+
+fn parse_ntfy_messages(body: &str) -> Result<Vec<NtfyMessage>, String> {
+    let mut messages = Vec::new();
+    for line in body.lines().filter(|line| !line.trim().is_empty()) {
+        if let Some(message) = parse_ntfy_message_line(line)? {
+            messages.push(message);
+            if messages.len() >= 500 {
+                break;
+            }
         }
     }
+    Ok(messages)
 }
 
 async fn response_text(response: reqwest::Response) -> Result<String, String> {
@@ -2257,6 +2771,206 @@ fn request_error(error: reqwest::Error) -> String {
     }
 }
 
+struct NtfyRequestLogContext<'a> {
+    account_id: &'a str,
+    operation: &'static str,
+    origin: String,
+    topic_count: usize,
+    has_token: bool,
+}
+
+impl<'a> NtfyRequestLogContext<'a> {
+    fn new(
+        account_id: &'a str,
+        operation: &'static str,
+        endpoint: &Url,
+        topic_count: usize,
+        has_token: bool,
+    ) -> Self {
+        Self {
+            account_id,
+            operation,
+            origin: endpoint.origin().ascii_serialization(),
+            topic_count,
+            has_token,
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct NtfyResponseLogMetadata {
+    content_type: Option<String>,
+    retry_after: Option<String>,
+    rate_limit_limit: Option<String>,
+    rate_limit_remaining: Option<String>,
+    rate_limit_reset: Option<String>,
+    server: Option<String>,
+    via: Option<String>,
+    request_id: Option<String>,
+}
+
+fn ntfy_response_log_metadata(headers: &header::HeaderMap) -> NtfyResponseLogMetadata {
+    NtfyResponseLogMetadata {
+        content_type: safe_header_value(headers, &["content-type"]),
+        retry_after: safe_header_value(headers, &["retry-after"]),
+        rate_limit_limit: safe_header_value(headers, &["ratelimit-limit", "x-ratelimit-limit"]),
+        rate_limit_remaining: safe_header_value(
+            headers,
+            &["ratelimit-remaining", "x-ratelimit-remaining"],
+        ),
+        rate_limit_reset: safe_header_value(headers, &["ratelimit-reset", "x-ratelimit-reset"]),
+        server: safe_header_value(headers, &["server"]),
+        via: safe_header_value(headers, &["via"]),
+        request_id: safe_header_value(headers, &["x-request-id", "cf-ray", "traceparent"]),
+    }
+}
+
+fn safe_header_value(headers: &header::HeaderMap, names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| {
+        let value = headers.get(*name)?.to_str().ok()?.trim();
+        (!value.is_empty() && !value.chars().any(char::is_control))
+            .then(|| value.chars().take(160).collect())
+    })
+}
+
+fn log_ntfy_response(response: &reqwest::Response, context: &NtfyRequestLogContext<'_>) {
+    let metadata = ntfy_response_log_metadata(response.headers());
+    let status = response.status().as_u16();
+    let content_length = response.content_length();
+    if response.status().is_success() {
+        if context.operation == "realtime_stream" {
+            tracing::info!(
+                user_id = %context.account_id,
+                operation = context.operation,
+                origin = %context.origin,
+                topic_count = context.topic_count,
+                token_present = context.has_token,
+                status,
+                ?content_length,
+                content_type = ?metadata.content_type,
+                server = ?metadata.server,
+                via = ?metadata.via,
+                request_id = ?metadata.request_id,
+                "ntfy upstream stream handshake succeeded"
+            );
+        } else {
+            tracing::debug!(
+                user_id = %context.account_id,
+                operation = context.operation,
+                origin = %context.origin,
+                topic_count = context.topic_count,
+                token_present = context.has_token,
+                status,
+                ?content_length,
+                content_type = ?metadata.content_type,
+                "ntfy upstream request succeeded"
+            );
+        }
+        return;
+    }
+    tracing::warn!(
+        user_id = %context.account_id,
+        operation = context.operation,
+        origin = %context.origin,
+        topic_count = context.topic_count,
+        token_present = context.has_token,
+        status,
+        ?content_length,
+        content_type = ?metadata.content_type,
+        retry_after = ?metadata.retry_after,
+        rate_limit_limit = ?metadata.rate_limit_limit,
+        rate_limit_remaining = ?metadata.rate_limit_remaining,
+        rate_limit_reset = ?metadata.rate_limit_reset,
+        server = ?metadata.server,
+        via = ?metadata.via,
+        request_id = ?metadata.request_id,
+        "ntfy upstream request was rejected"
+    );
+}
+
+fn ntfy_transport_error(error: reqwest::Error, context: &NtfyRequestLogContext<'_>) -> String {
+    let timed_out = error.is_timeout();
+    let connect = error.is_connect();
+    let status = error.status().map(|status| status.as_u16());
+    let kind = if timed_out {
+        "timeout"
+    } else if connect {
+        "connect"
+    } else {
+        "request"
+    };
+    tracing::warn!(
+        user_id = %context.account_id,
+        operation = context.operation,
+        origin = %context.origin,
+        topic_count = context.topic_count,
+        token_present = context.has_token,
+        error_kind = kind,
+        ?status,
+        "ntfy upstream transport failed"
+    );
+    ntfy_request_error(error, context.has_token)
+}
+
+fn ntfy_request_error(error: reqwest::Error, has_token: bool) -> String {
+    if error.is_timeout() {
+        return "ntfy server request timed out; reconnecting automatically".to_owned();
+    }
+    if error.is_connect() {
+        return "ntfy server could not be reached; check its URL and TLS certificate".to_owned();
+    }
+    let status = error.status();
+    drop(error);
+    status.map_or_else(
+        || "ntfy server request failed; check its URL and TLS certificate".to_owned(),
+        |status| ntfy_status_error(status, has_token),
+    )
+}
+
+fn ntfy_status_error(status: StatusCode, has_token: bool) -> String {
+    match status {
+        StatusCode::UNAUTHORIZED if has_token => "ntfy access token was rejected".to_owned(),
+        StatusCode::UNAUTHORIZED => "this ntfy server requires an access token".to_owned(),
+        StatusCode::FORBIDDEN if has_token => {
+            "ntfy access token cannot read one or more subscribed topics".to_owned()
+        }
+        StatusCode::FORBIDDEN => {
+            "one or more subscribed ntfy topics require an access token".to_owned()
+        }
+        StatusCode::NOT_FOUND => {
+            "ntfy subscription endpoint was not found; check the server URL".to_owned()
+        }
+        StatusCode::TOO_MANY_REQUESTS => {
+            "ntfy server rate limit reached; reconnecting automatically".to_owned()
+        }
+        status if status.is_server_error() => {
+            "ntfy server is temporarily unavailable; reconnecting automatically".to_owned()
+        }
+        status => format!(
+            "ntfy server rejected the request (HTTP {})",
+            status.as_u16()
+        ),
+    }
+}
+
+fn widget_client_builder() -> ClientBuilder {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent("Pandan/0.1 widget fetcher")
+}
+
+fn ntfy_stream_client_builder() -> ClientBuilder {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(4))
+        // ntfy emits keepalives approximately every 45 seconds. This detects a dead upstream
+        // without placing a total lifetime on a healthy subscription.
+        .read_timeout(Duration::from_secs(90))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent("Pandan/0.1 ntfy subscriber")
+}
+
 fn config_strings(config: &Value, key: &str, max: usize) -> Vec<String> {
     config[key]
         .as_array()
@@ -2318,6 +3032,71 @@ fn value_string(value: &Value, key: &str) -> String {
 mod tests {
     use super::*;
 
+    async fn test_service() -> WidgetIntegrationService {
+        let pool = db::connect("sqlite::memory:")
+            .await
+            .expect("test database connects");
+        WidgetIntegrationService::for_tests(pool).expect("service initializes")
+    }
+
+    fn empty_coding_response() -> CodingResponse {
+        CodingResponse {
+            projects: Vec::new(),
+            releases: Vec::new(),
+            merge_requests: Vec::new(),
+            owned_repositories: Vec::new(),
+            pipelines: Vec::new(),
+            credentials: Vec::new(),
+            secret_storage_enabled: false,
+            provider_errors: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn coding_cache_is_account_scoped_and_expires_after_one_hour() {
+        assert_eq!(CODING_CACHE_DURATION, Duration::from_secs(60 * 60));
+        let service = test_service().await;
+        let response = empty_coding_response();
+        let (generation, cached) = service.coding_cache_snapshot("account-a").await;
+        assert!(cached.is_none());
+
+        service
+            .cache_coding_if_current("account-a", generation, &response)
+            .await;
+        assert!(service.coding_cache_snapshot("account-a").await.1.is_some());
+        assert!(service.coding_cache_snapshot("account-b").await.1.is_none());
+
+        service
+            .coding_cache
+            .write()
+            .await
+            .entries
+            .get_mut("account-a")
+            .expect("cached response exists")
+            .stored_at = Instant::now()
+            .checked_sub(CODING_CACHE_DURATION)
+            .expect("cache duration fits in Instant");
+        assert!(service.coding_cache_snapshot("account-a").await.1.is_none());
+    }
+
+    #[tokio::test]
+    async fn coding_cache_invalidation_rejects_an_in_flight_stale_response() {
+        let service = test_service().await;
+        let response = empty_coding_response();
+        let (stale_generation, _) = service.coding_cache_snapshot("account-a").await;
+        let current_generation = service.clear_coding_cache("account-a").await;
+
+        service
+            .cache_coding_if_current("account-a", stale_generation, &response)
+            .await;
+        assert!(service.coding_cache_snapshot("account-a").await.1.is_none());
+
+        service
+            .cache_coding_if_current("account-a", current_generation, &response)
+            .await;
+        assert!(service.coding_cache_snapshot("account-a").await.1.is_some());
+    }
+
     #[test]
     fn widget_secrets_round_trip_without_plaintext_storage() {
         let key = STANDARD.encode([7_u8; 32]);
@@ -2363,22 +3142,22 @@ mod tests {
     #[tokio::test]
     async fn invidious_private_network_exemption_covers_only_the_configured_instance() {
         let service =
-            WidgetIntegrationService::new_with_invidious(None, Some("https://inv.invalid/"), true)
+            WidgetIntegrationService::new_with_invidious(None, Some("https://127.0.0.1/"), true)
                 .expect("service initializes");
         assert!(service.invidious_allows_private_network());
 
         let allowed = service
-            .validate_invidious_url("https://inv.invalid/api/v1/channels/UCexample")
+            .validate_invidious_url("https://127.0.0.1/api/v1/channels/UCexample")
             .await
             .expect("the configured instance skips the private-network guard");
         assert_eq!(
-            allowed.as_str(),
-            "https://inv.invalid/api/v1/channels/UCexample"
+            allowed.1.as_str(),
+            "https://127.0.0.1/api/v1/channels/UCexample"
         );
 
         for rejected in [
-            "http://inv.invalid/api/v1/channels/UCexample",
-            "https://operator:token@inv.invalid/api/v1/channels/UCexample",
+            "http://127.0.0.1/api/v1/channels/UCexample",
+            "https://operator:token@127.0.0.1/api/v1/channels/UCexample",
         ] {
             assert_eq!(
                 service.validate_invidious_url(rejected).await.unwrap_err(),
@@ -2388,8 +3167,8 @@ mod tests {
 
         // A different host, or the same host on another port, falls back to the shared policy.
         for external in [
-            "https://elsewhere.invalid/api/v1/channels/UCexample",
-            "https://inv.invalid:8443/api/v1/channels/UCexample",
+            "https://127.0.0.2/api/v1/channels/UCexample",
+            "https://127.0.0.1:8443/api/v1/channels/UCexample",
         ] {
             assert!(service.validate_invidious_url(external).await.is_err());
         }
@@ -2398,13 +3177,13 @@ mod tests {
     #[tokio::test]
     async fn invidious_requests_stay_guarded_without_the_opt_in() {
         let service =
-            WidgetIntegrationService::new_with_invidious(None, Some("https://inv.invalid/"), false)
+            WidgetIntegrationService::new_with_invidious(None, Some("https://127.0.0.1/"), false)
                 .expect("service initializes");
         assert!(service.invidious_enabled());
         assert!(!service.invidious_allows_private_network());
         assert!(
             service
-                .validate_invidious_url("https://inv.invalid/api/v1/channels/UCexample")
+                .validate_invidious_url("https://127.0.0.1/api/v1/channels/UCexample")
                 .await
                 .is_err()
         );
@@ -2522,6 +3301,79 @@ mod tests {
     }
 
     #[test]
+    fn rss_reader_preserves_rss_comments_destinations() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+          <rss version="2.0">
+            <channel>
+              <title>Example feed</title>
+              <link>https://example.com/</link>
+              <description>Example entries</description>
+              <item>
+                <guid>entry-1</guid>
+                <title>Article with discussion</title>
+                <link>https://example.com/article</link>
+                <comments>https://example.com/article/comments?sort=top&amp;view=all</comments>
+                <pubDate>Thu, 20 Aug 2026 05:00:00 +0000</pubDate>
+              </item>
+            </channel>
+          </rss>"#;
+
+        let snapshot = parse_rss_feed_snapshot(xml).expect("RSS feed parses");
+
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(snapshot.items[0].url, "https://example.com/article");
+        assert_eq!(
+            snapshot.items[0].comments_url,
+            "https://example.com/article/comments?sort=top&view=all"
+        );
+    }
+
+    #[test]
+    fn rss_reader_uses_atom_replies_links_for_comments() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+          <feed xmlns="http://www.w3.org/2005/Atom">
+            <title>Example Atom feed</title>
+            <id>https://example.com/feed</id>
+            <updated>2026-08-20T05:00:00Z</updated>
+            <entry>
+              <id>entry-2</id>
+              <title>Atom article</title>
+              <updated>2026-08-20T05:00:00Z</updated>
+              <link rel="replies" href="https://example.com/article/comments" />
+              <link rel="alternate" href="https://example.com/article" />
+            </entry>
+          </feed>"#;
+
+        let snapshot = parse_rss_feed_snapshot(xml).expect("Atom feed parses");
+
+        assert_eq!(snapshot.items[0].url, "https://example.com/article");
+        assert_eq!(
+            snapshot.items[0].comments_url,
+            "https://example.com/article/comments"
+        );
+    }
+
+    #[test]
+    fn reddit_atom_entries_treat_the_thread_as_the_comments_destination() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+          <feed xmlns="http://www.w3.org/2005/Atom">
+            <title>r/selfhosted</title>
+            <id>https://www.reddit.com/r/selfhosted/.rss</id>
+            <updated>2026-08-20T05:00:00Z</updated>
+            <entry>
+              <id>t3_example</id>
+              <title>A self-hosted project</title>
+              <updated>2026-08-20T05:00:00Z</updated>
+              <link rel="alternate" href="https://www.reddit.com/r/selfhosted/comments/example/a_selfhosted_project/" />
+            </entry>
+          </feed>"#;
+
+        let snapshot = parse_rss_feed_snapshot(xml).expect("Reddit Atom feed parses");
+
+        assert_eq!(snapshot.items[0].comments_url, snapshot.items[0].url);
+    }
+
+    #[test]
     fn reddit_retry_delay_honors_the_provider_reset_window() {
         let mut headers = header::HeaderMap::new();
         headers.insert("x-ratelimit-reset", header::HeaderValue::from_static("14"));
@@ -2608,6 +3460,123 @@ END:VCARD</card:address-data></d:prop></d:propstat></d:response>
     fn oversized_widget_configuration_is_rejected() {
         let config = json!({ "source": "x".repeat(33_000) });
         assert!(validate_widget_config("html", &config).is_err());
+    }
+
+    #[test]
+    fn ntfy_stream_keeps_messages_and_preserves_actions() {
+        let body = r#"{"id":"open","time":1,"event":"open","topic":"alerts"}
+{"id":"message-1","time":2,"event":"message","topic":"alerts","title":"Door","message":"Opened","priority":4,"tags":["house"],"click":"https://example.com/event","actions":[{"action":"view","label":"Camera","url":"https://example.com/camera","clear":true}]}"#;
+
+        let messages = parse_ntfy_messages(body).expect("ntfy stream parses");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, "message-1");
+        assert_eq!(messages[0].priority, 4);
+        assert_eq!(messages[0].actions[0].action, "view");
+        assert!(messages[0].actions[0].clear);
+    }
+
+    #[test]
+    fn ntfy_poll_endpoint_batches_topics_and_preserves_a_base_path() {
+        let endpoint = ntfy_poll_endpoint(
+            "https://ntfy.example.com/gateway",
+            &["home-alerts", "deploys"],
+            Some("message-12"),
+        )
+        .expect("ntfy endpoint builds");
+
+        assert_eq!(endpoint.path(), "/gateway/home-alerts,deploys/json");
+        assert_eq!(
+            endpoint
+                .query_pairs()
+                .collect::<HashMap<_, _>>()
+                .get("since")
+                .map(|value| value.as_ref()),
+            Some("message-12")
+        );
+    }
+
+    #[test]
+    fn ntfy_realtime_endpoint_preserves_path_and_uses_the_requested_replay_window() {
+        let endpoint = ntfy_stream_endpoint(
+            "https://ntfy.example.com/gateway",
+            &["home-alerts", "deploys"],
+            "45s",
+        )
+        .expect("ntfy stream endpoint builds");
+
+        assert_eq!(endpoint.path(), "/gateway/home-alerts,deploys/json");
+        let query = endpoint.query_pairs().collect::<HashMap<_, _>>();
+        assert_eq!(query.get("since").map(|value| value.as_ref()), Some("45s"));
+        assert!(!query.contains_key("poll"));
+    }
+
+    #[test]
+    fn ntfy_status_errors_distinguish_credentials_and_topic_access() {
+        assert_eq!(
+            ntfy_status_error(StatusCode::UNAUTHORIZED, true),
+            "ntfy access token was rejected"
+        );
+        assert_eq!(
+            ntfy_status_error(StatusCode::UNAUTHORIZED, false),
+            "this ntfy server requires an access token"
+        );
+        assert_eq!(
+            ntfy_status_error(StatusCode::FORBIDDEN, true),
+            "ntfy access token cannot read one or more subscribed topics"
+        );
+        assert_eq!(
+            ntfy_status_error(StatusCode::TOO_MANY_REQUESTS, true),
+            "ntfy server rate limit reached; reconnecting automatically"
+        );
+    }
+
+    #[test]
+    fn ntfy_log_context_excludes_topic_and_base_paths() {
+        let endpoint = Url::parse("https://ntfy.example.com:8443/gateway/private-topic/json")
+            .expect("ntfy endpoint parses");
+        let context =
+            NtfyRequestLogContext::new("account-1", "realtime_stream", &endpoint, 1, true);
+
+        assert_eq!(context.origin, "https://ntfy.example.com:8443");
+        assert!(!context.origin.contains("gateway"));
+        assert!(!context.origin.contains("private-topic"));
+    }
+
+    #[test]
+    fn ntfy_response_logs_capture_selected_proxy_rate_limit_headers() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(header::RETRY_AFTER, header::HeaderValue::from_static("30"));
+        headers.insert("x-ratelimit-limit", header::HeaderValue::from_static("20"));
+        headers.insert(
+            "x-ratelimit-remaining",
+            header::HeaderValue::from_static("0"),
+        );
+        headers.insert(
+            "x-ratelimit-reset",
+            header::HeaderValue::from_static("1787274000"),
+        );
+        headers.insert(
+            header::SERVER,
+            header::HeaderValue::from_static("reverse-proxy"),
+        );
+        headers.insert(header::VIA, header::HeaderValue::from_static("1.1 gateway"));
+        headers.insert("cf-ray", header::HeaderValue::from_static("trace-123"));
+        headers.insert(
+            header::AUTHORIZATION,
+            header::HeaderValue::from_static("Bearer never-log-this"),
+        );
+
+        let metadata = ntfy_response_log_metadata(&headers);
+
+        assert_eq!(metadata.retry_after.as_deref(), Some("30"));
+        assert_eq!(metadata.rate_limit_limit.as_deref(), Some("20"));
+        assert_eq!(metadata.rate_limit_remaining.as_deref(), Some("0"));
+        assert_eq!(metadata.rate_limit_reset.as_deref(), Some("1787274000"));
+        assert_eq!(metadata.server.as_deref(), Some("reverse-proxy"));
+        assert_eq!(metadata.via.as_deref(), Some("1.1 gateway"));
+        assert_eq!(metadata.request_id.as_deref(), Some("trace-123"));
+        assert!(!format!("{metadata:?}").contains("never-log-this"));
     }
 
     #[test]

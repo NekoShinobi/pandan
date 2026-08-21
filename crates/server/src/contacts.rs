@@ -339,7 +339,7 @@ async fn create_dav_source(
     }
     state
         .widget_integrations
-        .validate_public_https_source(url)
+        .validate_source(url, crate::network_policy::NetworkAccessScope::Contacts)
         .await
         .map_err(ApiError::Integration)?;
     let encrypted = (!payload.password.is_empty())

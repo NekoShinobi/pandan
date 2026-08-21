@@ -299,6 +299,7 @@ export interface RssReaderItem {
   category: string;
   base_url: string;
   url: string;
+  comments_url: string;
   title: string;
   summary: string;
   published_at: string;
@@ -773,6 +774,79 @@ export interface WidgetData {
   partial?: boolean;
 }
 
+export interface NtfyConnection {
+  base_url: string;
+  has_token: boolean;
+  last_synced_at: string | null;
+  last_error: string | null;
+}
+
+export interface NtfyTopic {
+  id: string;
+  topic: string;
+  label: string;
+  last_message_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NtfyAction {
+  action: "view" | "http" | "copy" | string;
+  label: string;
+  url?: string | null;
+  method?: string | null;
+  headers: Record<string, string>;
+  body?: string | null;
+  value?: string | null;
+  clear: boolean;
+}
+
+export interface NtfyNotification {
+  id: string;
+  topic_id: string;
+  topic: string;
+  topic_label: string;
+  remote_id: string;
+  occurred_at: number;
+  title: string;
+  message: string;
+  priority: number;
+  tags: string[];
+  click_url: string | null;
+  actions: NtfyAction[];
+  seen: boolean;
+  received_at: string;
+}
+
+export interface NtfyResponse {
+  connection: NtfyConnection | null;
+  topics: NtfyTopic[];
+  notifications: NtfyNotification[];
+  unread_count: number;
+  secret_storage_enabled: boolean;
+}
+
+export type NtfyRealtimeEvent =
+  | {
+      kind: "notification";
+      notification: NtfyNotification;
+      unread_count: number;
+    }
+  | {
+      kind: "deleted";
+      notification_id: string;
+      unread_count: number;
+    }
+  | {
+      kind: "status";
+      last_error: string | null;
+    };
+
+export interface NtfyActionResult {
+  status: number;
+  deleted: boolean;
+}
+
 export interface User {
   id: string;
   email: string;
@@ -850,6 +924,31 @@ export interface AuthenticationConfig {
   oidc_provider_name: string | null;
 }
 
+export type NetworkAccessAction = "allow" | "deny";
+export type NetworkAccessIntegration =
+  | "all"
+  | "rss"
+  | "calendar"
+  | "contacts"
+  | "podcasts"
+  | "notifications"
+  | "coding"
+  | "images"
+  | "youtube"
+  | "widgets";
+
+export interface NetworkAccessRule {
+  id: string;
+  action: NetworkAccessAction;
+  scheme: "http" | "https";
+  host: string;
+  port: number;
+  integration: NetworkAccessIntegration;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface SetupStatus {
   required: boolean;
 }
@@ -874,6 +973,7 @@ export interface EmbeddedPage {
   title: string;
   description: string;
   url: string;
+  allow_scripts: boolean;
   allow_same_origin: boolean;
   iframe_height: number;
   position: number;
@@ -890,6 +990,7 @@ export interface EmbeddedPageInput {
   title: string;
   description: string;
   url: string;
+  allow_scripts: boolean;
   allow_same_origin: boolean;
   iframe_height: number;
 }
@@ -990,10 +1091,10 @@ export function updatePersonalEmbeddedPage(
 }
 
 export function deletePersonalEmbeddedPage(pageId: string): Promise<void> {
-  return requestEmpty(
-    `/api/embedded-pages/${encodeURIComponent(pageId)}`,
-    { method: "DELETE", credentials: "same-origin" },
-  );
+  return requestEmpty(`/api/embedded-pages/${encodeURIComponent(pageId)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
 }
 
 export function reorderPersonalEmbeddedPages(
@@ -1117,6 +1218,95 @@ export function fetchWidgetData(
   const query = refresh ? "?refresh=true" : "";
   return requestJson<WidgetData>(
     `/api/widgets/${encodeURIComponent(id)}/data${query}`,
+  );
+}
+
+export function fetchNtfy(
+  options: {
+    topic_id?: string;
+    limit?: number;
+  } = {},
+): Promise<NtfyResponse> {
+  const query = new URLSearchParams();
+  if (options.topic_id) query.set("topic_id", options.topic_id);
+  if (options.limit) query.set("limit", String(options.limit));
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return requestJson<NtfyResponse>(`/api/ntfy${suffix}`);
+}
+
+export function openNtfyEventStream(): EventSource {
+  return new EventSource("/api/ntfy/events");
+}
+
+export function updateNtfyConnection(input: {
+  base_url: string;
+  token?: string;
+  clear_token?: boolean;
+}): Promise<NtfyResponse> {
+  return requestJson<NtfyResponse>("/api/ntfy/connection", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteNtfyConnection(): Promise<void> {
+  return requestEmpty("/api/ntfy/connection", {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+
+export function createNtfyTopic(input: {
+  topic: string;
+  label: string;
+}): Promise<NtfyTopic> {
+  return requestJson<NtfyTopic>("/api/ntfy/topics", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateNtfyTopic(id: string, label: string): Promise<NtfyTopic> {
+  return requestJson<NtfyTopic>(`/api/ntfy/topics/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ label }),
+  });
+}
+
+export function deleteNtfyTopic(id: string): Promise<void> {
+  return requestEmpty(`/api/ntfy/topics/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+
+export function markNtfySeen(): Promise<void> {
+  return requestEmpty("/api/ntfy/seen", {
+    method: "POST",
+    credentials: "same-origin",
+  });
+}
+
+export function deleteNtfyNotification(id: string): Promise<void> {
+  return requestEmpty(`/api/ntfy/notifications/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+
+export function executeNtfyAction(
+  notificationId: string,
+  actionIndex: number,
+): Promise<NtfyActionResult> {
+  return requestJson<NtfyActionResult>(
+    `/api/ntfy/notifications/${encodeURIComponent(notificationId)}/actions/${actionIndex}`,
+    { method: "POST", credentials: "same-origin" },
   );
 }
 
@@ -1340,6 +1530,41 @@ export function updateAuthenticationSettings(input: {
     credentials: "same-origin",
     body: JSON.stringify(input),
   });
+}
+
+export function fetchNetworkAccessRules(): Promise<NetworkAccessRule[]> {
+  return requestJson<NetworkAccessRule[]>("/api/admin/network-access", {
+    credentials: "same-origin",
+  });
+}
+
+export function createNetworkAccessRule(input: {
+  action: NetworkAccessAction;
+  origin: string;
+  integration: NetworkAccessIntegration;
+}): Promise<NetworkAccessRule> {
+  return requestJson<NetworkAccessRule>("/api/admin/network-access", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteNetworkAccessRule(id: string): Promise<void> {
+  const response = await fetch(
+    `/api/admin/network-access/${encodeURIComponent(id)}`,
+    { method: "DELETE", credentials: "same-origin" },
+  );
+  if (!response.ok) {
+    const payload = (await response
+      .json()
+      .catch(() => ({}))) as ApiErrorResponse;
+    throw new ApiError(
+      payload.error ?? `Request failed with status ${response.status}`,
+      response.status,
+    );
+  }
 }
 
 export function updateManagedUserRole(
@@ -1701,12 +1926,13 @@ export function fetchYoutubeReader(): Promise<YoutubeReaderResponse> {
 
 export function createYoutubeSubscription(
   channelId: string,
+  groupIds: string[] = [],
 ): Promise<YoutubeReaderResponse> {
   return requestJson<YoutubeReaderResponse>("/api/youtube/subscriptions", {
     method: "POST",
     headers: { "content-type": "application/json" },
     credentials: "same-origin",
-    body: JSON.stringify({ channel_id: channelId }),
+    body: JSON.stringify({ channel_id: channelId, group_ids: groupIds }),
   });
 }
 
@@ -1772,6 +1998,17 @@ export function updateYoutubeGroup(
       body: JSON.stringify({ name, channel_ids: channelIds }),
     },
   );
+}
+
+export function reorderYoutubeGroups(
+  groupIds: string[],
+): Promise<YoutubeReaderResponse> {
+  return requestJson<YoutubeReaderResponse>("/api/youtube/groups/order", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ group_ids: groupIds }),
+  });
 }
 
 export async function deleteYoutubeGroup(groupId: string): Promise<void> {
@@ -2042,10 +2279,13 @@ export async function deletePaymentSubscription(id: string): Promise<void> {
   }
 }
 
-export function fetchCoding(): Promise<CodingResponse> {
-  return requestJson<CodingResponse>("/api/coding", {
-    credentials: "same-origin",
-  });
+export function fetchCoding(refresh = false): Promise<CodingResponse> {
+  return requestJson<CodingResponse>(
+    refresh ? "/api/coding?refresh=true" : "/api/coding",
+    {
+      credentials: "same-origin",
+    },
+  );
 }
 
 export function createCodingProject(

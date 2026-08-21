@@ -1,8 +1,10 @@
 <script lang="ts">
   import Check from "lucide-svelte/icons/check";
   import Bookmark from "lucide-svelte/icons/bookmark";
+  import Copy from "lucide-svelte/icons/copy";
   import ExternalLink from "lucide-svelte/icons/external-link";
   import Inbox from "lucide-svelte/icons/inbox";
+  import MessageCircle from "lucide-svelte/icons/message-circle";
   import Plus from "lucide-svelte/icons/plus";
   import RefreshCw from "lucide-svelte/icons/refresh-cw";
   import Search from "lucide-svelte/icons/search";
@@ -51,6 +53,7 @@
   let editingSubscriptionId = $state<string | null>(null);
   let feedSourceKind = $state<FeedSourceKind>("feed");
   let feedUrl = $state("");
+  let feedUrlCopied = $state(false);
   let redditSubreddit = $state("");
   let redditSort = $state<RedditSort>("hot");
   let redditTopPeriod = $state<RedditTopPeriod>("day");
@@ -94,6 +97,7 @@
         item.category,
         item.base_url,
         item.url,
+        item.comments_url,
       ].some((value) => value.toLowerCase().includes(needle));
     });
   });
@@ -184,6 +188,7 @@
     editingSubscriptionId = null;
     feedSourceKind = "feed";
     feedUrl = "";
+    feedUrlCopied = false;
     redditSubreddit = "";
     redditSort = "hot";
     redditTopPeriod = "day";
@@ -202,6 +207,7 @@
     editingSubscriptionId = subscription.id;
     feedSourceKind = "feed";
     feedUrl = subscription.url;
+    feedUrlCopied = false;
     feedCategory = subscription.category;
     retentionEnabled = subscription.auto_delete_days !== null;
     retentionDays = subscription.auto_delete_days ?? DEFAULT_RETENTION_DAYS;
@@ -216,6 +222,19 @@
 
   function closeSubscriptionDialog() {
     if (!savingSubscription) subscriptionDialog?.close();
+  }
+
+  async function copyFeedUrl() {
+    const value = feedUrl.trim();
+    if (!editingSubscriptionId || !value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      feedUrlCopied = true;
+      subscriptionError = "";
+    } catch {
+      feedUrlCopied = false;
+      subscriptionError = "Unable to copy the feed URL.";
+    }
   }
 
   function selectFeedSource(kind: FeedSourceKind) {
@@ -362,6 +381,12 @@
     if (item.read_at === null) void toggleRead(item);
   }
 
+  function openComments(item: RssReaderItem) {
+    if (!item.comments_url) return;
+    window.open(item.comments_url, "_blank", "noopener,noreferrer");
+    if (item.read_at === null) void toggleRead(item);
+  }
+
   function openPrune() {
     pruneDays = 90;
     pruneMode = "read";
@@ -497,7 +522,7 @@
 
   <nav class="rss-view-tabs" aria-label="RSS reader views" data-od-id="rss-reader-views">
     <button
-      class={activeView === "stream" ? "active" : undefined}
+      class="ui-view-tab"
       type="button"
       aria-pressed={activeView === "stream"}
       onclick={() => (activeView = "stream")}
@@ -506,7 +531,7 @@
       Stream <span>{reader.items.length}</span>
     </button>
     <button
-      class={activeView === "read-later" ? "active" : undefined}
+      class="ui-view-tab"
       type="button"
       aria-pressed={activeView === "read-later"}
       onclick={() => (activeView = "read-later")}
@@ -609,7 +634,19 @@
                   aria-hidden="true"
                 />
               </button>
-              {#if item.url}
+              {#if item.comments_url}
+                <button
+                  class="rss-item-action"
+                  type="button"
+                  aria-label={`Open comments for ${item.title} in a new tab`}
+                  title="Open comments"
+                  onclick={() => openComments(item)}
+                  data-od-id={`rss-open-comments-${item.id}`}
+                >
+                  <MessageCircle size={16} strokeWidth={1.8} aria-hidden="true" />
+                </button>
+              {/if}
+              {#if item.url && item.url !== item.comments_url}
                 <button
                   class="rss-item-action"
                   type="button"
@@ -754,7 +791,9 @@
             </p>
           {/if}
         </section>
-        <p class="rss-detail-destination">{selectedItem.url || selectedItem.base_url}</p>
+        <p class="rss-detail-destination">
+          {selectedItem.url || selectedItem.comments_url || selectedItem.base_url}
+        </p>
       </div>
       <footer class="rss-detail-actions">
         <button
@@ -779,11 +818,28 @@
           <Check size={15} strokeWidth={2} aria-hidden="true" />
           Mark {selectedItem.read_at ? "unread" : "read"}
         </button>
-        {#if selectedItem.url}
+        {#if selectedItem.comments_url}
+          <button
+            class={[
+              "ui-button",
+              selectedItem.url && selectedItem.url !== selectedItem.comments_url
+                ? "ui-button--secondary rss-secondary-button"
+                : "ui-button--primary rss-primary-button",
+            ]}
+            type="button"
+            onclick={() => openComments(selectedItem)}
+            data-od-id="rss-detail-open-comments"
+          >
+            Open comments
+            <MessageCircle size={15} strokeWidth={1.8} aria-hidden="true" />
+          </button>
+        {/if}
+        {#if selectedItem.url && selectedItem.url !== selectedItem.comments_url}
           <button
             class="ui-button ui-button--primary rss-primary-button"
             type="button"
             onclick={() => openArticle(selectedItem)}
+            data-od-id="rss-detail-open-original"
           >
             Open original
             <ExternalLink size={15} strokeWidth={1.8} aria-hidden="true" />
@@ -832,16 +888,34 @@
 
       {#if editingSubscription || feedSourceKind === "feed"}
         <label for="rss-feed-url">Feed URL</label>
-        <input
-          id="rss-feed-url"
-          type="url"
-          bind:value={feedUrl}
-          {@attach captureSubscriptionUrlInput}
-          placeholder="https://example.com/feed.xml"
-          maxlength="2048"
-          disabled={editingSubscriptionId !== null}
-          required
-        />
+        <div class={["rss-feed-url-row", editingSubscription && "is-editing"]}>
+          <input
+            id="rss-feed-url"
+            type="url"
+            bind:value={feedUrl}
+            {@attach captureSubscriptionUrlInput}
+            placeholder="https://example.com/feed.xml"
+            maxlength="2048"
+            disabled={editingSubscriptionId !== null}
+            required
+          />
+          {#if editingSubscription}
+            <button
+              class="ui-button ui-button--secondary ui-button--icon rss-copy-feed-url"
+              type="button"
+              aria-label={feedUrlCopied ? "Feed URL copied" : "Copy feed URL"}
+              title={feedUrlCopied ? "Copied" : "Copy feed URL"}
+              onclick={copyFeedUrl}
+              data-od-id="rss-copy-feed-url"
+            >
+              {#if feedUrlCopied}
+                <Check size={16} strokeWidth={2} aria-hidden="true" />
+              {:else}
+                <Copy size={16} strokeWidth={1.8} aria-hidden="true" />
+              {/if}
+            </button>
+          {/if}
+        </div>
         <small>Public HTTPS RSS and Atom feeds are supported.</small>
       {:else}
         <section class="rss-reddit-helper" aria-labelledby="rss-reddit-helper-title" data-od-id="rss-reddit-helper">
@@ -912,15 +986,22 @@
       </button>
 
       {#if retentionEnabled}
-        <div class="rss-retention-grid">
-          <label for="rss-retention-days">After</label>
-          <input id="rss-retention-days" type="number" bind:value={retentionDays} min="1" max="3650" required />
-          <span>days</span>
-        </div>
-        <fieldset>
-          <legend>Delete scope</legend>
-          <label><input type="radio" bind:group={retentionMode} value="read" /> Only items I have read</label>
-          <label><input type="radio" bind:group={retentionMode} value="all" /> Read and unread items</label>
+        <fieldset class="rss-retention-settings">
+          <legend>Auto-Delete Settings</legend>
+          <div class="rss-retention-setting">
+            <label class="rss-retention-setting-label" for="rss-retention-days">After</label>
+            <div class="rss-retention-age">
+              <input id="rss-retention-days" type="number" bind:value={retentionDays} min="1" max="3650" required />
+              <span>days</span>
+            </div>
+          </div>
+          <div class="rss-retention-setting rss-retention-scope">
+            <span class="rss-retention-setting-label" id="rss-retention-scope-label">Delete scope</span>
+            <div class="rss-retention-options" role="radiogroup" aria-labelledby="rss-retention-scope-label">
+              <label><input type="radio" bind:group={retentionMode} value="read" /> Only items I have read</label>
+              <label><input type="radio" bind:group={retentionMode} value="all" /> Read and unread items</label>
+            </div>
+          </div>
         </fieldset>
       {/if}
 
@@ -982,8 +1063,6 @@
   .rss-reader-header p { margin-top: 8px; color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
   .rss-header-actions, .rss-source-actions, .rss-dialog footer { display: flex; align-items: center; gap: 8px; }
   .rss-view-tabs { display: flex; gap: 6px; overflow-x: auto; }
-  .rss-view-tabs button { display: inline-flex; align-items: center; gap: 7px; padding: 0 13px; border: 1px solid var(--border); border-radius: 6px; background: var(--page-surface, var(--surface)); color: var(--fg); font-family: var(--font-mono); font-size: 10px; }
-  .rss-view-tabs button:hover, .rss-view-tabs button.active { border-color: var(--fg); background: var(--fg); color: var(--surface); }
   .rss-view-tabs span { color: inherit; font-variant-numeric: tabular-nums; opacity: .7; }
   button, input, select { font: inherit; }
   button { min-height: 42px; }
@@ -1063,6 +1142,9 @@
   .rss-dialog input[type="url"], .rss-dialog input[type="text"], .rss-dialog input[list], .rss-dialog input[type="number"], .rss-dialog select { min-height: 44px; width: 100%; padding: 0 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font-family: var(--font-mono); font-size: 12px; }
   .rss-dialog input:disabled { color: var(--muted); }
   .rss-subscription-scroll > small { margin-top: -4px; color: var(--muted); font-size: 10px; }
+  .rss-feed-url-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .rss-feed-url-row.is-editing { grid-template-columns: minmax(0, 1fr) 44px; }
+  .rss-copy-feed-url { width: 44px; min-height: 44px; }
   .rss-source-kind { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); }
   .rss-source-kind button { min-height: 44px; border: 1px solid transparent; border-radius: 4px; color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .04em; }
   .rss-source-kind button:hover { border-color: var(--border); color: var(--fg); }
@@ -1080,8 +1162,16 @@
   .rss-check-copy { min-width: 0; flex: 1; display: grid; gap: 3px; line-height: 1.4; }
   .rss-check-row strong { font-size: 12px; font-weight: 560; }
   .rss-check-row small { overflow-wrap: anywhere; color: var(--muted); font-size: 10px; }
-  .rss-retention-grid { display: grid; grid-template-columns: minmax(0, 1fr) 100px auto; align-items: center; gap: 9px; }
-  .rss-retention-grid label, .rss-retention-grid span { color: var(--muted); font-family: var(--font-mono); font-size: 10px; }
+  .rss-dialog .rss-retention-settings { gap: 0; padding: 14px; }
+  .rss-retention-setting { display: grid; grid-template-columns: 88px minmax(0, 1fr); align-items: start; gap: 16px; }
+  .rss-retention-setting + .rss-retention-setting { margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--border); }
+  .rss-retention-setting-label { min-height: 44px; display: flex; align-items: center; }
+  .rss-retention-scope { grid-template-columns: 1fr; gap: 4px; }
+  .rss-retention-scope .rss-retention-setting-label { min-height: 0; }
+  .rss-dialog .rss-retention-setting-label, .rss-retention-age span { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .03em; }
+  .rss-retention-age { display: grid; grid-template-columns: 100px auto; align-items: center; justify-content: start; gap: 9px; }
+  .rss-retention-options { display: grid; gap: 9px; }
+  .rss-retention-options label { min-height: 44px; }
   .rss-dialog fieldset { display: grid; gap: 8px; margin: 2px 0 8px; padding: 12px; border: 1px solid var(--border); }
   .rss-dialog fieldset label { display: flex; align-items: center; gap: 8px; color: var(--fg); font-size: 11px; }
   .rss-dialog fieldset input { accent-color: var(--fg); }
@@ -1135,6 +1225,8 @@
     .rss-dialog footer button { flex: 1; }
     .rss-dialog footer .rss-danger-button:first-child { flex-basis: 100%; margin-right: 0; }
     .rss-reddit-options { grid-template-columns: 1fr; }
+    .rss-retention-setting { grid-template-columns: 1fr; gap: 7px; }
+    .rss-retention-setting-label { min-height: 0; }
   }
   @media (prefers-reduced-motion: reduce) {
     :global(.rss-loading-icon) { animation: none; }

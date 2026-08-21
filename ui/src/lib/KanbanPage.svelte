@@ -11,6 +11,8 @@
   import Archive from "lucide-svelte/icons/archive";
   import Check from "lucide-svelte/icons/check";
   import ChevronLeft from "lucide-svelte/icons/chevron-left";
+  import Copy from "lucide-svelte/icons/copy";
+  import EllipsisVertical from "lucide-svelte/icons/ellipsis-vertical";
   import GripVertical from "lucide-svelte/icons/grip-vertical";
   import Paperclip from "lucide-svelte/icons/paperclip";
   import Pencil from "lucide-svelte/icons/pencil";
@@ -77,11 +79,36 @@
 
   const permissionGroups = [
     { name: "Workspace", permissions: ["workspace:view", "workspace:edit"] },
-    { name: "Boards", permissions: ["board:view", "board:create", "board:edit", "board:delete"] },
-    { name: "Columns", permissions: ["list:view", "list:create", "list:edit", "list:delete"] },
-    { name: "Cards", permissions: ["card:view", "card:create", "card:edit", "card:delete"] },
-    { name: "Comments", permissions: ["comment:view", "comment:create", "comment:edit", "comment:delete"] },
-    { name: "Members", permissions: ["member:view", "member:invite", "member:edit", "member:remove"] },
+    {
+      name: "Boards",
+      permissions: ["board:view", "board:create", "board:edit", "board:delete"],
+    },
+    {
+      name: "Columns",
+      permissions: ["list:view", "list:create", "list:edit", "list:delete"],
+    },
+    {
+      name: "Cards",
+      permissions: ["card:view", "card:create", "card:edit", "card:delete"],
+    },
+    {
+      name: "Comments",
+      permissions: [
+        "comment:view",
+        "comment:create",
+        "comment:edit",
+        "comment:delete",
+      ],
+    },
+    {
+      name: "Members",
+      permissions: [
+        "member:view",
+        "member:invite",
+        "member:edit",
+        "member:remove",
+      ],
+    },
   ];
   const labelColors: KanbanLabelColor[] = [
     "accent",
@@ -124,14 +151,21 @@
     label_ids: string[];
   };
 
-  const kanbanSections: KanbanSection[] = ["boards", "workspaces", "invitations"];
+  const kanbanSections: KanbanSection[] = [
+    "boards",
+    "workspaces",
+    "invitations",
+  ];
   const CARD_GROUP_PREFIX = "kanban-cards:";
   const viewSwap = createViewSwap();
   // Rendering lags the `section` prop by one leave animation so the outgoing
   // view can fade before the sidebar's choice takes over.
   let displayedSection = $state<KanbanSection>(untrack(() => section));
 
-  let overview = $state.raw<KanbanOverview>({ workspaces: [], invitations: [] });
+  let overview = $state.raw<KanbanOverview>({
+    workspaces: [],
+    invitations: [],
+  });
   let selectedWorkspaceId = $state("");
   let boards = $state.raw<KanbanBoardSummary[]>([]);
   let board = $state.raw<KanbanBoard | null>(null);
@@ -148,9 +182,9 @@
   let assigneeFilter = $state("");
   let labelFilter = $state("");
   let dueFilter = $state<"all" | "overdue" | "week" | "none">("all");
-  let quickCardColumnId = $state("");
-  let quickCardTitle = $state("");
-  let closingQuickCardColumnId = $state("");
+  let addCardColumnId = $state("");
+  let addCardTitle = $state("");
+  let openColumnMenuId = $state("");
   let newColumnName = $state("");
   /** Deleting a column is confirmed by pressing its control a second time. */
   let pendingColumnDelete = $state("");
@@ -161,13 +195,19 @@
   let enteringCardId = $state("");
   let enteringColumnId = $state("");
   let enteringTimer: ReturnType<typeof setTimeout> | undefined;
-  let quickCardComposerTimer: ReturnType<typeof setTimeout> | undefined;
 
   let workspaceDialog = $state<HTMLDialogElement>();
   let boardDialog = $state<HTMLDialogElement>();
   let archiveBoardDialog = $state<HTMLDialogElement>();
   let columnDialog = $state<HTMLDialogElement>();
   let columnNameInput = $state<HTMLInputElement>();
+  let addCardDialog = $state<HTMLDialogElement>();
+  let addCardTitleInput = $state<HTMLInputElement>();
+  let cardContextDialog = $state<HTMLDialogElement>();
+  let contextCard = $state.raw<KanbanCard | null>(null);
+  let contextDialogX = $state(0);
+  let contextDialogY = $state(0);
+  let pendingCardDelete = $state(false);
   let cardDialog = $state<HTMLDialogElement>();
   let workspaceName = $state("");
   let workspaceDescription = $state("");
@@ -194,22 +234,48 @@
   let cardSavePromise: Promise<void> | null = null;
 
   let activeWorkspace = $derived(
-    overview.workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
+    overview.workspaces.find(
+      (workspace) => workspace.id === selectedWorkspaceId,
+    ) ?? null,
   );
-  let canCreateBoard = $derived(activeWorkspace?.permissions.includes("board:create") ?? false);
-  let canEditBoard = $derived(board?.permissions.includes("board:edit") ?? false);
-  let canCreateColumn = $derived(board?.permissions.includes("list:create") ?? false);
-  let canEditColumn = $derived(board?.permissions.includes("list:edit") ?? false);
-  let canDeleteColumn = $derived(board?.permissions.includes("list:delete") ?? false);
+  let canCreateBoard = $derived(
+    activeWorkspace?.permissions.includes("board:create") ?? false,
+  );
+  let canEditBoard = $derived(
+    board?.permissions.includes("board:edit") ?? false,
+  );
+  let canCreateColumn = $derived(
+    board?.permissions.includes("list:create") ?? false,
+  );
+  let canEditColumn = $derived(
+    board?.permissions.includes("list:edit") ?? false,
+  );
+  let canDeleteColumn = $derived(
+    board?.permissions.includes("list:delete") ?? false,
+  );
+  let canCreateCard = $derived(
+    board?.permissions.includes("card:create") ?? false,
+  );
   let canEditCard = $derived(board?.permissions.includes("card:edit") ?? false);
+  let canDeleteCard = $derived(
+    board?.permissions.includes("card:delete") ?? false,
+  );
+  let addCardColumn = $derived(
+    board?.columns.find((column) => column.id === addCardColumnId) ?? null,
+  );
   let cardFiltersActive = $derived(
-    Boolean(cardSearch.trim() || assigneeFilter || labelFilter || dueFilter !== "all"),
+    Boolean(
+      cardSearch.trim() || assigneeFilter || labelFilter || dueFilter !== "all",
+    ),
   );
   const reducedMotion = new MediaQuery("(prefers-reduced-motion: reduce)");
   let filteredBoards = $derived(
     boards.filter((item) => {
       const query = boardSearch.trim().toLowerCase();
-      return !query || `${item.name} ${item.description}`.toLowerCase().includes(query);
+      return (
+        !query ||
+        `${item.name} ${item.description}`.toLowerCase().includes(query)
+      );
     }),
   );
   function sanitizedMarkdown(markdown: string) {
@@ -218,7 +284,9 @@
   }
 
   let renderedCardDescription = $derived(sanitizedMarkdown(cardDescription));
-  let renderedBoardDescription = $derived(sanitizedMarkdown(board?.description ?? ""));
+  let renderedBoardDescription = $derived(
+    sanitizedMarkdown(board?.description ?? ""),
+  );
 
   function renderSanitizedMarkdown(html: string) {
     return (node: HTMLElement) => {
@@ -261,7 +329,8 @@
       if (next === displayedSection) return;
       void viewSwap.run({
         forward:
-          kanbanSections.indexOf(next) > kanbanSections.indexOf(displayedSection),
+          kanbanSections.indexOf(next) >
+          kanbanSections.indexOf(displayedSection),
         commit: () => {
           displayedSection = next;
         },
@@ -285,7 +354,11 @@
     loading = true;
     await run(async () => {
       overview = await fetchKanbanOverview();
-      if (!overview.workspaces.some((workspace) => workspace.id === selectedWorkspaceId)) {
+      if (
+        !overview.workspaces.some(
+          (workspace) => workspace.id === selectedWorkspaceId,
+        )
+      ) {
         selectedWorkspaceId = overview.workspaces[0]?.id ?? "";
       }
     });
@@ -419,7 +492,6 @@
 
   onDestroy(() => {
     clearTimeout(enteringTimer);
-    clearTimeout(quickCardComposerTimer);
   });
 
   function openAddColumn() {
@@ -471,6 +543,7 @@
       return;
     }
     pendingColumnDelete = "";
+    openColumnMenuId = "";
     await run(async () => {
       await deleteKanbanColumn(column.id);
       await refreshBoard();
@@ -484,7 +557,10 @@
     });
   }
 
-  async function setBoardArchived(archived: boolean, dialog?: HTMLDialogElement) {
+  async function setBoardArchived(
+    archived: boolean,
+    dialog?: HTMLDialogElement,
+  ) {
     if (!board) return;
     await run(async () => {
       await updateKanbanBoard(board!.id, {
@@ -513,39 +589,126 @@
     await setBoardArchived(true, archiveBoardDialog);
   }
 
-  async function createQuickCard(columnId: string) {
-    if (!quickCardTitle.trim()) return;
+  async function submitCard(event: SubmitEvent) {
+    event.preventDefault();
+    if (!addCardColumnId || !addCardTitle.trim()) return;
+    const columnId = addCardColumnId;
     await run(async () => {
       const created = await createKanbanCard(columnId, {
-        title: quickCardTitle,
+        title: addCardTitle,
       });
-      closeQuickCard();
+      closeAddCard();
       await refreshBoard();
       markEntering(created.id, "");
     });
   }
 
-  function openQuickCard(columnId: string) {
-    clearTimeout(quickCardComposerTimer);
-    closingQuickCardColumnId = "";
-    quickCardColumnId = columnId;
+  function openAddCard(columnId: string) {
+    addCardColumnId = columnId;
+    addCardTitle = "";
+    openColumnMenuId = "";
+    pendingColumnDelete = "";
+    addCardDialog?.showModal();
+    queueMicrotask(() => addCardTitleInput?.focus());
   }
 
-  function closeQuickCard() {
-    clearTimeout(quickCardComposerTimer);
-    closingQuickCardColumnId = "";
-    quickCardColumnId = "";
-    quickCardTitle = "";
+  function closeAddCard() {
+    addCardDialog?.close();
   }
 
-  function dismissQuickCard() {
-    if (!quickCardColumnId || closingQuickCardColumnId) return;
-    if (reducedMotion.current) {
-      closeQuickCard();
+  function resetAddCard() {
+    addCardColumnId = "";
+    addCardTitle = "";
+  }
+
+  function toggleColumnMenu(columnId: string) {
+    const opening = openColumnMenuId !== columnId;
+    openColumnMenuId = opening ? columnId : "";
+    pendingColumnDelete = "";
+  }
+
+  function closeColumnMenu() {
+    openColumnMenuId = "";
+    pendingColumnDelete = "";
+  }
+
+  function handleColumnMenuDocumentClick(event: MouseEvent) {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest(".kanban-column-menu")) return;
+    closeColumnMenu();
+  }
+
+  function handleColumnMenuDocumentKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape") closeColumnMenu();
+  }
+
+  function openCardContext(card: KanbanCard, event: MouseEvent) {
+    event.preventDefault();
+    if (!canEditCard && !canCreateCard && !canDeleteCard) return;
+    openColumnMenuId = "";
+    pendingCardDelete = false;
+    contextCard = card;
+    const menuWidth = 260;
+    const menuHeight = 250;
+    const inset = 12;
+    contextDialogX = Math.max(
+      inset,
+      Math.min(event.clientX, window.innerWidth - menuWidth - inset),
+    );
+    contextDialogY = Math.max(
+      inset,
+      Math.min(event.clientY, window.innerHeight - menuHeight - inset),
+    );
+    cardContextDialog?.showModal();
+  }
+
+  function closeCardContext() {
+    cardContextDialog?.close();
+  }
+
+  function resetCardContext() {
+    contextCard = null;
+    pendingCardDelete = false;
+  }
+
+  async function editContextCard() {
+    const card = contextCard;
+    if (!card) return;
+    closeCardContext();
+    await openCard(card);
+  }
+
+  async function duplicateContextCard() {
+    const card = contextCard;
+    if (!card || !canCreateCard) return;
+    closeCardContext();
+    await run(async () => {
+      const source = await fetchKanbanCard(card.id);
+      const created = await createKanbanCard(source.column_id, {
+        title: `${source.title} (copy)`,
+        description: source.description,
+        due_date: source.due_date,
+        assignee_ids: source.assignees.map((member) => member.user_id),
+        label_ids: source.labels.map((label) => label.id),
+      });
+      await refreshBoard();
+      markEntering(created.id, "");
+    });
+  }
+
+  async function deleteContextCard() {
+    const card = contextCard;
+    if (!card || !canDeleteCard) return;
+    if (!pendingCardDelete) {
+      pendingCardDelete = true;
       return;
     }
-    closingQuickCardColumnId = quickCardColumnId;
-    quickCardComposerTimer = setTimeout(closeQuickCard, 140);
+    closeCardContext();
+    await run(async () => {
+      await archiveKanbanCard(card.id);
+      await refreshBoard();
+    });
   }
 
   async function openCard(card: KanbanCard) {
@@ -597,7 +760,8 @@
           await refreshBoard();
         }
       } catch (cause) {
-        error = cause instanceof Error ? cause.message : "Kanban request failed";
+        error =
+          cause instanceof Error ? cause.message : "Kanban request failed";
       } finally {
         cardSaving = false;
         cardSavePromise = null;
@@ -616,9 +780,12 @@
     startDescriptionEditing();
   }
 
-  function finishDescriptionEditing(event: FocusEvent & { currentTarget: HTMLDivElement }) {
+  function finishDescriptionEditing(
+    event: FocusEvent & { currentTarget: HTMLDivElement },
+  ) {
     const nextTarget = event.relatedTarget;
-    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget))
+      return;
     cardDescriptionMode = "preview";
     void saveCard();
   }
@@ -731,7 +898,9 @@
       const nextColumns = move(board.columns, event);
       applyColumns(nextColumns);
       const columnId = String(source.id);
-      const nextPosition = nextColumns.findIndex((column) => column.id === columnId);
+      const nextPosition = nextColumns.findIndex(
+        (column) => column.id === columnId,
+      );
       const previousPosition =
         columnDragSnapshot?.findIndex((column) => column.id === columnId) ?? -1;
       columnDragSnapshot = null;
@@ -768,11 +937,16 @@
       !nextLocation ||
       (previousLocation?.columnId === nextLocation.columnId &&
         previousLocation.position === nextLocation.position)
-    ) return;
+    )
+      return;
 
     await run(async () => {
       try {
-        await moveKanbanCard(cardId, nextLocation.columnId, nextLocation.position);
+        await moveKanbanCard(
+          cardId,
+          nextLocation.columnId,
+          nextLocation.position,
+        );
       } finally {
         await refreshBoard();
       }
@@ -785,12 +959,23 @@
     week.setDate(now.getDate() + 7);
     return cards.filter((card) => {
       const query = cardSearch.trim().toLowerCase();
-      if (query && !`${card.title} ${card.description}`.toLowerCase().includes(query)) return false;
-      if (assigneeFilter && !card.assignees.some((member) => member.user_id === assigneeFilter)) return false;
-      if (labelFilter && !card.labels.some((label) => label.id === labelFilter)) return false;
+      if (
+        query &&
+        !`${card.title} ${card.description}`.toLowerCase().includes(query)
+      )
+        return false;
+      if (
+        assigneeFilter &&
+        !card.assignees.some((member) => member.user_id === assigneeFilter)
+      )
+        return false;
+      if (labelFilter && !card.labels.some((label) => label.id === labelFilter))
+        return false;
       if (dueFilter === "none") return !card.due_date;
-      if (dueFilter === "overdue") return !!card.due_date && new Date(`${card.due_date}T23:59:59`) < now;
-      if (dueFilter === "week") return !!card.due_date && new Date(`${card.due_date}T23:59:59`) <= week;
+      if (dueFilter === "overdue")
+        return !!card.due_date && new Date(`${card.due_date}T23:59:59`) < now;
+      if (dueFilter === "week")
+        return !!card.due_date && new Date(`${card.due_date}T23:59:59`) <= week;
       return true;
     });
   }
@@ -848,7 +1033,12 @@
     });
   }
 
-  async function toggleChecklistItem(checklistId: string, itemId: string, title: string, completed: boolean) {
+  async function toggleChecklistItem(
+    checklistId: string,
+    itemId: string,
+    title: string,
+    completed: boolean,
+  ) {
     if (!selectedCard) return;
     await run(async () => {
       await updateKanbanChecklistItem(checklistId, itemId, title, completed);
@@ -889,7 +1079,10 @@
       return;
     }
     await run(async () => {
-      directoryResults = await searchKanbanDirectory(selectedWorkspaceId, memberQuery);
+      directoryResults = await searchKanbanDirectory(
+        selectedWorkspaceId,
+        memberQuery,
+      );
     });
   }
 
@@ -926,12 +1119,25 @@
   }
 
   function roleGrant(role: "member" | "guest", permission: string) {
-    return settings?.role_permissions.find((grant) => grant.role === role && grant.permission === permission)?.granted ?? false;
+    return (
+      settings?.role_permissions.find(
+        (grant) => grant.role === role && grant.permission === permission,
+      )?.granted ?? false
+    );
   }
 
-  async function toggleRoleGrant(role: "member" | "guest", permission: string, granted: boolean) {
+  async function toggleRoleGrant(
+    role: "member" | "guest",
+    permission: string,
+    granted: boolean,
+  ) {
     await run(async () => {
-      await setKanbanRolePermission(selectedWorkspaceId, role, permission, granted);
+      await setKanbanRolePermission(
+        selectedWorkspaceId,
+        role,
+        permission,
+        granted,
+      );
       await loadSettings();
     });
   }
@@ -944,6 +1150,11 @@
   }
 </script>
 
+<svelte:document
+  onclick={handleColumnMenuDocumentClick}
+  onkeydown={handleColumnMenuDocumentKeydown}
+/>
+
 <section class="kanban-page product-page" data-od-id="kanban-page">
   <header class="kanban-page-header page-header" data-od-id="kanban-header">
     <div>
@@ -952,13 +1163,29 @@
         odId="kanban-heading"
       />
       {#key displayedSection}
-        <p class="view-swap-copy">{displayedSection === "boards" ? "Move work from intent to finished." : displayedSection === "workspaces" ? "Members, roles, and workspace rules." : "Join shared workspaces from people already on Pandan."}</p>
+        <p class="view-swap-copy">
+          {displayedSection === "boards"
+            ? "Move work from intent to finished."
+            : displayedSection === "workspaces"
+              ? "Members, roles, and workspace rules."
+              : "Join shared workspaces from people already on Pandan."}
+        </p>
       {/key}
     </div>
     {#if displayedSection === "workspaces"}
-      <button class="ui-button ui-button--primary" type="button" onclick={() => workspaceDialog?.showModal()} data-od-id="create-workspace"><Plus size={16} />New workspace</button>
+      <button
+        class="ui-button ui-button--primary"
+        type="button"
+        onclick={() => workspaceDialog?.showModal()}
+        data-od-id="create-workspace"><Plus size={16} />New workspace</button
+      >
     {:else if displayedSection === "boards" && canCreateBoard && !board}
-      <button class="ui-button ui-button--primary" type="button" onclick={openCreateBoardDialog} data-od-id="create-board"><Plus size={16} />New board</button>
+      <button
+        class="ui-button ui-button--primary"
+        type="button"
+        onclick={openCreateBoardDialog}
+        data-od-id="create-board"><Plus size={16} />New board</button
+      >
     {/if}
   </header>
 
@@ -975,28 +1202,77 @@
       <div class="kanban-invitations" data-od-id="kanban-invitations">
         {#each overview.invitations as invitation (invitation.workspace_id)}
           <article class="kanban-invitation-card">
-            <div><span>{invitation.role}</span><h3>{invitation.workspace_name}</h3><p>{invitation.invited_by_name} invited you.</p></div>
-            <div class="kanban-row-actions"><button class="ui-button ui-button--primary" type="button" disabled={busy} onclick={() => answerInvitation(invitation.workspace_id, true)}>Accept</button><button class="ui-button ui-button--secondary" type="button" disabled={busy} onclick={() => answerInvitation(invitation.workspace_id, false)}>Decline</button></div>
+            <div>
+              <span>{invitation.role}</span>
+              <h3>{invitation.workspace_name}</h3>
+              <p>{invitation.invited_by_name} invited you.</p>
+            </div>
+            <div class="kanban-row-actions">
+              <button
+                class="ui-button ui-button--primary"
+                type="button"
+                disabled={busy}
+                onclick={() => answerInvitation(invitation.workspace_id, true)}
+                >Accept</button
+              ><button
+                class="ui-button ui-button--secondary"
+                type="button"
+                disabled={busy}
+                onclick={() => answerInvitation(invitation.workspace_id, false)}
+                >Decline</button
+              >
+            </div>
           </article>
         {:else}<div class="kanban-empty">No pending invitations.</div>{/each}
       </div>
     {:else if overview.workspaces.length === 0}
-      <div class="kanban-empty"><h3>No Kanban workspace yet</h3><p>Create one to start with a board and the Todo / In Progress / Finished workflow.</p><button class="ui-button ui-button--primary" type="button" onclick={() => workspaceDialog?.showModal()}>Create workspace</button></div>
+      <div class="kanban-empty">
+        <h3>No Kanban workspace yet</h3>
+        <p>
+          Create one to start with a board and the Todo / In Progress / Finished
+          workflow.
+        </p>
+        <button
+          class="ui-button ui-button--primary"
+          type="button"
+          onclick={() => workspaceDialog?.showModal()}>Create workspace</button
+        >
+      </div>
     {:else}
       <div class="kanban-workspace-switcher">
         <label for="kanban-workspace">Workspace</label>
-        <select id="kanban-workspace" value={selectedWorkspaceId} onchange={(event) => selectWorkspace(event.currentTarget.value)}>{#each overview.workspaces as workspace (workspace.id)}<option value={workspace.id}>{workspace.name}</option>{/each}</select>
-        {#if activeWorkspace}<span>{activeWorkspace.role} · {activeWorkspace.member_count} members</span>{/if}
+        <select
+          id="kanban-workspace"
+          value={selectedWorkspaceId}
+          onchange={(event) => selectWorkspace(event.currentTarget.value)}
+          >{#each overview.workspaces as workspace (workspace.id)}<option
+              value={workspace.id}>{workspace.name}</option
+            >{/each}</select
+        >
+        {#if activeWorkspace}<span
+            >{activeWorkspace.role} · {activeWorkspace.member_count} members</span
+          >{/if}
       </div>
 
       {#if displayedSection === "boards"}
         {#if board}
           <div class="kanban-board-shell" data-od-id="active-kanban-board">
             <div class="kanban-board-toolbar">
-              <button class="ui-button ui-button--ghost" type="button" onclick={() => void closeBoard()}><ChevronLeft size={16} />All boards</button>
+              <button
+                class="ui-button ui-button--ghost"
+                type="button"
+                onclick={() => void closeBoard()}
+                ><ChevronLeft size={16} />All boards</button
+              >
               <div class="kanban-board-actions">
                 {#if canEditBoard}
-                  <button class="ui-button ui-button--secondary" type="button" onclick={openEditBoardDialog} data-od-id="edit-kanban-board"><Pencil size={15} />Edit board</button>
+                  <button
+                    class="ui-button ui-button--secondary"
+                    type="button"
+                    onclick={openEditBoardDialog}
+                    data-od-id="edit-kanban-board"
+                    ><Pencil size={15} />Edit board</button
+                  >
                 {/if}
                 {#if canCreateColumn}
                   <button
@@ -1006,90 +1282,381 @@
                     aria-controls="kanban-add-column-dialog"
                     onclick={openAddColumn}
                     data-od-id="show-add-kanban-column"
-                  ><Plus size={15} />Add column</button>
+                    ><Plus size={15} />Add column</button
+                  >
                 {/if}
-                <button class="ui-button ui-button--secondary" type="button" onclick={requestBoardArchive}><Archive size={15} />{board.archived ? "Restore" : "Archive"}</button>
+                <button
+                  class="ui-button ui-button--secondary"
+                  type="button"
+                  onclick={requestBoardArchive}
+                  ><Archive size={15} />{board.archived
+                    ? "Restore"
+                    : "Archive"}</button
+                >
               </div>
             </div>
-            <div class="kanban-board-summary" data-od-id="active-kanban-board-summary">
+            <div
+              class="kanban-board-summary"
+              data-od-id="active-kanban-board-summary"
+            >
               <h3>{board.name}</h3>
               {#if board.description}
-                <div class="kanban-markdown-preview kanban-board-description" {@attach renderSanitizedMarkdown(renderedBoardDescription)}></div>
+                <div
+                  class="kanban-markdown-preview kanban-board-description"
+                  {@attach renderSanitizedMarkdown(renderedBoardDescription)}
+                ></div>
               {:else}
-                <p class="kanban-board-description-empty">No board description</p>
+                <p class="kanban-board-description-empty">
+                  No board description
+                </p>
               {/if}
             </div>
             <div class="kanban-filters">
-              <label><Search size={15} /><input aria-label="Search cards" placeholder="Search cards" bind:value={cardSearch} /></label>
-              <select aria-label="Filter by assignee" bind:value={assigneeFilter}><option value="">All assignees</option>{#each board.members as member (member.user_id)}<option value={member.user_id}>{member.display_name}</option>{/each}</select>
-              <select aria-label="Filter by label" bind:value={labelFilter}><option value="">All labels</option>{#each board.labels as label (label.id)}<option value={label.id}>{label.name}</option>{/each}</select>
-              <select aria-label="Filter by due date" bind:value={dueFilter}><option value="all">Any due date</option><option value="overdue">Overdue</option><option value="week">Due this week</option><option value="none">No due date</option></select>
-              {#if canEditCard && cardFiltersActive}<span class="kanban-dnd-status">Clear filters to reorder cards.</span>{/if}
+              <label
+                ><Search size={15} /><input
+                  aria-label="Search cards"
+                  placeholder="Search cards"
+                  bind:value={cardSearch}
+                /></label
+              >
+              <select
+                aria-label="Filter by assignee"
+                bind:value={assigneeFilter}
+                ><option value="">All assignees</option
+                >{#each board.members as member (member.user_id)}<option
+                    value={member.user_id}>{member.display_name}</option
+                  >{/each}</select
+              >
+              <select aria-label="Filter by label" bind:value={labelFilter}
+                ><option value="">All labels</option
+                >{#each board.labels as label (label.id)}<option
+                    value={label.id}>{label.name}</option
+                  >{/each}</select
+              >
+              <select aria-label="Filter by due date" bind:value={dueFilter}
+                ><option value="all">Any due date</option><option
+                  value="overdue">Overdue</option
+                ><option value="week">Due this week</option><option value="none"
+                  >No due date</option
+                ></select
+              >
+              {#if canEditCard && cardFiltersActive}<span
+                  class="kanban-dnd-status"
+                  >Clear filters to reorder cards.</span
+                >{/if}
             </div>
-            <DragDropProvider sensors={kanbanSensors} onDragStart={startKanbanDrag} onDragOver={previewKanbanMove} onDragEnd={(event) => void finishKanbanDrag(event)}>
+            <DragDropProvider
+              sensors={kanbanSensors}
+              onDragStart={startKanbanDrag}
+              onDragOver={previewKanbanMove}
+              onDragEnd={(event) => void finishKanbanDrag(event)}
+            >
               <div class="kanban-canvas" data-od-id="kanban-board-columns">
                 {#each board.columns as column, columnIndex (column.id)}
-                  <KanbanColumnDropzone boardId={board.id} id={column.id} index={columnIndex} label={`${column.name} column`} odId={`kanban-column-${column.id}`} entering={enteringColumnId === column.id} cardDropDisabled={!canEditCard || cardFiltersActive || busy} columnDragDisabled={!canEditColumn || busy} reducedMotion={reducedMotion.current}>
-                      {#snippet header(columnHandle)}
-                        <header><button class="kanban-column-drag-handle" type="button" disabled={!canEditColumn || busy} aria-label={`Drag ${column.name} column to reorder`} {@attach columnHandle}><GripVertical size={15} aria-hidden="true" /><span class="kanban-column-title">{column.name}</span><span class="kanban-column-count">{visibleCards(column.cards).length}</span></button><div class="kanban-column-actions"><button class="kanban-icon-button" type="button" aria-label={`Add card to ${column.name}`} onclick={() => openQuickCard(column.id)}><Plus size={16} /></button>{#if canDeleteColumn}<button class="kanban-icon-button kanban-column-delete" class:confirm={pendingColumnDelete === column.id} type="button" disabled={busy} aria-label={pendingColumnDelete === column.id ? `Confirm deleting the ${column.name} column` : `Delete the ${column.name} column`} onclick={() => void removeColumn(column)}><Trash2 size={15} /></button>{/if}</div></header>
-                      {/snippet}
-                      {#snippet children()}
-                        {#each visibleCards(column.cards) as card, index (card.id)}
-                          <KanbanCardSortable
-                            {card}
-                            columnId={column.id}
-                            disabled={!canEditCard || cardFiltersActive || busy}
-                            {index}
-                            reducedMotion={reducedMotion.current}
-                            entering={enteringCardId === card.id}
-                            avatarUrl={kanbanMemberAvatarUrl}
-                            onopen={openCard}
-                          />
-                        {/each}
-                      {/snippet}
-                      {#snippet footer()}
-                        {#if quickCardColumnId === column.id}
-                          <form class={["kanban-quick-card", closingQuickCardColumnId === column.id && "is-leaving"]} onsubmit={(event) => { event.preventDefault(); void createQuickCard(column.id); }}><input aria-label="Card title" placeholder="Card title" bind:value={quickCardTitle} /><div><button class="ui-button ui-button--ghost" type="button" disabled={Boolean(closingQuickCardColumnId)} onclick={dismissQuickCard} data-od-id={`cancel-add-card-${column.id}`}>Cancel</button><button class="ui-button ui-button--primary" type="submit" disabled={busy || Boolean(closingQuickCardColumnId)}>Add card</button></div></form>
-                        {:else if board?.permissions.includes("card:create")}
-                          <button class="kanban-add-card" type="button" onclick={() => openQuickCard(column.id)}><Plus size={15} />Add card</button>
+                  <KanbanColumnDropzone
+                    boardId={board.id}
+                    id={column.id}
+                    index={columnIndex}
+                    label={`${column.name} column`}
+                    odId={`kanban-column-${column.id}`}
+                    entering={enteringColumnId === column.id}
+                    cardDropDisabled={!canEditCard || cardFiltersActive || busy}
+                    columnDragDisabled={!canEditColumn || busy}
+                    reducedMotion={reducedMotion.current}
+                  >
+                    {#snippet header(columnHandle)}
+                      <header>
+                        <button
+                          class="kanban-column-drag-handle"
+                          type="button"
+                          disabled={!canEditColumn || busy}
+                          aria-label={`Drag ${column.name} column to reorder`}
+                          {@attach columnHandle}
+                          ><GripVertical size={15} aria-hidden="true" /><span
+                            class="kanban-column-title">{column.name}</span
+                          ><span class="kanban-column-count"
+                            >{visibleCards(column.cards).length}</span
+                          ></button
+                        >
+                        {#if canCreateCard || canDeleteColumn}
+                          <div class="kanban-column-actions kanban-column-menu">
+                            <button
+                              class="kanban-icon-button kanban-column-menu-trigger"
+                              type="button"
+                              aria-label={`Actions for ${column.name}`}
+                              aria-expanded={openColumnMenuId === column.id}
+                              aria-controls={`kanban-column-menu-${column.id}`}
+                              onclick={() => toggleColumnMenu(column.id)}
+                              ><EllipsisVertical size={17} /></button
+                            >
+                            {#if openColumnMenuId === column.id}
+                              <div
+                                class="kanban-column-menu-popover"
+                                id={`kanban-column-menu-${column.id}`}
+                                role="group"
+                                aria-label={`${column.name} column actions`}
+                              >
+                                {#if canCreateCard}
+                                  <button
+                                    type="button"
+                                    onclick={() => openAddCard(column.id)}
+                                    ><Plus size={15} />Add card</button
+                                  >
+                                {/if}
+                                {#if canDeleteColumn}
+                                  <button
+                                    class="kanban-column-menu-delete"
+                                    class:confirm={pendingColumnDelete === column.id}
+                                    type="button"
+                                    disabled={busy}
+                                    onclick={() => void removeColumn(column)}
+                                    ><Trash2 size={15} />{pendingColumnDelete ===
+                                    column.id
+                                      ? "Confirm delete"
+                                      : "Delete column"}</button
+                                  >
+                                {/if}
+                              </div>
+                            {/if}
+                          </div>
                         {/if}
-                      {/snippet}
-                    </KanbanColumnDropzone>
+                      </header>
+                    {/snippet}
+                    {#snippet children()}
+                      {#each visibleCards(column.cards) as card, index (card.id)}
+                        <KanbanCardSortable
+                          {card}
+                          columnId={column.id}
+                          disabled={!canEditCard || cardFiltersActive || busy}
+                          {index}
+                          reducedMotion={reducedMotion.current}
+                          entering={enteringCardId === card.id}
+                          avatarUrl={kanbanMemberAvatarUrl}
+                          onopen={openCard}
+                          oncontextmenu={openCardContext}
+                        />
+                      {/each}
+                    {/snippet}
+                    {#snippet footer()}
+                      {#if canCreateCard}
+                        <button
+                          class="kanban-add-card"
+                          type="button"
+                          onclick={() => openAddCard(column.id)}
+                          ><Plus size={15} />Add card</button
+                        >
+                      {/if}
+                    {/snippet}
+                  </KanbanColumnDropzone>
                 {/each}
               </div>
             </DragDropProvider>
           </div>
         {:else}
-          <div class="kanban-list-toolbar"><label><Search size={15} /><input aria-label="Search boards" placeholder="Search boards" bind:value={boardSearch} /></label><button class="ui-toggle-button kanban-toggle-filter" type="button" aria-pressed={archivedBoards} disabled={busy} onclick={() => void toggleArchivedBoards()}><span class="ui-toggle-indicator" aria-hidden="true">{#if archivedBoards}<Check size={13} />{/if}</span><span>Archived</span></button></div>
+          <div class="kanban-list-toolbar">
+            <label
+              ><Search size={15} /><input
+                aria-label="Search boards"
+                placeholder="Search boards"
+                bind:value={boardSearch}
+              /></label
+            ><button
+              class="ui-toggle-button kanban-toggle-filter"
+              type="button"
+              aria-pressed={archivedBoards}
+              disabled={busy}
+              onclick={() => void toggleArchivedBoards()}
+              ><span class="ui-toggle-indicator" aria-hidden="true"
+                >{#if archivedBoards}<Check size={13} />{/if}</span
+              ><span>Archived</span></button
+            >
+          </div>
           <div class="kanban-board-grid" data-od-id="kanban-board-list">
             {#each filteredBoards as item (item.id)}
-              <article class="kanban-board-card" data-od-id={`kanban-board-${item.id}`}>
-                <button class="kanban-board-open" type="button" onclick={() => openBoard(item.id)}><span>{item.visibility}</span><h3>{item.name}</h3><dl><div><dt>Columns</dt><dd>{item.column_count}</dd></div><div><dt>Cards</dt><dd>{item.card_count}</dd></div></dl></button>
-                <button class:active={item.favorite} class="kanban-favorite" type="button" aria-label={item.favorite ? "Remove favorite" : "Add favorite"} onclick={() => toggleFavorite(item)}><Star size={16} fill={item.favorite ? "currentColor" : "none"} /></button>
+              <article
+                class="kanban-board-card"
+                data-od-id={`kanban-board-${item.id}`}
+              >
+                <button
+                  class="kanban-board-open"
+                  type="button"
+                  onclick={() => openBoard(item.id)}
+                  ><span>{item.visibility}</span>
+                  <h3>{item.name}</h3>
+                  <dl>
+                    <div>
+                      <dt>Columns</dt>
+                      <dd>{item.column_count}</dd>
+                    </div>
+                    <div>
+                      <dt>Cards</dt>
+                      <dd>{item.card_count}</dd>
+                    </div>
+                  </dl></button
+                >
+                <button
+                  class:active={item.favorite}
+                  class="kanban-favorite"
+                  type="button"
+                  aria-label={item.favorite
+                    ? "Remove favorite"
+                    : "Add favorite"}
+                  onclick={() => toggleFavorite(item)}
+                  ><Star
+                    size={16}
+                    fill={item.favorite ? "currentColor" : "none"}
+                  /></button
+                >
               </article>
-            {:else}<div class="kanban-empty">No {archivedBoards ? "archived" : "active"} boards in this workspace.</div>{/each}
+            {:else}<div class="kanban-empty">
+                No {archivedBoards ? "archived" : "active"} boards in this workspace.
+              </div>{/each}
           </div>
         {/if}
       {:else if settings}
         <div class="kanban-settings" data-od-id="kanban-workspace-settings">
-          <section class="kanban-settings-panel"><header><div><h3>Members</h3><p>Invitations are limited to accounts already on this Pandan instance.</p></div><Users size={19} /></header>
-            {#if settings.workspace.permissions.includes("member:invite")}<div class="kanban-member-search"><label><Search size={15} /><input placeholder="Name or email" bind:value={memberQuery} oninput={findMembers} /></label><select aria-label="Invitation role" bind:value={inviteRole}><option value="member">Member</option><option value="guest">Guest</option>{#if settings.workspace.role === "admin"}<option value="admin">Admin</option>{/if}</select>{#if directoryResults.length}<div class="kanban-directory-results">{#each directoryResults as result (result.user_id)}<button type="button" onclick={() => invite(result.user_id)}><span><strong>{result.display_name}</strong><small>{result.email}</small></span><Plus size={15} /></button>{/each}</div>{/if}</div>{/if}
+          <section class="kanban-settings-panel">
+            <header>
+              <div>
+                <h3>Members</h3>
+                <p>
+                  Invitations are limited to accounts already on this Pandan
+                  instance.
+                </p>
+              </div>
+              <Users size={19} />
+            </header>
+            {#if settings.workspace.permissions.includes("member:invite")}<div
+                class="kanban-member-search"
+              >
+                <label
+                  ><Search size={15} /><input
+                    placeholder="Name or email"
+                    bind:value={memberQuery}
+                    oninput={findMembers}
+                  /></label
+                ><select aria-label="Invitation role" bind:value={inviteRole}
+                  ><option value="member">Member</option><option value="guest"
+                    >Guest</option
+                  >{#if settings.workspace.role === "admin"}<option
+                      value="admin">Admin</option
+                    >{/if}</select
+                >{#if directoryResults.length}<div
+                    class="kanban-directory-results"
+                  >
+                    {#each directoryResults as result (result.user_id)}<button
+                        type="button"
+                        onclick={() => invite(result.user_id)}
+                        ><span
+                          ><strong>{result.display_name}</strong><small
+                            >{result.email}</small
+                          ></span
+                        ><Plus size={15} /></button
+                      >{/each}
+                  </div>{/if}
+              </div>{/if}
             <div class="kanban-member-list">
               {#each settings.members as member (member.user_id)}
                 <div>
                   <span class="kanban-member-avatar">
-                    <span aria-hidden="true">{member.display_name.slice(0, 1).toUpperCase()}</span>
-                    <img src={kanbanMemberAvatarUrl(member.user_id)} alt="" onerror={hideBrokenAvatar} />
+                    <span aria-hidden="true"
+                      >{member.display_name.slice(0, 1).toUpperCase()}</span
+                    >
+                    <img
+                      src={kanbanMemberAvatarUrl(member.user_id)}
+                      alt=""
+                      onerror={hideBrokenAvatar}
+                    />
                   </span>
-                  <span><strong>{member.display_name}{member.user_id === viewerId ? " (you)" : ""}</strong><small>{member.email} · {member.status}</small></span>
-                  {#if settings.workspace.permissions.includes("member:edit")}<select aria-label={`Role for ${member.display_name}`} value={member.role} onchange={(event) => changeRoleFromSelect(member.user_id, event)}><option value="admin">Admin</option><option value="member">Member</option><option value="guest">Guest</option></select>{:else}<span class="kanban-role-badge">{member.role}</span>{/if}
-                  {#if settings.workspace.permissions.includes("member:remove")}<button class="kanban-icon-button" type="button" aria-label={`Remove ${member.display_name}`} onclick={() => removeMember(member.user_id)}><Trash2 size={15} /></button>{/if}
+                  <span
+                    ><strong
+                      >{member.display_name}{member.user_id === viewerId
+                        ? " (you)"
+                        : ""}</strong
+                    ><small>{member.email} · {member.status}</small></span
+                  >
+                  {#if settings.workspace.permissions.includes("member:edit")}<select
+                      aria-label={`Role for ${member.display_name}`}
+                      value={member.role}
+                      onchange={(event) =>
+                        changeRoleFromSelect(member.user_id, event)}
+                      ><option value="admin">Admin</option><option
+                        value="member">Member</option
+                      ><option value="guest">Guest</option></select
+                    >{:else}<span class="kanban-role-badge">{member.role}</span
+                    >{/if}
+                  {#if settings.workspace.permissions.includes("member:remove")}<button
+                      class="kanban-icon-button"
+                      type="button"
+                      aria-label={`Remove ${member.display_name}`}
+                      onclick={() => removeMember(member.user_id)}
+                      ><Trash2 size={15} /></button
+                    >{/if}
                 </div>
               {/each}
             </div>
           </section>
-          {#if settings.workspace.permissions.includes("workspace:manage")}<section class="kanban-settings-panel"><header><div><h3>Role permissions</h3><p>Admin is immutable. Member and Guest follow kan.bn's 24-permission split.</p></div></header><div class="kanban-permission-table"><div class="kanban-permission-head"><span>Capability</span><span>Member</span><span>Guest</span></div>{#each permissionGroups as group (group.name)}<h4>{group.name}</h4>{#each group.permissions as permission (permission)}<div class="kanban-permission-row"><code>{permission}</code>{#each configurableRoles as role (role)}{@const granted = roleGrant(role, permission)}<button class="ui-toggle-button kanban-permission-toggle" type="button" aria-pressed={granted} aria-label={`${role} ${permission}: ${granted ? "allowed" : "denied"}`} disabled={busy} onclick={() => void toggleRoleGrant(role, permission, !granted)}><span class="ui-toggle-indicator" aria-hidden="true">{#if granted}<Check size={13} />{/if}</span><span>{granted ? "Allow" : "Deny"}</span></button>{/each}</div>{/each}{/each}</div></section>{/if}
-          {#if settings.workspace.permissions.includes("workspace:delete")}<section class="kanban-settings-panel kanban-danger-zone"><header><div><h3>Delete workspace</h3><p>Permanently removes every board, card, comment, and attachment.</p></div></header><button class="ui-button ui-button--danger" type="button" onclick={() => run(async () => { await deleteKanbanWorkspace(selectedWorkspaceId); await loadOverview(); })}>Delete {settings.workspace.name}</button></section>{/if}
+          {#if settings.workspace.permissions.includes("workspace:manage")}<section
+              class="kanban-settings-panel"
+            >
+              <header>
+                <div>
+                  <h3>Role permissions</h3>
+                  <p>
+                    Admin is immutable. Member and Guest follow kan.bn's
+                    24-permission split.
+                  </p>
+                </div>
+              </header>
+              <div class="kanban-permission-table">
+                <div class="kanban-permission-head">
+                  <span>Capability</span><span>Member</span><span>Guest</span>
+                </div>
+                {#each permissionGroups as group (group.name)}<h4>
+                    {group.name}
+                  </h4>
+                  {#each group.permissions as permission (permission)}<div
+                      class="kanban-permission-row"
+                    >
+                      <code>{permission}</code
+                      >{#each configurableRoles as role (role)}{@const granted =
+                          roleGrant(role, permission)}<button
+                          class="ui-toggle-button kanban-permission-toggle"
+                          type="button"
+                          aria-pressed={granted}
+                          aria-label={`${role} ${permission}: ${granted ? "allowed" : "denied"}`}
+                          disabled={busy}
+                          onclick={() =>
+                            void toggleRoleGrant(role, permission, !granted)}
+                          ><span class="ui-toggle-indicator" aria-hidden="true"
+                            >{#if granted}<Check size={13} />{/if}</span
+                          ><span>{granted ? "Allow" : "Deny"}</span></button
+                        >{/each}
+                    </div>{/each}{/each}
+              </div>
+            </section>{/if}
+          {#if settings.workspace.permissions.includes("workspace:delete")}<section
+              class="kanban-settings-panel kanban-danger-zone"
+            >
+              <header>
+                <div>
+                  <h3>Delete workspace</h3>
+                  <p>
+                    Permanently removes every board, card, comment, and
+                    attachment.
+                  </p>
+                </div>
+              </header>
+              <button
+                class="ui-button ui-button--danger"
+                type="button"
+                onclick={() =>
+                  run(async () => {
+                    await deleteKanbanWorkspace(selectedWorkspaceId);
+                    await loadOverview();
+                  })}>Delete {settings.workspace.name}</button
+              >
+            </section>{/if}
         </div>
       {/if}
     {/if}
@@ -1097,7 +1664,55 @@
 </section>
 
 <dialog
-  class="ui-dialog kanban-dialog"
+  class="ui-dialog kanban-dialog kanban-board-workflow-dialog"
+  id="kanban-add-card-dialog"
+  bind:this={addCardDialog}
+  aria-labelledby="kanban-add-card-title"
+  aria-describedby="kanban-add-card-description"
+  onclose={resetAddCard}
+  data-od-id="add-kanban-card"
+>
+  <form method="dialog" class="dialog-close-row">
+    <button class="kanban-icon-button" aria-label="Close add card"
+      ><X size={18} /></button
+    >
+  </form>
+  <form class="kanban-dialog-form" onsubmit={submitCard}>
+    <span class="kanban-kicker">{addCardColumn?.name ?? "COLUMN"}</span>
+    <h3 id="kanban-add-card-title">Create a new card</h3>
+    <p id="kanban-add-card-description">
+      Add a focused work item to this column.
+    </p>
+    <label for="kanban-card-title">
+      Card title
+      <input
+        id="kanban-card-title"
+        required
+        maxlength="200"
+        placeholder="What needs to happen?"
+        bind:this={addCardTitleInput}
+        bind:value={addCardTitle}
+      />
+    </label>
+    <div class="kanban-add-column-actions">
+      <button
+        class="ui-button ui-button--ghost"
+        type="button"
+        onclick={closeAddCard}
+        data-od-id="cancel-add-kanban-card">Cancel</button
+      >
+      <button
+        class="ui-button ui-button--primary"
+        type="submit"
+        disabled={busy || !addCardTitle.trim()}
+        data-od-id="create-kanban-card">Add card</button
+      >
+    </div>
+  </form>
+</dialog>
+
+<dialog
+  class="ui-dialog kanban-dialog kanban-board-workflow-dialog"
   id="kanban-add-column-dialog"
   bind:this={columnDialog}
   aria-labelledby="kanban-add-column-title"
@@ -1105,72 +1720,484 @@
   onclose={resetAddColumn}
   data-od-id="add-kanban-column"
 >
-  <form method="dialog" class="dialog-close-row"><button class="kanban-icon-button" aria-label="Close add column"><X size={18} /></button></form>
+  <form method="dialog" class="dialog-close-row">
+    <button class="kanban-icon-button" aria-label="Close add column"
+      ><X size={18} /></button
+    >
+  </form>
   <form class="kanban-dialog-form" onsubmit={submitColumn}>
     <span class="kanban-kicker">BOARD STRUCTURE</span>
     <h3 id="kanban-add-column-title">Create a new column</h3>
-    <p id="kanban-add-column-description">Add the next stage to the end of this board.</p>
+    <p id="kanban-add-column-description">
+      Add the next stage to the end of this board.
+    </p>
     <label for="kanban-column-name">
       Column name
-      <input id="kanban-column-name" required maxlength="80" placeholder="e.g. Review" bind:this={columnNameInput} bind:value={newColumnName} />
+      <input
+        id="kanban-column-name"
+        required
+        maxlength="80"
+        placeholder="e.g. Review"
+        bind:this={columnNameInput}
+        bind:value={newColumnName}
+      />
     </label>
     <div class="kanban-add-column-actions">
-      <button class="ui-button ui-button--ghost" type="button" onclick={closeAddColumn} data-od-id="cancel-add-kanban-column">Cancel</button>
-      <button class="ui-button ui-button--primary" type="submit" disabled={busy || !newColumnName.trim()} data-od-id="create-kanban-column">Create column</button>
+      <button
+        class="ui-button ui-button--ghost"
+        type="button"
+        onclick={closeAddColumn}
+        data-od-id="cancel-add-kanban-column">Cancel</button
+      >
+      <button
+        class="ui-button ui-button--primary"
+        type="submit"
+        disabled={busy || !newColumnName.trim()}
+        data-od-id="create-kanban-column">Create column</button
+      >
     </div>
   </form>
 </dialog>
 
-<dialog class="ui-dialog kanban-dialog" bind:this={workspaceDialog} onclose={() => (error = "")} data-od-id="workspace-dialog"><form method="dialog" class="dialog-close-row"><button class="kanban-icon-button" aria-label="Close"><X size={18} /></button></form><form class="kanban-dialog-form" onsubmit={submitWorkspace}><span class="kanban-kicker">NEW WORKSPACE</span><h3>Create a shared workspace</h3><label>Name<input required maxlength="80" bind:value={workspaceName} /></label><label>Description<textarea rows="3" maxlength="1000" bind:value={workspaceDescription}></textarea></label><button class="ui-button ui-button--primary" type="submit" disabled={busy}>Create workspace</button></form></dialog>
+<dialog
+  class="ui-dialog kanban-dialog"
+  bind:this={workspaceDialog}
+  onclose={() => (error = "")}
+  data-od-id="workspace-dialog"
+>
+  <form method="dialog" class="dialog-close-row">
+    <button class="kanban-icon-button" aria-label="Close"
+      ><X size={18} /></button
+    >
+  </form>
+  <form class="kanban-dialog-form" onsubmit={submitWorkspace}>
+    <span class="kanban-kicker">NEW WORKSPACE</span>
+    <h3>Create a shared workspace</h3>
+    <label
+      >Name<input required maxlength="80" bind:value={workspaceName} /></label
+    ><label
+      >Description<textarea
+        rows="3"
+        maxlength="1000"
+        bind:value={workspaceDescription}></textarea></label
+    ><button class="ui-button ui-button--primary" type="submit" disabled={busy}
+      >Create workspace</button
+    >
+  </form>
+</dialog>
 
-<dialog class="ui-dialog kanban-dialog" bind:this={boardDialog} onclose={() => (error = "")} data-od-id="board-dialog"><form method="dialog" class="dialog-close-row"><button class="kanban-icon-button" aria-label="Close"><X size={18} /></button></form><form class="kanban-dialog-form" onsubmit={submitBoard}><span class="kanban-kicker">{boardDialogMode === "edit" ? "BOARD SETTINGS" : "NEW BOARD"}</span><h3>{boardDialogMode === "edit" ? "Edit board details" : "Start with a proven flow"}</h3><p>{boardDialogMode === "edit" ? "Update the board name, description, and workspace visibility." : "Todo, In Progress, and Finished are created automatically."}</p><label>Name<input required maxlength="120" bind:value={boardName} /></label><label>Description · Markdown<textarea rows="4" maxlength="2000" bind:value={boardDescription}></textarea></label><label>Visibility<select bind:value={boardVisibility}><option value="private">Private workspace board</option><option value="public">Public to workspace members</option></select></label><button class="ui-button ui-button--primary" type="submit" disabled={busy}>{boardDialogMode === "edit" ? "Save board" : "Create board"}</button></form></dialog>
+<dialog
+  class="ui-dialog kanban-dialog"
+  bind:this={boardDialog}
+  onclose={() => (error = "")}
+  data-od-id="board-dialog"
+>
+  <form method="dialog" class="dialog-close-row">
+    <button class="kanban-icon-button" aria-label="Close"
+      ><X size={18} /></button
+    >
+  </form>
+  <form class="kanban-dialog-form" onsubmit={submitBoard}>
+    <span class="kanban-kicker"
+      >{boardDialogMode === "edit" ? "BOARD SETTINGS" : "NEW BOARD"}</span
+    >
+    <h3>
+      {boardDialogMode === "edit"
+        ? "Edit board details"
+        : "Start with a proven flow"}
+    </h3>
+    <p>
+      {boardDialogMode === "edit"
+        ? "Update the board name, description, and workspace visibility."
+        : "Todo, In Progress, and Finished are created automatically."}
+    </p>
+    <label>Name<input required maxlength="120" bind:value={boardName} /></label
+    ><label
+      >Description · Markdown<textarea
+        rows="4"
+        maxlength="2000"
+        bind:value={boardDescription}></textarea></label
+    ><label
+      >Visibility<select bind:value={boardVisibility}
+        ><option value="private">Private workspace board</option><option
+          value="public">Public to workspace members</option
+        ></select
+      ></label
+    ><button class="ui-button ui-button--primary" type="submit" disabled={busy}
+      >{boardDialogMode === "edit" ? "Save board" : "Create board"}</button
+    >
+  </form>
+</dialog>
 
-<dialog class="ui-dialog kanban-dialog kanban-confirmation-dialog" bind:this={archiveBoardDialog} aria-labelledby="archive-board-title" aria-describedby="archive-board-description" data-od-id="archive-board-dialog">
-  <form method="dialog" class="dialog-close-row"><button class="kanban-icon-button" aria-label="Close archive confirmation"><X size={18} /></button></form>
+<dialog
+  class="ui-dialog kanban-dialog kanban-confirmation-dialog"
+  bind:this={archiveBoardDialog}
+  aria-labelledby="archive-board-title"
+  aria-describedby="archive-board-description"
+  data-od-id="archive-board-dialog"
+>
+  <form method="dialog" class="dialog-close-row">
+    <button class="kanban-icon-button" aria-label="Close archive confirmation"
+      ><X size={18} /></button
+    >
+  </form>
   <form class="kanban-dialog-form" onsubmit={confirmBoardArchive}>
     <span class="kanban-kicker">ARCHIVE BOARD</span>
     <h3 id="archive-board-title">Archive {board?.name}?</h3>
-    <p id="archive-board-description" class="kanban-confirmation-copy">The board will leave the active boards list. Its columns, cards, and activity will remain intact and can be restored later.</p>
+    <p id="archive-board-description" class="kanban-confirmation-copy">
+      The board will leave the active boards list. Its columns, cards, and
+      activity will remain intact and can be restored later.
+    </p>
     <div class="kanban-confirmation-actions">
-      <button class="ui-button ui-button--secondary" type="button" onclick={() => archiveBoardDialog?.close()}>Cancel</button>
-      <button class="ui-button ui-button--danger" type="submit" disabled={busy}>Archive board</button>
+      <button
+        class="ui-button ui-button--secondary"
+        type="button"
+        onclick={() => archiveBoardDialog?.close()}>Cancel</button
+      >
+      <button class="ui-button ui-button--danger" type="submit" disabled={busy}
+        >Archive board</button
+      >
     </div>
   </form>
 </dialog>
 
-<dialog class="ui-dialog kanban-card-dialog" bind:this={cardDialog} oncancel={(event) => { event.preventDefault(); void closeCardDialog(); }} onclose={() => { selectedCard = null; cardDescriptionMode = "preview"; }} data-od-id="card-dialog">
-  {#if selectedCard && board}<div class="kanban-card-editor"><header><span class="kanban-kicker">CARD / {selectedCard.id.slice(0, 8)}</span><button class="kanban-icon-button" type="button" aria-label="Close card" onclick={() => void closeCardDialog()}><X size={19} /></button></header><div class="kanban-card-editor-grid"><main>
-    <label class="kanban-title-field">Title<input bind:value={cardTitle} disabled={!canEditCard} onblur={() => void saveCard()} /></label>
-    <div class="kanban-description-tabs">
-      <span>Description · Markdown</span>
+<dialog
+  class="ui-dialog kanban-context-dialog"
+  bind:this={cardContextDialog}
+  style:--context-x={`${contextDialogX}px`}
+  style:--context-y={`${contextDialogY}px`}
+  aria-labelledby="kanban-card-actions-title"
+  onclose={resetCardContext}
+  onclick={(event) => {
+    if (event.target === event.currentTarget) closeCardContext();
+  }}
+  data-od-id="kanban-card-context-dialog"
+>
+  {#if contextCard}
+    <header>
+      <div>
+        <span class="kanban-kicker">CARD ACTIONS</span>
+        <h3 id="kanban-card-actions-title">{contextCard.title}</h3>
+      </div>
+      <button
+        class="kanban-icon-button"
+        type="button"
+        aria-label="Close card actions"
+        onclick={closeCardContext}><X size={17} /></button
+      >
+    </header>
+    <div class="kanban-context-actions" role="group">
       {#if canEditCard}
-        <span class="kanban-save-status" aria-live="polite">{cardSaving ? "Saving…" : "Saved automatically"}</span>
+        <button type="button" onclick={() => void editContextCard()}
+          ><Pencil size={16} />Edit</button
+        >
+      {/if}
+      {#if canCreateCard}
+        <button
+          type="button"
+          disabled={busy}
+          onclick={() => void duplicateContextCard()}
+          ><Copy size={16} />Duplicate</button
+        >
+      {/if}
+      {#if canDeleteCard}
+        <button
+          class="kanban-context-delete"
+          class:confirm={pendingCardDelete}
+          type="button"
+          disabled={busy}
+          onclick={() => void deleteContextCard()}
+          ><Trash2 size={16} />{pendingCardDelete
+            ? "Confirm delete"
+            : "Delete"}</button
+        >
       {/if}
     </div>
-    {#if cardDescriptionMode === "edit" && canEditCard}
-      <div class="kanban-description-surface is-editing" onfocusout={finishDescriptionEditing}>
-        <textarea {@attach focusDescriptionEditor} class="kanban-markdown-editor" rows="9" bind:value={cardDescription} placeholder="Add details with Markdown…"></textarea>
+  {/if}
+</dialog>
+
+<dialog
+  class="ui-dialog kanban-card-dialog"
+  bind:this={cardDialog}
+  oncancel={(event) => {
+    event.preventDefault();
+    void closeCardDialog();
+  }}
+  onclose={() => {
+    selectedCard = null;
+    cardDescriptionMode = "preview";
+  }}
+  data-od-id="card-dialog"
+>
+  {#if selectedCard && board}<div class="kanban-card-editor">
+      <header>
+        <span class="kanban-kicker">CARD / {selectedCard.id.slice(0, 8)}</span
+        ><button
+          class="kanban-icon-button"
+          type="button"
+          aria-label="Close card"
+          onclick={() => void closeCardDialog()}><X size={19} /></button
+        >
+      </header>
+      <div class="kanban-card-editor-grid">
+        <main>
+          <label class="kanban-title-field"
+            >Title<input
+              bind:value={cardTitle}
+              disabled={!canEditCard}
+              onblur={() => void saveCard()}
+            /></label
+          >
+          <div class="kanban-description-tabs">
+            <span>Description · Markdown</span>
+            {#if canEditCard}
+              <span class="kanban-save-status" aria-live="polite"
+                >{cardSaving ? "Saving…" : "Saved automatically"}</span
+              >
+            {/if}
+          </div>
+          {#if cardDescriptionMode === "edit" && canEditCard}
+            <div
+              class="kanban-description-surface is-editing"
+              onfocusout={finishDescriptionEditing}
+            >
+              <textarea
+                {@attach focusDescriptionEditor}
+                class="kanban-markdown-editor"
+                rows="9"
+                bind:value={cardDescription}
+                placeholder="Add details with Markdown…"></textarea>
+            </div>
+          {:else if canEditCard}
+            <div
+              class="kanban-description-surface is-clickable"
+              role="button"
+              tabindex="0"
+              aria-label="Edit card description"
+              onclick={startDescriptionEditing}
+              onkeydown={handleDescriptionSurfaceKeydown}
+            >
+              {#if cardDescription}
+                <div
+                  class="kanban-markdown-preview"
+                  {@attach renderSanitizedMarkdown(renderedCardDescription)}
+                ></div>
+              {:else}
+                <p class="kanban-empty-description">
+                  <Plus size={15} />Add a description
+                </p>
+              {/if}
+            </div>
+          {:else}
+            <div class="kanban-description-surface">
+              {#if cardDescription}<div
+                  class="kanban-markdown-preview"
+                  {@attach renderSanitizedMarkdown(renderedCardDescription)}
+                ></div>{:else}<p class="kanban-empty-description">
+                  No description.
+                </p>{/if}
+            </div>
+          {/if}
+          <section class="kanban-detail-section">
+            <header><h4>Checklists</h4></header>
+            {#each selectedCard.checklists as checklist (checklist.id)}<div
+                class="kanban-checklist"
+              >
+                <div>
+                  <strong>{checklist.name}</strong><button
+                    class="kanban-icon-button"
+                    type="button"
+                    aria-label="Delete checklist"
+                    onclick={() => removeChecklist(checklist.id)}
+                    ><Trash2 size={14} /></button
+                  >
+                </div>
+                {#each checklist.items as item (item.id)}<button
+                    class="ui-toggle-button kanban-checklist-toggle"
+                    type="button"
+                    aria-pressed={item.completed}
+                    disabled={busy}
+                    onclick={() =>
+                      void toggleChecklistItem(
+                        checklist.id,
+                        item.id,
+                        item.title,
+                        !item.completed,
+                      )}
+                    ><span class="ui-toggle-indicator" aria-hidden="true"
+                      >{#if item.completed}<Check size={13} />{/if}</span
+                    ><span class:completed={item.completed}>{item.title}</span
+                    ></button
+                  >{/each}
+                <form
+                  onsubmit={(event) => {
+                    event.preventDefault();
+                    void addChecklistItem(checklist.id);
+                  }}
+                >
+                  <input
+                    placeholder="Add checklist item"
+                    value={checklistItemDraft[checklist.id] ?? ""}
+                    oninput={(event) =>
+                      (checklistItemDraft = {
+                        ...checklistItemDraft,
+                        [checklist.id]: event.currentTarget.value,
+                      })}
+                  /><button
+                    class="kanban-icon-button"
+                    aria-label="Add checklist item"><Plus size={15} /></button
+                  >
+                </form>
+              </div>{/each}
+            <form
+              class="kanban-inline-form"
+              onsubmit={(event) => {
+                event.preventDefault();
+                void addChecklist();
+              }}
+            >
+              <input
+                placeholder="New checklist"
+                bind:value={checklistDraft}
+              /><button class="ui-button ui-button--secondary" type="submit"
+                >Add checklist</button
+              >
+            </form>
+          </section>
+          <section class="kanban-detail-section">
+            <header>
+              <h4>Comments</h4>
+              <span>{selectedCard.comments.length}</span>
+            </header>
+            <form
+              class="kanban-comment-form"
+              onsubmit={(event) => {
+                event.preventDefault();
+                void addComment();
+              }}
+            >
+              <textarea
+                rows="3"
+                placeholder="Write a comment…"
+                bind:value={commentDraft}></textarea><button
+                class="ui-button ui-button--primary"
+                type="submit"
+                disabled={!commentDraft.trim()}>Comment</button
+              >
+            </form>
+            <div class="kanban-comments">
+              {#each selectedCard.comments as comment (comment.id)}<article>
+                  <span class="kanban-member-avatar"
+                    ><span aria-hidden="true"
+                      >{comment.author_name.slice(0, 1).toUpperCase()}</span
+                    >{#if comment.user_id}<img
+                        src={kanbanMemberAvatarUrl(comment.user_id)}
+                        alt=""
+                        onerror={hideBrokenAvatar}
+                      />{/if}</span
+                  >
+                  <div>
+                    <header>
+                      <strong>{comment.author_name}</strong><time
+                        >{new Date(comment.created_at).toLocaleString()}</time
+                      >{#if comment.user_id === viewerId || board.permissions.includes("comment:delete")}<button
+                          class="kanban-icon-button"
+                          type="button"
+                          aria-label="Delete comment"
+                          onclick={() => removeComment(comment.id)}
+                          ><Trash2 size={13} /></button
+                        >{/if}
+                    </header>
+                    <p>{comment.content}</p>
+                  </div>
+                </article>{/each}
+            </div>
+          </section>
+        </main>
+        <aside>
+          <section>
+            <h4>Due date</h4>
+            <input
+              type="date"
+              bind:value={cardDueDate}
+              disabled={!canEditCard}
+              onchange={() => void saveCard()}
+            />
+          </section>
+          <section>
+            <h4>Assignees</h4>
+            {#each board.members as member (member.user_id)}{@const selected =
+                cardAssigneeIds.includes(member.user_id)}<button
+                class="ui-toggle-button kanban-option"
+                type="button"
+                aria-pressed={selected}
+                disabled={!canEditCard}
+                onclick={() => toggleCardAssignee(member.user_id)}
+                ><span class="ui-toggle-indicator" aria-hidden="true"
+                  >{#if selected}<Check size={13} />{/if}</span
+                ><span>{member.display_name}</span></button
+              >{/each}
+          </section>
+          <section>
+            <h4>Labels</h4>
+            {#each board.labels as label (label.id)}{@const selected =
+                cardLabelIds.includes(label.id)}<button
+                class="ui-toggle-button kanban-option"
+                type="button"
+                aria-pressed={selected}
+                disabled={!canEditCard}
+                onclick={() => toggleCardLabel(label.id)}
+                ><span class="ui-toggle-indicator" aria-hidden="true"
+                  >{#if selected}<Check size={13} />{/if}</span
+                ><i class={`kanban-label-dot is-${label.color}`}></i><span
+                  >{label.name}</span
+                ></button
+              >{/each}{#if canEditCard}<div class="kanban-new-label">
+                <input
+                  placeholder="New label"
+                  maxlength="40"
+                  bind:value={labelName}
+                /><select aria-label="Label color" bind:value={labelColor}
+                  >{#each labelColors as color (color)}<option value={color}
+                      >{color}</option
+                    >{/each}</select
+                ><button
+                  class="kanban-icon-button"
+                  type="button"
+                  aria-label="Create label"
+                  onclick={addLabel}><Plus size={15} /></button
+                >
+              </div>{/if}
+          </section>
+          <section>
+            <h4>Attachments</h4>
+            <label class="ui-button ui-button--secondary kanban-upload"
+              ><Paperclip size={14} />Attach file<input
+                type="file"
+                onchange={uploadAttachment}
+              /></label
+            >{#each selectedCard.attachments as attachment (attachment.id)}<div
+                class="kanban-attachment"
+              >
+                <a
+                  href={kanbanAttachmentUrl(attachment.id)}
+                  target="_blank"
+                  rel="noreferrer">{attachment.file_name}</a
+                ><button
+                  class="kanban-icon-button"
+                  type="button"
+                  aria-label="Delete attachment"
+                  onclick={() => removeAttachment(attachment.id)}
+                  ><Trash2 size={13} /></button
+                >
+              </div>{/each}
+          </section>
+          {#if canEditCard}<button
+              class="ui-button ui-button--danger"
+              type="button"
+              onclick={archiveCard}><Archive size={14} />Archive card</button
+            >{/if}
+        </aside>
       </div>
-    {:else if canEditCard}
-      <div class="kanban-description-surface is-clickable" role="button" tabindex="0" aria-label="Edit card description" onclick={startDescriptionEditing} onkeydown={handleDescriptionSurfaceKeydown}>
-        {#if cardDescription}
-          <div class="kanban-markdown-preview" {@attach renderSanitizedMarkdown(renderedCardDescription)}></div>
-        {:else}
-          <p class="kanban-empty-description"><Plus size={15} />Add a description</p>
-        {/if}
-      </div>
-    {:else}
-      <div class="kanban-description-surface">
-        {#if cardDescription}<div class="kanban-markdown-preview" {@attach renderSanitizedMarkdown(renderedCardDescription)}></div>{:else}<p class="kanban-empty-description">No description.</p>{/if}
-      </div>
-    {/if}
-    <section class="kanban-detail-section"><header><h4>Checklists</h4></header>{#each selectedCard.checklists as checklist (checklist.id)}<div class="kanban-checklist"><div><strong>{checklist.name}</strong><button class="kanban-icon-button" type="button" aria-label="Delete checklist" onclick={() => removeChecklist(checklist.id)}><Trash2 size={14} /></button></div>{#each checklist.items as item (item.id)}<button class="ui-toggle-button kanban-checklist-toggle" type="button" aria-pressed={item.completed} disabled={busy} onclick={() => void toggleChecklistItem(checklist.id, item.id, item.title, !item.completed)}><span class="ui-toggle-indicator" aria-hidden="true">{#if item.completed}<Check size={13} />{/if}</span><span class:completed={item.completed}>{item.title}</span></button>{/each}<form onsubmit={(event) => { event.preventDefault(); void addChecklistItem(checklist.id); }}><input placeholder="Add checklist item" value={checklistItemDraft[checklist.id] ?? ""} oninput={(event) => (checklistItemDraft = { ...checklistItemDraft, [checklist.id]: event.currentTarget.value })} /><button class="kanban-icon-button" aria-label="Add checklist item"><Plus size={15} /></button></form></div>{/each}<form class="kanban-inline-form" onsubmit={(event) => { event.preventDefault(); void addChecklist(); }}><input placeholder="New checklist" bind:value={checklistDraft} /><button class="ui-button ui-button--secondary" type="submit">Add checklist</button></form></section>
-    <section class="kanban-detail-section"><header><h4>Comments</h4><span>{selectedCard.comments.length}</span></header><form class="kanban-comment-form" onsubmit={(event) => { event.preventDefault(); void addComment(); }}><textarea rows="3" placeholder="Write a comment…" bind:value={commentDraft}></textarea><button class="ui-button ui-button--primary" type="submit" disabled={!commentDraft.trim()}>Comment</button></form><div class="kanban-comments">{#each selectedCard.comments as comment (comment.id)}<article><span class="kanban-member-avatar"><span aria-hidden="true">{comment.author_name.slice(0, 1).toUpperCase()}</span>{#if comment.user_id}<img src={kanbanMemberAvatarUrl(comment.user_id)} alt="" onerror={hideBrokenAvatar} />{/if}</span><div><header><strong>{comment.author_name}</strong><time>{new Date(comment.created_at).toLocaleString()}</time>{#if comment.user_id === viewerId || board.permissions.includes("comment:delete")}<button class="kanban-icon-button" type="button" aria-label="Delete comment" onclick={() => removeComment(comment.id)}><Trash2 size={13} /></button>{/if}</header><p>{comment.content}</p></div></article>{/each}</div></section>
-  </main><aside>
-    <section><h4>Due date</h4><input type="date" bind:value={cardDueDate} disabled={!canEditCard} onchange={() => void saveCard()} /></section>
-    <section><h4>Assignees</h4>{#each board.members as member (member.user_id)}{@const selected = cardAssigneeIds.includes(member.user_id)}<button class="ui-toggle-button kanban-option" type="button" aria-pressed={selected} disabled={!canEditCard} onclick={() => toggleCardAssignee(member.user_id)}><span class="ui-toggle-indicator" aria-hidden="true">{#if selected}<Check size={13} />{/if}</span><span>{member.display_name}</span></button>{/each}</section>
-    <section><h4>Labels</h4>{#each board.labels as label (label.id)}{@const selected = cardLabelIds.includes(label.id)}<button class="ui-toggle-button kanban-option" type="button" aria-pressed={selected} disabled={!canEditCard} onclick={() => toggleCardLabel(label.id)}><span class="ui-toggle-indicator" aria-hidden="true">{#if selected}<Check size={13} />{/if}</span><i class={`kanban-label-dot is-${label.color}`}></i><span>{label.name}</span></button>{/each}{#if canEditCard}<div class="kanban-new-label"><input placeholder="New label" maxlength="40" bind:value={labelName} /><select aria-label="Label color" bind:value={labelColor}>{#each labelColors as color (color)}<option value={color}>{color}</option>{/each}</select><button class="kanban-icon-button" type="button" aria-label="Create label" onclick={addLabel}><Plus size={15} /></button></div>{/if}</section>
-    <section><h4>Attachments</h4><label class="ui-button ui-button--secondary kanban-upload"><Paperclip size={14} />Attach file<input type="file" onchange={uploadAttachment} /></label>{#each selectedCard.attachments as attachment (attachment.id)}<div class="kanban-attachment"><a href={kanbanAttachmentUrl(attachment.id)} target="_blank" rel="noreferrer">{attachment.file_name}</a><button class="kanban-icon-button" type="button" aria-label="Delete attachment" onclick={() => removeAttachment(attachment.id)}><Trash2 size={13} /></button></div>{/each}</section>
-    {#if canEditCard}<button class="ui-button ui-button--danger" type="button" onclick={archiveCard}><Archive size={14} />Archive card</button>{/if}
-  </aside></div></div>{/if}
+    </div>{/if}
 </dialog>

@@ -119,14 +119,14 @@
     };
   }
 
-  async function loadCoding() {
+  async function loadCoding(refresh = false) {
     const initialLoad = !hasLoaded;
     if (initialLoad) loading = true;
     else refreshing = true;
     initialLoadFailed = false;
     pageError = "";
     try {
-      coding = await fetchCoding();
+      coding = await fetchCoding(refresh);
       hasLoaded = true;
     } catch (reason: unknown) {
       pageError = reason instanceof Error ? reason.message : "Unable to load Coding";
@@ -274,7 +274,7 @@
       <p>Monitor releases, pending review work, and the newest pipelines for subscribed projects.</p>
     </div>
     <div class="header-actions">
-      <button type="button" onclick={loadCoding} disabled={loading || refreshing} data-od-id="refresh-coding">
+      <button type="button" onclick={() => loadCoding(true)} disabled={loading || refreshing} data-od-id="refresh-coding">
         <RefreshCw class={refreshing ? "spinning" : undefined} size={15} strokeWidth={1.8} aria-hidden="true" />
         {loading ? "Loading…" : refreshing ? "Refreshing…" : initialLoadFailed ? "Retry" : "Refresh"}
       </button>

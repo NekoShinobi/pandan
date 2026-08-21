@@ -44,6 +44,8 @@ struct YoutubeGroup {
 #[derive(Debug, Deserialize)]
 struct CreateSubscriptionRequest {
     channel_id: String,
+    #[serde(default)]
+    group_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,6 +57,11 @@ struct CreateGroupRequest {
 struct UpdateGroupRequest {
     name: String,
     channel_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReorderGroupsRequest {
+    group_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,6 +89,7 @@ pub(crate) fn configure(config: &mut web::ServiceConfig) {
             web::get().to(channel_thumbnail),
         )
         .route("/youtube/groups", web::post().to(create_group))
+        .route("/youtube/groups/order", web::patch().to(reorder_groups))
         .route("/youtube/groups/{group_id}", web::patch().to(update_group))
         .route("/youtube/groups/{group_id}", web::delete().to(delete_group))
         .route(
@@ -113,7 +121,11 @@ async fn create_subscription(
 ) -> Result<(web::Json<YoutubeReaderResponse>, StatusCode), ApiError> {
     let account = authenticated_account(&state, &request).await?;
     let channel_id = validate_channel_id(&payload.channel_id)?;
-    let subscriptions = db::queries::list_youtube_subscriptions(&state.pool, &account.id).await?;
+    let group_ids = validate_group_ids(&payload.group_ids)?;
+    let (subscriptions, groups) = tokio::try_join!(
+        db::queries::list_youtube_subscriptions(&state.pool, &account.id),
+        db::queries::list_youtube_groups(&state.pool, &account.id),
+    )?;
     if subscriptions
         .iter()
         .any(|subscription| subscription.channel_id == channel_id)
@@ -127,8 +139,27 @@ async fn create_subscription(
             "the YouTube channel limit has been reached",
         ));
     }
+    let owned_groups = groups
+        .into_iter()
+        .map(|group| group.id)
+        .collect::<HashSet<_>>();
+    if group_ids
+        .iter()
+        .any(|group_id| !owned_groups.contains(group_id))
+    {
+        return Err(ApiError::BadRequest(
+            "subscriptions can only be added to your YouTube categories",
+        ));
+    }
     db::queries::ensure_youtube_channel(&state.pool, &channel_id).await?;
-    if !db::queries::create_youtube_subscription(&state.pool, &account.id, &channel_id).await? {
+    if !db::queries::create_youtube_subscription_in_groups(
+        &state.pool,
+        &account.id,
+        &channel_id,
+        &group_ids,
+    )
+    .await?
+    {
         return Err(ApiError::Conflict(
             "this YouTube channel is already subscribed",
         ));
@@ -202,7 +233,7 @@ async fn create_group(
     let groups = db::queries::list_youtube_groups(&state.pool, &account.id).await?;
     if groups.len() >= MAX_GROUPS_PER_USER {
         return Err(ApiError::Conflict(
-            "the YouTube group limit has been reached",
+            "the YouTube category limit has been reached",
         ));
     }
     if groups
@@ -210,7 +241,7 @@ async fn create_group(
         .any(|group| group.name.eq_ignore_ascii_case(&name))
     {
         return Err(ApiError::Conflict(
-            "a YouTube group with this name already exists",
+            "a YouTube category with this name already exists",
         ));
     }
     db::queries::create_youtube_group(&state.pool, &account.id, &name).await?;
@@ -238,7 +269,7 @@ async fn update_group(
         .any(|group| group.id != group_id.as_str() && group.name.eq_ignore_ascii_case(&name))
     {
         return Err(ApiError::Conflict(
-            "a YouTube group with this name already exists",
+            "a YouTube category with this name already exists",
         ));
     }
     let subscribed = subscriptions
@@ -250,13 +281,28 @@ async fn update_group(
         .any(|channel_id| !subscribed.contains(channel_id))
     {
         return Err(ApiError::BadRequest(
-            "groups can only contain subscribed channels",
+            "categories can only contain subscribed channels",
         ));
     }
     db::queries::update_youtube_group(&state.pool, &account.id, &group_id, &name, &channel_ids)
         .await?
         .then_some(())
-        .ok_or(ApiError::NotFound("YouTube group not found"))?;
+        .ok_or(ApiError::NotFound("YouTube category not found"))?;
+    Ok(web::Json(load_reader(&state, &account.id).await?))
+}
+
+async fn reorder_groups(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    payload: web::Json<ReorderGroupsRequest>,
+) -> Result<web::Json<YoutubeReaderResponse>, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    let group_ids = validate_group_ids(&payload.group_ids)?;
+    if !db::queries::reorder_youtube_groups(&state.pool, &account.id, &group_ids).await? {
+        return Err(ApiError::BadRequest(
+            "send every YouTube category exactly once when reordering",
+        ));
+    }
     Ok(web::Json(load_reader(&state, &account.id).await?))
 }
 
@@ -269,7 +315,7 @@ async fn delete_group(
     if db::queries::delete_youtube_group(&state.pool, &account.id, &group_id).await? {
         Ok(HttpResponse::NoContent().finish())
     } else {
-        Err(ApiError::NotFound("YouTube group not found"))
+        Err(ApiError::NotFound("YouTube category not found"))
     }
 }
 
@@ -374,7 +420,7 @@ fn validate_group_name(value: &str) -> Result<String, ApiError> {
     let value = value.trim();
     if value.is_empty() || value.chars().count() > 40 {
         return Err(ApiError::BadRequest(
-            "YouTube group names must be 1 to 40 characters",
+            "YouTube category names must be 1 to 40 characters",
         ));
     }
     Ok(value.to_owned())
@@ -383,7 +429,7 @@ fn validate_group_name(value: &str) -> Result<String, ApiError> {
 fn validate_group_channels(values: &[String]) -> Result<Vec<String>, ApiError> {
     if values.len() > MAX_GROUP_CHANNELS {
         return Err(ApiError::BadRequest(
-            "a YouTube group can contain up to 128 channels",
+            "a YouTube category can contain up to 128 channels",
         ));
     }
     let mut seen = HashSet::new();
@@ -395,6 +441,26 @@ fn validate_group_channels(values: &[String]) -> Result<Vec<String>, ApiError> {
         }
     }
     Ok(channel_ids)
+}
+
+fn validate_group_ids(values: &[String]) -> Result<Vec<String>, ApiError> {
+    if values.len() > MAX_GROUPS_PER_USER {
+        return Err(ApiError::BadRequest(
+            "a YouTube account can contain up to 32 categories",
+        ));
+    }
+    let mut seen = HashSet::new();
+    let mut group_ids = Vec::with_capacity(values.len());
+    for value in values {
+        let group_id = value.trim();
+        if group_id.is_empty() || !seen.insert(group_id.to_owned()) {
+            return Err(ApiError::BadRequest(
+                "YouTube category IDs must be non-empty and unique",
+            ));
+        }
+        group_ids.push(group_id.to_owned());
+    }
+    Ok(group_ids)
 }
 
 async fn refresh_channel(state: &AppState, channel_id: &str) -> Result<bool, ApiError> {

@@ -40,21 +40,22 @@ Pandan brings planning, reading, contacts, calendars, notes, lightweight instanc
 | **Tasks** | Priorities, descriptions, labels, subtasks, attachments, due dates, recurring schedules, completion, archiving, and completed-task cleanup. |
 | **Kanban** | Shared workspaces with multiple boards, Todo / In Progress / Finished defaults, drag-and-drop cards, sanitized Markdown descriptions, assignees, live labels, due dates, comments, checklists, attachments, favorites, archives, in-app invitations, and configurable Admin / Member / Guest permissions. |
 | **Contacts** | Search, tags, favorites, archives, portraits, yearless birthdays, important dates, Pandan/Monica JSON import, Pandan JSON export, and CardDAV synchronization. |
-| **Calendar** | Task due dates, multiple public HTTPS ICS feeds, recurring events, custom source colors, contact birthdays, a month grid, and a selected-day agenda. |
-| **RSS** | RSS and Atom subscriptions plus Reddit subreddit helpers, categories, source filters, article details, read state, a pruning-safe Read Later queue, automatic background refresh every 30 minutes, manual refresh, and seven-day all-item retention by default. |
+| **Calendar** | Task due dates, multiple guarded ICS feeds, recurring events, custom source colors, contact birthdays, a month grid, and a selected-day agenda. |
+| **RSS** | RSS and Atom subscriptions plus Reddit subreddit helpers, categories, source filters, article and comments links, read state, a pruning-safe Read Later queue, automatic background refresh every 30 minutes, manual refresh, and seven-day all-item retention by default. |
 | **Journal** | Nested documents that can contain Markdown content and child documents; rendered Markdown is sanitized before display. |
 | **Lines** | A Markdown timeline with account avatars, public or private posts, threaded replies composed in a modal, thread and author screens, hashtag discovery, search, file attachments, reactions, and administrator moderation of public posts. |
 | **Walls** | A shared wallpaper collection. Anyone can submit an image with a title, description, and tags; an administrator approves or rejects it with an optional note. Approved walls can be applied as your own background, or set by an administrator as the instance login screen. Submitters see their own pending and rejected entries with the reason, and can correct a wall's title, description, and tags at any time — before or after review. The search and tag filters sit with the view tabs and apply to the collection, your submissions, and the review queue alike. |
-| **YouTube** | Channel subscriptions, groups, a private Watch Later queue, thumbnail or compact layouts, manual refresh, and server-side shared metadata caching. |
+| **YouTube** | Channel subscriptions with optional category assignment, drag-reorderable categories, a fixed all-channels directory, a private Watch Later queue, thumbnail or compact layouts, manual refresh, and server-side shared metadata caching. |
 | **Podcasts** | An administrator-curated show catalogue for the whole instance, member requests with approve/reject review, per-account subscriptions, a play queue, saved episodes, expandable show notes on every episode, and episodes downloaded once and then streamed from this server. Playback follows you across sections with skip-to-episode, rewind and forward, volume, and speed controls, and resumes where you left off. Volume starts at 80% and can be pushed to 200% for a quietly mastered show. Administrators can queue a show's whole back catalogue in one action. |
-| **Coding** | Releases from GitHub, GitLab, Codeberg, Gitea, and Forgejo; connected accounts can also show owned repositories, open pull requests, and GitLab pipelines. |
+| **Coding** | Releases from GitHub, GitLab, Codeberg, Gitea, and Forgejo; connected accounts can also show owned repositories, open pull requests, and GitLab pipelines. Provider data is cached for one hour by default, with manual refresh available. |
 | **Subscriptions** | Recurring service costs, first-payment dates, filtering, and separate daily, weekly, monthly, and yearly totals for each currency. |
-| **Embedded pages** | Personal HTTPS webpages in the sidebar, plus administrator-managed global pages for every account. Each destination opens inside a restricted, responsive-width iframe with a configurable height, and remains available through an external-open link when the site blocks embedding. A per-page trusted-site opt-in can preserve the site's origin when its module scripts require it. |
+| **Notifications** | An ntfy-powered header inbox backed by a persistent Rust subscription, so messages are retained even when no browser is open. It includes realtime Bell counts, fixed-size bottom-right delivery toasts, swipeable previews, a full topic view, manual topic subscriptions, clickable ntfy links and actions, and permanent upstream deletion. ntfy.sh and administrator-authorized self-hosted servers are supported. |
+| **Embedded pages** | Personal HTTPS webpages in the sidebar, plus administrator-managed global pages for every account. Each destination opens inside a restricted, responsive-width iframe with 480, 720, and 1,080 pixel presets or a custom height, and remains available through an external-open link when the site blocks embedding. Script execution and same-origin access are separate per-page opt-ins and may be enabled together for trusted destinations. |
 | **Trading** | A navigation placeholder for a future market workspace; watchlists and trade planning are not implemented yet. |
 
 A global command palette is available from every page with `Ctrl`/`Cmd` + `K`, the `/` key, or the header search control. It jumps to any product page or Kanban section, runs quick actions such as New task, Start focus session, and Account settings, and falls through to a web search on DuckDuckGo, Google, Bing, or Brave when the query matches nothing local.
 
-Accounts also have a private avatar, one to five sidebar monitor timezones, temperature and location preferences, a default Lines visibility, background adjustments, and a Main background used by the authenticated Welcome loading transition and behind authenticated pages. A background can be an image you upload or one you pick from Walls; picking a wall stores it once for the whole instance rather than a copy per account. Custom sidebar pages always follow the built-in navigation: global pages use a `GLOBAL · CUSTOM` indicator, then personal pages use `PERSONAL · CUSTOM`. Administrators manage accounts, authentication policy, global embedded pages, public Lines moderation, the Walls review queue, and the public Login wallpaper. Each user can permanently clear one content area at a time from Settings after explicit confirmation.
+Accounts also have a private avatar, one to five sidebar monitor timezones, temperature and location preferences, a default Lines visibility, background adjustments, and a Main background used by the authenticated Welcome loading transition and behind authenticated pages. A background can be an image you upload or one you pick from Walls; picking a wall stores it once for the whole instance rather than a copy per account. Custom sidebar pages always follow the built-in navigation, grouped under Global custom and then Personal custom. Administrators manage accounts, authentication policy, global embedded pages, public Lines moderation, the Walls review queue, and the public Login wallpaper. Each user can permanently clear one content area at a time from Settings after explicit confirmation.
 
 ## Dashboard widgets
 
@@ -64,7 +65,7 @@ Pandan currently includes:
 - YouTube uploads, RSS/Atom feeds, Reddit, market symbols, code releases, and Twitch or Kick live-channel status.
 - Sandboxed custom HTML and HTTPS iframe widgets. Custom HTML cannot run scripts, navigate the parent, or access the parent page; remote sites may still refuse iframe embedding.
 
-Provider credentials are optional. Anonymous integrations remain usable without a server encryption key, while features that persist Reddit, Twitch, CardDAV, or source-control credentials require `PANDAN_SECRET_KEY`.
+Provider credentials are optional. Anonymous integrations remain usable without a server encryption key, while features that persist Reddit, Twitch, ntfy, CardDAV, or source-control credentials require `PANDAN_SECRET_KEY`.
 
 ## Docker deployment
 
@@ -123,6 +124,7 @@ A new database opens a one-time setup screen. Create the initial account with an
 After setup, administrators can use **Settings → User administration** to:
 
 - enable or disable password login, password registration, and registration of new OIDC identities;
+- allow or deny exact server-side network destinations, including explicitly trusted private or HTTP origins;
 - promote or demote other accounts; and
 - remove other accounts.
 
@@ -141,7 +143,7 @@ Pandan prevents an administrator from deleting their active account or removing 
 | `RUST_LOG` | `info` | Rust tracing filter, such as `info`, `debug`, or a crate-specific filter. |
 | `COOKIE_SECURE` | `false` | Accepts `1`, `true`, or `yes` (case-insensitive) to mark session and OIDC state cookies as HTTPS-only. |
 | `PANDAN_BASE_URL` | unset in the server | Public absolute HTTP(S) application URL. Required when OIDC is enabled, where it derives the callback URL, and used for link-preview URLs. Without it, previews fall back to the address each request arrived on. |
-| `PANDAN_SECRET_KEY` | unset | Base64 text that decodes to exactly 32 bytes. Enables encrypted provider-credential storage. |
+| `PANDAN_SECRET_KEY` | unset | Base64 text that decodes to exactly 32 bytes. Enables encrypted provider-credential storage, including ntfy access tokens. |
 | `INVIDIOUS_BASE_URL` | unset | Optional HTTPS Invidious base URL used before YouTube's public uploads feed. |
 | `INVIDIOUS_ALLOW_PRIVATE_NETWORK` | `false` | Accepts `1`, `true`, or `yes` (case-insensitive). Exempts the `INVIDIOUS_BASE_URL` host from the private-network guard, for a self-hosted instance that resolves to a private address. Scoped to that exact host and port; every other outbound URL stays fully validated. |
 | `PANDAN_MEDIA_DIR` | `data/podcasts` | Directory for downloaded podcast episodes. Must be writable and on a volume with room for the storage budget. Production Compose sets `/app/data/podcasts`. |
@@ -212,7 +214,7 @@ A path prefix is preserved: `https://example.com/pandan/` becomes `https://examp
 
 `OIDC_ISSUER` is not normalized in the same way. Copy the issuer exactly from the provider's OpenID discovery document, including any realm, tenant, or path and its trailing-slash convention.
 
-OIDC can sign in an existing linked identity or link a verified email to an existing account. Whether a previously unseen identity may create an account is controlled separately by the administrator's OIDC registration setting. When the provider supplies a `picture` claim and the account has no avatar, Pandan imports the supported public HTTPS image without replacing an avatar the user already chose.
+OIDC can sign in an existing linked identity or link a verified email to an existing account. Whether a previously unseen identity may create an account is controlled separately by the administrator's OIDC registration setting. When the provider supplies a `picture` claim and the account has no avatar, Pandan imports the supported image through the guarded server-fetch policy without replacing an avatar the user already chose.
 
 ## Data, backups, and upgrades
 
@@ -271,8 +273,9 @@ large amount of pixel data.
 
 ## Remote content behavior
 
-- User-supplied RSS, ICS, CardDAV, Invidious, Gitea, and Forgejo destinations must use public HTTPS URLs. Server-side fetches reject loopback, private, link-local, multicast, and reserved destinations after DNS resolution.
-- Remote requests use bounded redirects, connection and request timeouts, response-size limits, and isolated provider errors so one failing provider does not break an entire page.
+- Server-side destinations default to public HTTPS. Under **Settings → People & access**, administrators may add an exact-origin allow rule for a trusted private or plain-HTTP service, or an explicit deny rule. Rules can apply to every policy-controlled integration fetch or only RSS, calendars, contacts, podcasts, notifications, coding providers, remote images, YouTube/Invidious, or other remote widgets. A matching deny always wins.
+- DNS answers are checked and pinned to the request client, including IPv4-mapped IPv6 and reserved ranges, so a hostname cannot pass validation and then resolve somewhere else for the connection. Widget redirects are disabled; podcast redirects are bounded and evaluated again at every hop. Remote requests also retain connection and request timeouts, response-size limits, and isolated provider errors.
+- Network access rules apply only when Pandan is the HTTP client. Embedded custom pages and ordinary external links are loaded directly by the browser and keep their separate HTTPS, iframe sandbox, and referrer controls.
 - YouTube channel metadata refreshes every two hours. Pandan tries configured Invidious first and YouTube's public uploads feed second. Shared channel portraits are stored in SQLite and refreshed at most every 24 hours; invalid or failed portrait responses are not cached.
 - Podcast feeds and episode enclosures use dedicated HTTP clients because enclosures routinely redirect through tracking prefixes and run to hundreds of megabytes. Redirects are followed manually and revalidated against the same public-destination policy at every hop, and the size ceiling is enforced both on the declared length and while streaming.
 - Pandan never proxies remote podcast audio to a browser. An episode is downloaded once to this server and then served from local disk, so nothing plays until the instance holds its own copy.
@@ -286,6 +289,7 @@ large amount of pixel data.
 - Sessions use random server-side tokens in HTTP-only, SameSite Strict cookies and expire after 30 days. Set `COOKIE_SECURE=true` for HTTPS.
 - Administrator authorization is enforced by the server, including the invariant that at least one administrator remains.
 - Stored provider secrets use XChaCha20-Poly1305 when `PANDAN_SECRET_KEY` is configured. Secrets are neither included in API responses nor written to logs.
+- Outbound server requests use a deny-first, administrator-managed exact-origin policy. Private or HTTP allow rules deliberately grant Pandan—and therefore users of the selected integration—the server's network reach, so configure them as part of the instance trust boundary.
 - User Markdown is sanitized, while custom HTML and iframe widgets run in browser sandboxes.
 - The supplied production Compose configuration runs the container as an unprivileged user with a read-only root filesystem, a temporary `/tmp`, all Linux capabilities dropped, and `no-new-privileges` enabled.
 
@@ -415,9 +419,9 @@ If adding the issuer's advertised trailing slash changes an `unexpected issuer U
 
 Set `PANDAN_SECRET_KEY` to a valid base64-encoded 32-byte value and restart the server. `openssl rand -base64 32` produces the expected format.
 
-### Remote feed, calendar, or self-hosted Git URL is rejected
+### Remote feed, calendar, or self-hosted service URL is rejected
 
-Pandan intentionally rejects plain HTTP and destinations that resolve to non-public address ranges. Use a public HTTPS endpoint with valid DNS. Redirects to blocked destinations are rejected as well.
+Pandan defaults to public HTTPS and rejects destinations that resolve to non-public address ranges. Prefer a public HTTPS endpoint with valid DNS. When a trusted self-hosted service is intentionally private or HTTP-only, an administrator can allow its exact origin under **Settings → People & access → Server destinations** and limit the rule to the relevant integration. Redirect destinations require their own matching access, and an explicit deny rule overrides an allow.
 
 ### Container development files have the wrong owner
 

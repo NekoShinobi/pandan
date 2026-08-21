@@ -5,7 +5,7 @@ use openidconnect::{
     core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
     reqwest,
 };
-use std::fmt;
+use thiserror::Error;
 
 const OIDC_CALLBACK_PATH: &str = "api/auth/oidc/callback";
 
@@ -41,16 +41,9 @@ pub struct VerifiedIdentity {
     pub picture_url: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
+#[error("{0}")]
 pub struct OidcError(String);
-
-impl fmt::Display for OidcError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for OidcError {}
 
 impl OidcProvider {
     /// Discovers and configures an OIDC provider when all required environment values exist.

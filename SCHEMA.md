@@ -44,6 +44,29 @@ is disabled while known identities and verified-email links to existing users re
 | `oidc_registration_enabled`     | INTEGER | Boolean `0` or `1`; defaults to `1`  |
 | `updated_at`                    | TEXT    | Required, RFC 3339 timestamp         |
 
+## `network_access_rules`
+
+Administrator-managed exact-origin policy for requests made by the Pandan server. Public HTTPS is
+the implicit default when no rule matches. An `allow` rule may authorize a private or HTTP origin;
+a matching `deny` rule takes precedence. Rules are scoped either to all policy-controlled
+integration fetches or to one integration. Browser-loaded embedded pages and external links do not
+consult this table.
+
+| Column               | Type    | Constraints                                                        |
+| -------------------- | ------- | ------------------------------------------------------------------ |
+| `id`                 | TEXT    | Primary key                                                        |
+| `action`             | TEXT    | Required, `allow` or `deny`                                        |
+| `scheme`             | TEXT    | Required, `http` or `https`                                        |
+| `host`               | TEXT    | Required normalized hostname or IP, 1–253 characters               |
+| `port`               | INTEGER | Required, 1–65,535                                                 |
+| `integration`        | TEXT    | `all`, `rss`, `calendar`, `contacts`, `podcasts`, `notifications`, `coding`, `images`, `youtube`, or `widgets` |
+| `created_by_user_id` | TEXT    | Optional administrator audit reference, set null on account delete |
+| `created_at`         | TEXT    | Required, RFC 3339 timestamp                                       |
+| `updated_at`         | TEXT    | Required, RFC 3339 timestamp                                       |
+
+The action, scheme, host, port, and integration tuple is unique. Instances are limited to 128 rows
+by the API.
+
 ## `users`
 
 Private dashboard accounts. Passwords are stored only as Argon2id PHC strings.
@@ -178,8 +201,9 @@ all administrators before inserting.
 ## `user_avatars`
 
 Optional private profile images. Avatar bytes are available only through the authenticated user's
-settings endpoint and are deleted automatically with the owning account. A supported public HTTPS
-image from an OIDC `picture` claim may initialize this record, but never replaces an existing avatar.
+settings endpoint and are deleted automatically with the owning account. A supported image from an
+OIDC `picture` claim may initialize this record after the server network policy approves its origin,
+but never replaces an existing avatar.
 
 | Column       | Type | Constraints                                         |
 | ------------ | ---- | --------------------------------------------------- |
@@ -214,12 +238,14 @@ global page only clears `created_by_user_id` so the shared entry remains availab
 
 The sidebar renders built-in pages first, then global rows, then the current account's user rows.
 `position` is zero-based within that scope and is replaced transactionally during reordering.
-`allow_same_origin` is disabled by default. Enabling it marks a page as trusted and preserves the
-embedded site's origin inside the iframe, which can support module scripts and site storage while
-reducing sandbox isolation.
+`allow_scripts` and `allow_same_origin` are independent and disabled by default. The first permits
+JavaScript execution inside the iframe; the second preserves the embedded site's origin for
+storage, cookies, and origin checks. Either permission may be enabled alone or both may be enabled
+together, with each opt-in reducing sandbox isolation.
 `iframe_height` controls the vertical frame size in pixels. Existing and newly created pages default
-to 720 pixels, with API and database constraints limiting values to 320–2,400 pixels; width remains
-responsive to the application canvas.
+to 720 pixels, with API and database constraints limiting values to 320–2,400 pixels. The interface
+offers 480, 720, and 1,080 pixel presets plus a custom option; width remains responsive to the
+application canvas.
 
 | Column               | Type    | Constraints                                                        |
 | -------------------- | ------- | ------------------------------------------------------------------ |
@@ -230,6 +256,7 @@ responsive to the application canvas.
 | `title`              | TEXT    | Required, trimmed length 1–80                                      |
 | `description`        | TEXT    | Required, maximum length 280                                       |
 | `url`                | TEXT    | Required absolute HTTPS URL, maximum length 2,000                   |
+| `allow_scripts`      | INTEGER | Required boolean, defaults to `0`                                  |
 | `allow_same_origin`  | INTEGER | Required boolean, defaults to `0`                                  |
 | `iframe_height`      | INTEGER | Required, 320–2,400 pixels, defaults to `720`                       |
 | `position`           | INTEGER | Required non-negative order within the page's scope                |
@@ -413,8 +440,9 @@ Curated feed entries shown in the dashboard's Feeds workspace.
 User-owned RSS, Atom, or generated Reddit listing sources for the dedicated reader. URLs are unique
 per user. New subscriptions default to deleting all unsaved items after seven days. Reddit helpers
 store a public `reddit.com/r/{subreddit}/{sort}.rss` Atom URL; older saved `.json` listing URLs are
-normalized to the same Atom endpoint when fetched. Fetching is restricted to public HTTPS
-destinations; a normalized origin is stored separately to make base-URL filtering predictable.
+normalized to the same Atom endpoint when fetched. Fetching uses the server network policy; public
+HTTPS is implicit, while private or HTTP origins require an administrator allow rule. A normalized
+origin is stored separately to make base-URL filtering predictable.
 
 The background refresh worker schedules on `last_attempted_at`, which is stamped when a refresh is
 claimed and by every manual refresh, so a failing source backs off for a full window instead of
@@ -425,7 +453,7 @@ being retried on every sweep. `last_fetched_at` still records the last successfu
 | `id`               | TEXT    | Primary key                            |
 | `user_id`          | TEXT    | References `users` with cascade delete |
 | `url`              | TEXT    | Required source URL, unique per user   |
-| `base_url`         | TEXT    | Required normalized HTTPS origin       |
+| `base_url`         | TEXT    | Required normalized HTTP(S) origin      |
 | `title`            | TEXT    | Required, fetched feed title           |
 | `category`         | TEXT    | Required, trimmed length 1–40          |
 | `auto_delete_days` | INTEGER | Optional age from 1–3,650 days         |
@@ -441,7 +469,8 @@ being retried on every sweep. `last_fetched_at` still records the last successfu
 Fetched reader entries owned through their subscription. Refresh upserts by the source's stable
 identifier and preserves `read_at`. Automatic retention runs when the reader loads or a source
 refreshes; manual pruning can remove old read-only or all entries across one user's subscriptions.
-Entries saved in `rss_read_later` are excluded from both automatic retention and manual pruning.
+Entries may retain separate article and discussion destinations. Entries saved in `rss_read_later`
+are excluded from both automatic retention and manual pruning.
 
 | Column            | Type | Constraints                                         |
 | ----------------- | ---- | --------------------------------------------------- |
@@ -449,6 +478,7 @@ Entries saved in `rss_read_later` are excluded from both automatic retention and
 | `subscription_id` | TEXT | References `rss_subscriptions` with cascade delete  |
 | `external_id`     | TEXT | Required, unique within the subscription            |
 | `url`             | TEXT | Entry destination, empty when omitted by the feed   |
+| `comments_url`    | TEXT | Discussion destination, empty when omitted           |
 | `title`           | TEXT | Required, trimmed length 1–500                      |
 | `summary`         | TEXT | Required, defaults to an empty string               |
 | `published_at`    | TEXT | RFC 3339; fetch time is used when the feed omits it |
@@ -568,7 +598,8 @@ area is deleted.
 ## `podcasts`
 
 The instance's administrator-curated podcast catalogue. A row exists only once an administrator has
-approved a feed or added one directly; a member request never creates one. `normalized_url` is the
+approved a feed or added one directly; a member request never creates one. Feed and enclosure origins
+are evaluated by the server network policy. `normalized_url` is the
 uniqueness key, so the same show cannot be catalogued twice under cosmetically different addresses.
 Artwork is cached here as a blob and refreshed at most once a day; a failed fetch never overwrites
 it. Episode audio is **not** stored in SQLite — see `podcast_downloads`.
@@ -753,8 +784,8 @@ that would create a cycle.
 
 ## `calendar_subscriptions`
 
-User-owned public HTTPS iCalendar sources. URLs are unique within an account. Refresh errors are
-stored without discarding the most recent successful event snapshot.
+User-owned iCalendar sources approved by the server network policy. URLs are unique within an
+account. Refresh errors are stored without discarding the most recent successful event snapshot.
 
 | Column            | Type | Constraints                                            |
 | ----------------- | ---- | ------------------------------------------------------ |
@@ -791,10 +822,74 @@ snapshot atomically, which removes cancelled upstream occurrences without touchi
 The `(subscription_id, external_id, start_at)` tuple is unique so recurring occurrences sharing
 one RFC 5545 UID remain distinct.
 
+## `ntfy_connections`
+
+One private ntfy server configuration per account. The server may be ntfy.sh or another
+credential-free origin approved by the server network policy. The optional access token is encrypted
+with XChaCha20-Poly1305 and API responses expose only whether a token exists. The Rust server keeps
+the upstream subscription open independently of browser sessions. A recovery-sync or stream failure
+records a user-safe error without discarding previously retrieved notifications.
+
+| Column             | Type | Constraints                                                    |
+| ------------------ | ---- | -------------------------------------------------------------- |
+| `user_id`          | TEXT | Primary key, references `users` with cascade delete            |
+| `base_url`         | TEXT | Required credential-free HTTP(S) ntfy server URL                |
+| `token_ciphertext` | TEXT | Optional encrypted access token, never returned by the API     |
+| `last_synced_at`   | TEXT | Optional RFC 3339 timestamp                                     |
+| `last_error`       | TEXT | Optional safe provider error                                   |
+| `created_at`       | TEXT | Required, RFC 3339 timestamp                                   |
+| `updated_at`       | TEXT | Required, RFC 3339 timestamp                                   |
+
+## `ntfy_topics`
+
+Manual topic subscriptions for the account's connected server. A topic uses ntfy's portable
+letters, numbers, dot, underscore, and hyphen form and is unique within the account. The cursor is
+stored per topic so adding a new topic can import its available cache without rewinding existing
+subscriptions.
+Changing the connected server clears locally cached ntfy messages and resets every topic cursor,
+while retaining the manually entered topic names and labels so they can be polled on the new server.
+
+| Column            | Type | Constraints                                                     |
+| ----------------- | ---- | --------------------------------------------------------------- |
+| `id`              | TEXT | Primary key                                                     |
+| `user_id`         | TEXT | References `ntfy_connections` with cascade delete               |
+| `topic`           | TEXT | Required, 1–64 portable topic characters, unique per user       |
+| `label`           | TEXT | Required display label, up to 80 characters                     |
+| `last_message_id` | TEXT | Optional ntfy message ID used as the incremental sync cursor    |
+| `created_at`      | TEXT | Required, RFC 3339 timestamp                                    |
+| `updated_at`      | TEXT | Required, RFC 3339 timestamp                                    |
+
+## `ntfy_notifications`
+
+Private local copies of ntfy messages. `(topic_id, remote_id)` is unique, making recovery polling
+and realtime replay idempotent. `seen_at` drives the header count. Deleting sends ntfy's sequence
+deletion request upstream first and permanently removes the local row only after that succeeds.
+Migration 047 purges rows archived by earlier builds; `archived_at` remains as a compatibility
+column but the application no longer writes or lists archived notifications. Tags and actions
+retain the bounded upstream JSON; view links and copy actions run in the browser, while HTTP actions
+require an authenticated user gesture and the server network policy.
+
+| Column         | Type    | Constraints                                                  |
+| -------------- | ------- | ------------------------------------------------------------ |
+| `id`           | TEXT    | Primary key                                                  |
+| `user_id`      | TEXT    | References `users` with cascade delete                       |
+| `topic_id`     | TEXT    | References `ntfy_topics` with cascade delete                 |
+| `remote_id`    | TEXT    | Required upstream message ID, unique within one topic        |
+| `occurred_at`  | INTEGER | Required Unix timestamp supplied by ntfy                     |
+| `title`        | TEXT    | Required, normalized display title                           |
+| `message`      | TEXT    | Required notification body                                   |
+| `priority`     | INTEGER | Required ntfy priority, normalized to 1–5                    |
+| `tags_json`    | TEXT    | Required valid JSON array                                    |
+| `click_url`    | TEXT    | Optional absolute HTTP(S) destination                        |
+| `actions_json` | TEXT    | Required valid JSON array of bounded ntfy actions            |
+| `seen_at`      | TEXT    | Optional RFC 3339 timestamp                                  |
+| `archived_at`  | TEXT    | Legacy compatibility column; new rows remain NULL            |
+| `received_at`  | TEXT    | Required RFC 3339 timestamp                                  |
+
 ## `contact_dav_sources`
 
-Account-owned CardDAV address-book resources. The URL is a direct public HTTPS address-book
-collection and is validated against private and reserved destinations before storage and sync.
+Account-owned CardDAV address-book resources. The URL is a direct HTTP(S) address-book collection
+and is evaluated by the server network policy before storage and sync.
 Passwords are optional and use the same XChaCha20-Poly1305 secret key as provider credentials;
 API responses expose only `has_password`. Sync is an explicit pull operation and stores only a
 user-safe error string when the upstream resource fails.

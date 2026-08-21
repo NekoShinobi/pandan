@@ -33,8 +33,9 @@ async fn main() -> miette::Result<()> {
         .await
         .map_err(|error| miette::miette!("OIDC configuration error: {error}"))?;
     info!(enabled = oidc.is_some(), "OIDC provider configured");
-    let widget_integrations = server::widget_integrations::WidgetIntegrationService::from_env()
-        .map_err(|error| miette::miette!("widget integration configuration error: {error}"))?;
+    let widget_integrations =
+        server::widget_integrations::WidgetIntegrationService::from_env(pool.clone())
+            .map_err(|error| miette::miette!("widget integration configuration error: {error}"))?;
     info!(
         secret_storage_enabled = widget_integrations.secrets_enabled(),
         invidious_enabled = widget_integrations.invidious_enabled(),
@@ -45,7 +46,7 @@ async fn main() -> miette::Result<()> {
             "INVIDIOUS_ALLOW_PRIVATE_NETWORK exempts the configured Invidious instance from the private-network guard"
         );
     }
-    let podcast_media = server::PodcastMedia::from_env()
+    let podcast_media = server::PodcastMedia::from_env(pool.clone())
         .map_err(|error| miette::miette!("podcast media configuration error: {error}"))?;
     info!(
         media_dir = %podcast_media.root().display(),
@@ -57,11 +58,13 @@ async fn main() -> miette::Result<()> {
         oidc,
         widget_integrations,
         podcast_media,
+        ntfy_events: server::ntfy::NtfyEventHub::default(),
         site_origin: SiteOrigin::from_env(),
     });
     server::spawn_youtube_refresh_worker(state.clone());
     server::spawn_podcast_workers(state.clone());
     server::spawn_rss_refresh_worker(state.clone());
+    server::ntfy::spawn_ntfy_worker(state.clone());
 
     info!(port, "server listening");
     HttpServer::new(move || {

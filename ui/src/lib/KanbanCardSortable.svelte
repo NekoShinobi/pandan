@@ -18,6 +18,7 @@
     reducedMotion,
     avatarUrl,
     onopen,
+    oncontextmenu,
   }: {
     card: KanbanCard;
     columnId: string;
@@ -29,6 +30,7 @@
     /** Resolves a workspace member's avatar endpoint. */
     avatarUrl: (userId: string) => string;
     onopen: (card: KanbanCard) => void;
+    oncontextmenu: (card: KanbanCard, event: MouseEvent) => void;
   } = $props();
 
   /** Members without an uploaded avatar answer 404, which uncovers the initial beneath. */
@@ -74,6 +76,21 @@
     ? `${card.title}, has description`
     : card.title}
   onclick={() => onopen(card)}
+  oncontextmenu={(event) => oncontextmenu(card, event)}
+  onkeydown={(event) => {
+    if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) {
+      return;
+    }
+    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    oncontextmenu(
+      card,
+      new MouseEvent("contextmenu", {
+        clientX: rect.left + Math.min(rect.width - 12, 36),
+        clientY: rect.top + Math.min(rect.height - 12, 36),
+      }),
+    );
+  }}
   data-od-id={`kanban-card-${card.id}`}
   {@attach sortable.attach}
 >

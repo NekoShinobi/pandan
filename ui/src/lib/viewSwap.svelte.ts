@@ -1,4 +1,6 @@
+import { animate } from "motion";
 import { tick } from "svelte";
+import { MOTION_EASE, motionPause } from "$lib/motion.svelte";
 
 export type ViewSwapPhase = "leaving" | "entering";
 export type ViewSwapDirection = "forward" | "backward";
@@ -16,13 +18,10 @@ const LEAVE_MS = 150;
 const ENTER_MS = 260;
 const HEIGHT_MS = 280;
 const PENDING_GRACE_MS = 240;
-const HEIGHT_EASING = "cubic-bezier(0.2, 0, 0, 1)";
-
-function waitFor(milliseconds: number) {
-  return new Promise<void>((resolve) => {
-    setTimeout(resolve, milliseconds);
-  });
-}
+type MotionControls = {
+  finished: Promise<unknown>;
+  stop: () => void;
+};
 
 /**
  * Drives the page-level view swap shared by Tasks and Kanban. The container
@@ -36,17 +35,39 @@ export function createViewSwap() {
   let direction = $state<ViewSwapDirection>("forward");
   let container: HTMLElement | undefined;
   let token = 0;
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let heightAnimation: MotionControls | undefined;
+  let heightAnimationNode: HTMLElement | undefined;
+  let heightAnimationOriginalHeight = "";
+
+  function stopHeightAnimation() {
+    heightAnimation?.stop();
+    if (heightAnimationNode) {
+      heightAnimationNode.style.height = heightAnimationOriginalHeight;
+    }
+    heightAnimation = undefined;
+    heightAnimationNode = undefined;
+    heightAnimationOriginalHeight = "";
+  }
 
   function animateHeight(fromHeight: number) {
     if (!container || !fromHeight) return;
-    if (typeof container.animate !== "function") return;
     const toHeight = container.offsetHeight;
     if (Math.abs(toHeight - fromHeight) < 4) return;
-    container.animate(
-      [{ height: `${fromHeight}px` }, { height: `${toHeight}px` }],
-      { duration: HEIGHT_MS, easing: HEIGHT_EASING },
-    );
+    stopHeightAnimation();
+    const node = container;
+    heightAnimationNode = node;
+    heightAnimationOriginalHeight = node.style.height;
+    const controls = animate(
+      node,
+      { height: [`${fromHeight}px`, `${toHeight}px`] },
+      { duration: HEIGHT_MS / 1_000, ease: MOTION_EASE },
+    ) as MotionControls;
+    heightAnimation = controls;
+    void controls.finished
+      .then(() => {
+        if (heightAnimation === controls) stopHeightAnimation();
+      })
+      .catch(() => undefined);
   }
 
   return {
@@ -75,8 +96,6 @@ export function createViewSwap() {
         return;
       }
 
-      clearTimeout(timer);
-      timer = undefined;
       direction = forward ? "forward" : "backward";
       phase = "leaving";
       const fromHeight = container?.offsetHeight ?? 0;
@@ -86,8 +105,8 @@ export function createViewSwap() {
       // state. Slow work still hands over on time rather than holding the
       // view blank.
       await Promise.race([
-        Promise.all([waitFor(LEAVE_MS), settled]),
-        waitFor(LEAVE_MS + PENDING_GRACE_MS),
+        Promise.all([motionPause(LEAVE_MS), settled]),
+        motionPause(LEAVE_MS + PENDING_GRACE_MS),
       ]);
       if (current !== token) return;
 
@@ -97,18 +116,14 @@ export function createViewSwap() {
       if (current !== token) return;
 
       animateHeight(fromHeight);
-      timer = setTimeout(() => {
-        if (current !== token) return;
-        phase = undefined;
-        timer = undefined;
-      }, ENTER_MS);
+      await motionPause(ENTER_MS);
+      if (current === token) phase = undefined;
     },
 
     /** Drops an in-flight transition, for view resets and teardown. */
     cancel() {
       token += 1;
-      clearTimeout(timer);
-      timer = undefined;
+      stopHeightAnimation();
       phase = undefined;
     },
   };

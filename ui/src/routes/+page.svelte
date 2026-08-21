@@ -3,7 +3,6 @@
   import "gridstack/dist/gridstack.min.css";
   import ArrowRight from "lucide-svelte/icons/arrow-right";
   import ArchiveIcon from "lucide-svelte/icons/archive";
-  import Bell from "lucide-svelte/icons/bell";
   import BookOpen from "lucide-svelte/icons/book-open";
   import CalendarDays from "lucide-svelte/icons/calendar-days";
   import ChartCandlestick from "lucide-svelte/icons/chart-candlestick";
@@ -47,6 +46,7 @@
   import Youtube from "lucide-svelte/icons/circle-play";
   import { onDestroy, onMount, tick } from "svelte";
   import { createViewSwap } from "$lib/viewSwap.svelte";
+  import { motionDisclosure, motionPopover } from "$lib/motion.svelte";
   import { MediaQuery, SvelteMap, SvelteSet } from "svelte/reactivity";
   import AnimatedList from "$lib/components/AnimatedList.svelte";
   import PrismaticBurst from "$lib/components/PrismaticBurst.svelte";
@@ -59,6 +59,10 @@
   import JournalPage from "$lib/JournalPage.svelte";
   import KanbanPage from "$lib/KanbanPage.svelte";
   import LinesPage from "$lib/LinesPage.svelte";
+  import NtfyPage from "$lib/NtfyPage.svelte";
+  import NtfyPopover from "$lib/NtfyPopover.svelte";
+  import NtfyPriority from "$lib/NtfyPriority.svelte";
+  import NetworkAccessSettings from "$lib/NetworkAccessSettings.svelte";
   import PodcastsPage from "$lib/PodcastsPage.svelte";
   import RssReaderPage from "$lib/RssReaderPage.svelte";
   import SidebarUtilities from "$lib/SidebarUtilities.svelte";
@@ -112,6 +116,7 @@
     type FeedItem,
     type ManagedUser,
     type KanbanSection,
+    type NtfyNotification,
     type Task,
     type TaskAttachment,
     type TaskInput,
@@ -144,10 +149,10 @@
     | "podcasts"
     | "coding"
     | "subscriptions"
-    | "trading";
+    | "trading"
+    | "notifications";
   type ActivePage =
-    | { kind: "builtin"; id: ProductPage }
-    | { kind: "embedded"; id: string };
+    { kind: "builtin"; id: ProductPage } | { kind: "embedded"; id: string };
   type CommandGroup = "PAGES" | "ACTIONS" | "WEB";
   type CommandItem = {
     id: string;
@@ -450,7 +455,8 @@
     {
       id: "contacts",
       label: "Contacts",
-      description: "Keep people, contact details, and important dates together.",
+      description:
+        "Keep people, contact details, and important dates together.",
       code: "04",
       icon: ContactRound,
     },
@@ -492,7 +498,8 @@
     {
       id: "youtube",
       label: "YouTube",
-      description: "Follow channels and browse recent videos without distractions.",
+      description:
+        "Follow channels and browse recent videos without distractions.",
       code: "10",
       icon: Youtube,
     },
@@ -588,6 +595,14 @@
   let addingWidgetKind = $state<WidgetKind | "">("");
   let draggedWidgetId = $state("");
   let toastMessage = $state("");
+  let toastPlacement = $state<"bottom" | "bottom-right">("bottom");
+  let toastNotification = $state.raw<{
+    notification: NtfyNotification;
+    count: number;
+  } | null>(null);
+  let toastVisible = $state(false);
+  let ntfyRevision = $state(0);
+  let ntfyFocusedNotificationId = $state("");
   let currentTime = $state(new Date());
   let focusSubject = $state("");
   let focusDurationMinutes = $state(25);
@@ -694,6 +709,7 @@
   let subtaskActionId = $state("");
   let pendingTaskDeleteId = $state("");
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  let toastCleanupTimer: ReturnType<typeof setTimeout> | undefined;
   let clockTimer: ReturnType<typeof setInterval> | undefined;
   let focusTimer: ReturnType<typeof setInterval> | undefined;
   let focusExitTimer: ReturnType<typeof setTimeout> | undefined;
@@ -771,9 +787,11 @@
       authConfig.password_registration_enabled,
   );
   let activeSectionLabel = $derived(
-    activeEmbeddedPage?.title ??
-      productPages.find((item) => item.id === activeSection)?.label ??
-      "Dashboard",
+    activeSection === "notifications"
+      ? "Notifications"
+      : (activeEmbeddedPage?.title ??
+          productPages.find((item) => item.id === activeSection)?.label ??
+          "Dashboard"),
   );
   let firstName = $derived(
     dashboard?.settings.display_name.trim().split(/\s+/)[0] || "there",
@@ -813,6 +831,15 @@
         run: () => openKanbanSection(submenuItem.id),
       });
     }
+
+    items.push({
+      id: "page:notifications",
+      group: "PAGES",
+      label: "Notifications",
+      hint: "NTFY",
+      keywords: "notifications ntfy alerts topics inbox archive",
+      run: () => openNotificationCenter(),
+    });
 
     for (const page of dashboard?.embedded_pages.global ?? []) {
       items.push({
@@ -869,7 +896,9 @@
       {
         id: "action:edit-layout",
         group: "ACTIONS",
-        label: layoutEditing ? "Exit dashboard edit mode" : "Edit dashboard layout",
+        label: layoutEditing
+          ? "Exit dashboard edit mode"
+          : "Edit dashboard layout",
         hint: "+",
         keywords: "edit layout dashboard arrange move resize grid",
         run: () => {
@@ -1075,6 +1104,7 @@
     clearAvatarDraft();
     clearWallpaperDrafts();
     clearTimeout(toastTimer);
+    clearTimeout(toastCleanupTimer);
     clearTimeout(welcomeRemoveTimer);
     clearTimeout(loadingAnimationMinimumTimer);
     clearInterval(clockTimer);
@@ -1463,7 +1493,9 @@
   $effect(() => {
     if (!podcastAudio) return;
     podcastPlayer.attach(podcastAudio);
-    podcastPlayer.setPlaybackRate(dashboard?.settings.podcast_playback_rate ?? 1);
+    podcastPlayer.setPlaybackRate(
+      dashboard?.settings.podcast_playback_rate ?? 1,
+    );
   });
 
   // The volume popover is a transient surface, so it closes on Escape or on a pointer
@@ -1472,7 +1504,8 @@
     if (!podcastVolumeOpen) return;
     const dismiss = (event: PointerEvent) => {
       const target = event.target;
-      if (target instanceof Node && podcastVolumeControl?.contains(target)) return;
+      if (target instanceof Node && podcastVolumeControl?.contains(target))
+        return;
       podcastVolumeOpen = false;
     };
     const escape = (event: KeyboardEvent) => {
@@ -1532,9 +1565,15 @@
     activePage = { kind: "builtin", id: page };
     if (page !== "contacts") contactDetailId = null;
     if (page !== "calendar") calendarDetailDate = null;
+    if (page !== "notifications") ntfyFocusedNotificationId = "";
     sidebarOpen = false;
     pendingTaskDeleteId = "";
     localStorage.setItem("pandan-active-section", `builtin:${page}`);
+  }
+
+  function openNotificationCenter(notificationId = "") {
+    ntfyFocusedNotificationId = notificationId;
+    openProductPage("notifications");
   }
 
   function openEmbeddedPage(pageId: string) {
@@ -1621,10 +1660,51 @@
     if (sidebarHint?.source === source) sidebarHint = null;
   }
 
-  function showToast(message: string) {
+  function showToast(
+    message: string,
+    placement: "bottom" | "bottom-right" = "bottom",
+    duration = 1800,
+  ) {
     toastMessage = message;
+    toastNotification = null;
+    toastPlacement = placement;
+    showToastFor(duration);
+  }
+
+  function showNotificationToast(
+    notification: NtfyNotification,
+    count: number,
+  ) {
+    toastMessage = "";
+    toastNotification = { notification, count };
+    toastPlacement = "bottom-right";
+    showToastFor(5200);
+  }
+
+  function openToastNotification() {
+    const notificationId = toastNotification?.notification.id;
+    if (!notificationId) return;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => (toastMessage = ""), 1800);
+    clearTimeout(toastCleanupTimer);
+    toastVisible = false;
+    toastCleanupTimer = setTimeout(() => {
+      toastMessage = "";
+      toastNotification = null;
+    }, 420);
+    openNotificationCenter(notificationId);
+  }
+
+  function showToastFor(duration: number) {
+    clearTimeout(toastTimer);
+    clearTimeout(toastCleanupTimer);
+    toastVisible = true;
+    toastTimer = setTimeout(() => {
+      toastVisible = false;
+      toastCleanupTimer = setTimeout(() => {
+        toastMessage = "";
+        toastNotification = null;
+      }, 420);
+    }, duration);
   }
 
   async function openCommand() {
@@ -1881,7 +1961,9 @@
     await taskViewSwap.run({
       forward: view === "archived",
       pending:
-        view === "archived" && !archivedTasksLoaded ? loadArchivedTasks() : null,
+        view === "archived" && !archivedTasksLoaded
+          ? loadArchivedTasks()
+          : null,
       commit: () => {
         taskView = view;
         taskLabelFilter = "";
@@ -3460,7 +3542,10 @@
                 class="sidebar-link"
                 type="button"
                 aria-current={activeSection === "kanban" ? "page" : undefined}
-                aria-expanded={kanbanMenuOpen}
+                aria-expanded={kanbanMenuOpen && !sidebarCollapsed}
+                aria-controls={!sidebarCollapsed
+                  ? "sidebar-kanban-submenu"
+                  : undefined}
                 aria-describedby="sidebar-desc-kanban"
                 onclick={() => {
                   kanbanMenuOpen = !kanbanMenuOpen;
@@ -3473,27 +3558,42 @@
                 <span class="sidebar-index">{item.code}</span>
                 <PageIcon size={19} strokeWidth={1.7} aria-hidden="true" />
                 <span>Kanban</span>
-                <ChevronDown class={kanbanMenuOpen ? "is-open" : undefined} size={15} strokeWidth={1.7} aria-hidden="true" />
+                <ChevronDown
+                  class={kanbanMenuOpen ? "is-open" : undefined}
+                  size={15}
+                  strokeWidth={1.7}
+                  aria-hidden="true"
+                />
               </button>
               <span id="sidebar-desc-kanban" class="sr-only"
                 >{item.description}</span
               >
-              {#if kanbanMenuOpen && !sidebarCollapsed}
-                <div class="sidebar-submenu" aria-label="Kanban navigation">
-                  {#each kanbanSubmenuItems as submenuItem (submenuItem.id)}
-                    <button
-                      type="button"
-                      class:active={activeSection === "kanban" && kanbanSection === submenuItem.id}
-                      aria-describedby={`sidebar-desc-kanban-${submenuItem.id}`}
-                      onclick={() => openKanbanSection(submenuItem.id)}
-                      data-sidebar-title={submenuItem.label}
-                      data-sidebar-description={submenuItem.description}
-                    >{submenuItem.label}</button>
-                    <span
-                      id={`sidebar-desc-kanban-${submenuItem.id}`}
-                      class="sr-only">{submenuItem.description}</span
-                    >
-                  {/each}
+              {#if !sidebarCollapsed}
+                <div
+                  id="sidebar-kanban-submenu"
+                  class="sidebar-submenu-accordion"
+                  aria-hidden={!kanbanMenuOpen}
+                  inert={!kanbanMenuOpen}
+                  {@attach motionDisclosure(kanbanMenuOpen)}
+                >
+                  <div class="sidebar-submenu" aria-label="Kanban navigation">
+                    {#each kanbanSubmenuItems as submenuItem (submenuItem.id)}
+                      <button
+                        type="button"
+                        class:active={activeSection === "kanban" &&
+                          kanbanSection === submenuItem.id}
+                        aria-describedby={`sidebar-desc-kanban-${submenuItem.id}`}
+                        onclick={() => openKanbanSection(submenuItem.id)}
+                        data-sidebar-title={submenuItem.label}
+                        data-sidebar-description={submenuItem.description}
+                        >{submenuItem.label}</button
+                      >
+                      <span
+                        id={`sidebar-desc-kanban-${submenuItem.id}`}
+                        class="sr-only">{submenuItem.description}</span
+                      >
+                    {/each}
+                  </div>
                 </div>
               {/if}
             </div>
@@ -3535,13 +3635,12 @@
                   : undefined}
                 onclick={() => openEmbeddedPage(page.id)}
                 data-sidebar-title={page.title}
-                data-sidebar-description={`Global custom page · ${page.description}`}
+                data-sidebar-description={page.description}
                 data-od-id={`nav-global-custom-${page.id}`}
               >
                 <b class="sidebar-custom-marker" aria-hidden="true">G</b>
                 <PanelTop size={18} strokeWidth={1.7} aria-hidden="true" />
                 <span class="sidebar-custom-title">{page.title}</span>
-                <span class="sidebar-custom-scope">GLOBAL · CUSTOM</span>
               </button>
             {/each}
           </div>
@@ -3564,13 +3663,12 @@
                   : undefined}
                 onclick={() => openEmbeddedPage(page.id)}
                 data-sidebar-title={page.title}
-                data-sidebar-description={`Personal custom page · ${page.description}`}
+                data-sidebar-description={page.description}
                 data-od-id={`nav-personal-custom-${page.id}`}
               >
                 <b class="sidebar-custom-marker" aria-hidden="true">U</b>
                 <PanelTop size={18} strokeWidth={1.7} aria-hidden="true" />
                 <span class="sidebar-custom-title">{page.title}</span>
-                <span class="sidebar-custom-scope">PERSONAL · CUSTOM</span>
               </button>
             {/each}
           </div>
@@ -3706,14 +3804,13 @@
           >
             <Search size={19} strokeWidth={1.7} aria-hidden="true" />
           </button>
-          <button
-            class="ui-button ui-button--ghost ui-button--icon header-icon-button"
-            type="button"
-            aria-label="Notifications"
-            onclick={() => showToast("No new notifications")}
-          >
-            <Bell size={19} strokeWidth={1.7} aria-hidden="true" />
-          </button>
+          {#key ntfyRevision}
+            <NtfyPopover
+              onOpenAll={openNotificationCenter}
+              onNotification={showNotificationToast}
+              onToast={(message) => showToast(message, "bottom-right", 4200)}
+            />
+          {/key}
           {#if activeSection === "dashboard"}
             <button
               class={["dashboard-edit-button", layoutEditing && "is-active"]}
@@ -4000,7 +4097,11 @@
                       data-od-id="view-archived-tasks"
                     >
                       Archived
-                      <span>{archivedTasksLoaded ? archivedTasks.length : "—"}</span>
+                      <span
+                        >{archivedTasksLoaded
+                          ? archivedTasks.length
+                          : "—"}</span
+                      >
                     </button>
                   </nav>
                   <button
@@ -4222,10 +4323,15 @@
                         </div>
                       </div>
 
-                      {#if expandedTaskIds.has(task.id)}
+                      <div
+                        class="motion-disclosure-shell"
+                        id={`task-details-${task.id}`}
+                        aria-hidden={!expandedTaskIds.has(task.id)}
+                        inert={!expandedTaskIds.has(task.id)}
+                        {@attach motionDisclosure(expandedTaskIds.has(task.id))}
+                      >
                         <div
                           class="task-row-details"
-                          id={`task-details-${task.id}`}
                           data-od-id={`task-details-${task.id}`}
                         >
                           {#if task.description}
@@ -4261,9 +4367,16 @@
                                       ? `Mark ${subtask.title} incomplete`
                                       : `Complete ${subtask.title}`}
                                     onclick={() =>
-                                      !archived && toggleSubtask(task, subtask.id)}
+                                      !archived &&
+                                      toggleSubtask(task, subtask.id)}
                                   >
-                                    <span class="ui-toggle-indicator" aria-hidden="true">{#if subtask.completed}<Check size={13} />{/if}</span>
+                                    <span
+                                      class="ui-toggle-indicator"
+                                      aria-hidden="true"
+                                      >{#if subtask.completed}<Check
+                                          size={13}
+                                        />{/if}</span
+                                    >
                                     <span>{subtask.title}</span>
                                     <small
                                       >{subtask.completed
@@ -4281,7 +4394,7 @@
                             </p>
                           {/if}
                         </div>
-                      {/if}
+                      </div>
                     </article>
                   {/snippet}
 
@@ -4442,96 +4555,93 @@
                   class="tasks-summary-box tasks-focus-panel"
                   data-od-id="tasks-focus-timer"
                 >
-                    <div class="focus-timer-heading">
-                      <span>[ FOCUS.MODE ]</span>
-                      <small>{focusRunning ? "RUNNING" : "READY"}</small>
-                    </div>
-                    <label for="focus-subject">Focus target</label>
-                    <input
-                      id="focus-subject"
-                      class="text-input focus-subject-input"
-                      bind:value={focusSubject}
-                      placeholder="What needs your attention?"
-                      maxlength="120"
-                    />
-                    <time
-                      class="focus-timer-readout"
-                      datetime={`PT${focusRemainingSeconds}S`}
-                      aria-live="polite">{focusTimeLabel}</time
-                    >
-                    <div
-                      class="focus-timer-track"
-                      aria-hidden="true"
-                      style:--focus-progress={`${focusProgress}%`}
-                    >
-                      <i></i>
-                    </div>
-                    <div
-                      class="focus-duration-options"
-                      aria-label="Focus length"
-                    >
-                      {#each focusDurations as minutes (minutes)}
-                        <button
-                          type="button"
-                          class:active={focusDurationMinutes === minutes}
-                          aria-pressed={focusDurationMinutes === minutes}
-                          disabled={focusRunning}
-                          onclick={() => setFocusDuration(minutes)}
-                          >{minutes}m</button
-                        >
-                      {/each}
-                      <label class="focus-custom-duration">
-                        <span class="sr-only">Custom focus duration</span>
-                        <input
-                          type="number"
-                          min="1"
-                          max="240"
-                          step="1"
-                          value={focusDurationMinutes}
-                          style:--focus-duration-digits={Math.max(
-                            2,
-                            String(focusDurationMinutes).length,
-                          )}
-                          disabled={focusRunning}
-                          aria-label="Custom focus duration in minutes"
-                          oninput={(event) =>
-                            setFocusDuration(event.currentTarget.valueAsNumber)}
-                        />
-                        <span>min</span>
-                      </label>
-                    </div>
-                    <div class="focus-timer-actions">
+                  <div class="focus-timer-heading">
+                    <span>[ FOCUS.MODE ]</span>
+                    <small>{focusRunning ? "RUNNING" : "READY"}</small>
+                  </div>
+                  <label for="focus-subject">Focus target</label>
+                  <input
+                    id="focus-subject"
+                    class="text-input focus-subject-input"
+                    bind:value={focusSubject}
+                    placeholder="What needs your attention?"
+                    maxlength="120"
+                  />
+                  <time
+                    class="focus-timer-readout"
+                    datetime={`PT${focusRemainingSeconds}S`}
+                    aria-live="polite">{focusTimeLabel}</time
+                  >
+                  <div
+                    class="focus-timer-track"
+                    aria-hidden="true"
+                    style:--focus-progress={`${focusProgress}%`}
+                  >
+                    <i></i>
+                  </div>
+                  <div class="focus-duration-options" aria-label="Focus length">
+                    {#each focusDurations as minutes (minutes)}
                       <button
-                        class="ui-button ui-button--primary primary-btn"
                         type="button"
-                        onclick={startFocusSession}
+                        class:active={focusDurationMinutes === minutes}
+                        aria-pressed={focusDurationMinutes === minutes}
+                        disabled={focusRunning}
+                        onclick={() => setFocusDuration(minutes)}
+                        >{minutes}m</button
                       >
-                        <Play size={15} strokeWidth={1.8} aria-hidden="true" />
-                        Start focus
-                      </button>
-                      <button
-                        class="ui-button ui-button--secondary secondary-btn"
-                        type="button"
-                        onclick={resetFocusTimer}
-                      >
-                        <RotateCcw
-                          size={15}
-                          strokeWidth={1.8}
-                          aria-hidden="true"
-                        />
-                        Reset
-                      </button>
+                    {/each}
+                    <label class="focus-custom-duration">
+                      <span class="sr-only">Custom focus duration</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="240"
+                        step="1"
+                        value={focusDurationMinutes}
+                        style:--focus-duration-digits={Math.max(
+                          2,
+                          String(focusDurationMinutes).length,
+                        )}
+                        disabled={focusRunning}
+                        aria-label="Custom focus duration in minutes"
+                        oninput={(event) =>
+                          setFocusDuration(event.currentTarget.valueAsNumber)}
+                      />
+                      <span>min</span>
+                    </label>
+                  </div>
+                  <div class="focus-timer-actions">
+                    <button
+                      class="ui-button ui-button--primary primary-btn"
+                      type="button"
+                      onclick={startFocusSession}
+                    >
+                      <Play size={15} strokeWidth={1.8} aria-hidden="true" />
+                      Start focus
+                    </button>
+                    <button
+                      class="ui-button ui-button--secondary secondary-btn"
+                      type="button"
+                      onclick={resetFocusTimer}
+                    >
+                      <RotateCcw
+                        size={15}
+                        strokeWidth={1.8}
+                        aria-hidden="true"
+                      />
+                      Reset
+                    </button>
+                  </div>
+                  <dl>
+                    <div>
+                      <dt>Open</dt>
+                      <dd>{tasks.length - completedCount}</dd>
                     </div>
-                    <dl>
-                      <div>
-                        <dt>Open</dt>
-                        <dd>{tasks.length - completedCount}</dd>
-                      </div>
-                      <div>
-                        <dt>Completed</dt>
-                        <dd>{completedCount}</dd>
-                      </div>
-                    </dl>
+                    <div>
+                      <dt>Completed</dt>
+                      <dd>{completedCount}</dd>
+                    </div>
+                  </dl>
                 </aside>
               </div>
             </section>
@@ -4576,6 +4686,13 @@
             <CodingPage />
           {:else if activeSection === "subscriptions"}
             <SubscriptionsPage />
+          {:else if activeSection === "notifications"}
+            {#key ntfyFocusedNotificationId}
+              <NtfyPage
+                focusNotificationId={ntfyFocusedNotificationId}
+                onConfigurationChanged={() => (ntfyRevision += 1)}
+              />
+            {/key}
           {:else if activeEmbeddedPage}
             <EmbeddedPage page={activeEmbeddedPage} />
           {:else if placeholderPage}
@@ -4739,44 +4856,48 @@
             <Volume2 size={16} strokeWidth={1.9} />
           {/if}
         </button>
-        {#if podcastVolumeOpen}
-          <div class="podcast-player-volume-panel" id="podcast-volume-panel">
-            <button
-              class="ui-button ui-button--ghost ui-button--icon"
-              type="button"
-              aria-pressed={podcastPlayer.muted}
-              aria-label={podcastPlayer.muted ? "Unmute" : "Mute"}
-              onclick={() => podcastPlayer.toggleMuted()}
-            >
-              {#if podcastPlayer.effectiveVolume === 0}
-                <VolumeOff size={15} strokeWidth={1.9} />
-              {:else}
-                <Volume2 size={15} strokeWidth={1.9} />
-              {/if}
-            </button>
-            <input
-              type="range"
-              list="podcast-volume-marks"
-              min="0"
-              max={MAX_PLAYBACK_VOLUME}
-              step="0.05"
-              value={podcastPlayer.effectiveVolume}
-              aria-label="Playback volume"
-              aria-valuetext={`${Math.round(podcastPlayer.effectiveVolume * 100)} percent`}
-              oninput={(event) =>
-                podcastPlayer.setVolume(Number(event.currentTarget.value))}
-            />
-            <datalist id="podcast-volume-marks">
-              <option value="1" label="100%"></option>
-            </datalist>
-            <span
-              class="podcast-player-time"
-              class:is-boosted={podcastPlayer.effectiveVolume > 1}
-            >
-              {Math.round(podcastPlayer.effectiveVolume * 100)}%
-            </span>
-          </div>
-        {/if}
+        <div
+          class="podcast-player-volume-panel"
+          id="podcast-volume-panel"
+          aria-hidden={!podcastVolumeOpen}
+          inert={!podcastVolumeOpen}
+          {@attach motionPopover(podcastVolumeOpen)}
+        >
+          <button
+            class="ui-button ui-button--ghost ui-button--icon"
+            type="button"
+            aria-pressed={podcastPlayer.muted}
+            aria-label={podcastPlayer.muted ? "Unmute" : "Mute"}
+            onclick={() => podcastPlayer.toggleMuted()}
+          >
+            {#if podcastPlayer.effectiveVolume === 0}
+              <VolumeOff size={15} strokeWidth={1.9} />
+            {:else}
+              <Volume2 size={15} strokeWidth={1.9} />
+            {/if}
+          </button>
+          <input
+            type="range"
+            list="podcast-volume-marks"
+            min="0"
+            max={MAX_PLAYBACK_VOLUME}
+            step="0.05"
+            value={podcastPlayer.effectiveVolume}
+            aria-label="Playback volume"
+            aria-valuetext={`${Math.round(podcastPlayer.effectiveVolume * 100)} percent`}
+            oninput={(event) =>
+              podcastPlayer.setVolume(Number(event.currentTarget.value))}
+          />
+          <datalist id="podcast-volume-marks">
+            <option value="1" label="100%"></option>
+          </datalist>
+          <span
+            class="podcast-player-time"
+            class:is-boosted={podcastPlayer.effectiveVolume > 1}
+          >
+            {Math.round(podcastPlayer.effectiveVolume * 100)}%
+          </span>
+        </div>
       </div>
 
       <label class="podcast-player-rate" data-tip="Playback speed">
@@ -4805,11 +4926,40 @@
   {/if}
 
   <div
-    class={["toast", toastMessage && "show"]}
+    class={[
+      "toast",
+      toastPlacement === "bottom-right" && "toast--bottom-right",
+      toastNotification && "toast--notification",
+      toastVisible && "show",
+    ]}
     role="status"
     aria-live="polite"
   >
-    {toastMessage}
+    {#if toastNotification}
+      <button
+        class="toast-notification-link"
+        type="button"
+        aria-label={`Open notification: ${toastNotification.notification.title || "New notification"}`}
+        onclick={openToastNotification}
+        data-od-id="open-toast-notification"
+      ></button>
+      <NtfyPriority priority={toastNotification.notification.priority} />
+      <div class="toast-notification-copy">
+        <div class="toast-notification-meta">
+          <span>{toastNotification.notification.topic_label}</span>
+          {#if toastNotification.count > 1}
+            <span>+{toastNotification.count - 1} more</span>
+          {/if}
+        </div>
+        <strong>{toastNotification.notification.title || "New notification"}</strong>
+        <p>
+          {toastNotification.notification.message ||
+            "No additional details were provided."}
+        </p>
+      </div>
+    {:else}
+      <span>{toastMessage}</span>
+    {/if}
   </div>
 
   <dialog
@@ -4890,7 +5040,12 @@
         <span>{focusDurationMinutes} minute session</span>
       </main>
 
-      {#if focusSettingsOpen}
+      <div
+        class="focus-settings-disclosure"
+        aria-hidden={!focusSettingsOpen}
+        inert={!focusSettingsOpen}
+        {@attach motionDisclosure(focusSettingsOpen, { duration: 0.24 })}
+      >
         <section
           id="focus-visual-settings"
           class="focus-settings-panel"
@@ -4907,7 +5062,8 @@
 
           <div class="focus-settings-grid">
             <label>
-              <span>Intensity <output>{burstIntensity.toFixed(1)}</output></span>
+              <span>Intensity <output>{burstIntensity.toFixed(1)}</output></span
+              >
               <input
                 type="range"
                 min="0.5"
@@ -4977,7 +5133,7 @@
             </button>
           </div>
         </section>
-      {/if}
+      </div>
 
       <footer class="focus-session-footer">
         <span>Esc ends session</span>
@@ -5043,7 +5199,7 @@
         ><X size={18} strokeWidth={1.8} aria-hidden="true" /></button
       >
     </div>
-    <div class="command-list">
+    <div class="command-list overlay-scroll-region">
       {#if !hasLocalCommandMatches}
         <div class="command-empty" role="status">
           <span>[ NO MATCHES ]</span>
@@ -5269,7 +5425,10 @@
                     ? `Mark subtask ${index + 1} incomplete`
                     : `Mark subtask ${index + 1} complete`}
                   onclick={() => (subtask.completed = !subtask.completed)}
-                ><span class="ui-toggle-indicator" aria-hidden="true">{#if subtask.completed}<Check size={13} />{/if}</span></button>
+                  ><span class="ui-toggle-indicator" aria-hidden="true"
+                    >{#if subtask.completed}<Check size={13} />{/if}</span
+                  ></button
+                >
                 <input
                   class="text-input"
                   bind:value={subtask.title}
@@ -5893,9 +6052,7 @@
 
       <div class="appearance-control-heading">
         <strong>Page background processing</strong>
-        <span
-          >Applied to the Main background behind authenticated pages.</span
-        >
+        <span>Applied to the Main background behind authenticated pages.</span>
       </div>
 
       <div class="appearance-controls">
@@ -6122,6 +6279,10 @@
           </button>
         </div>
       </section>
+
+      {#if dashboard.user.role === "administrator"}
+        <NetworkAccessSettings />
+      {/if}
 
       <div class="admin-directory-note">
         <p>

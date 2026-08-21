@@ -20,10 +20,8 @@ use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::SqlitePool;
-use std::{
-    collections::{HashMap, HashSet},
-    fmt,
-};
+use std::collections::{HashMap, HashSet};
+use thiserror::Error;
 use tokio::time::{Duration as TokioDuration, sleep};
 use tracing::{info, warn};
 
@@ -34,6 +32,8 @@ pub mod document;
 mod embedded_pages;
 mod kanban;
 mod lines;
+pub mod network_policy;
+pub mod ntfy;
 pub mod oidc;
 pub mod podcast_media;
 mod podcasts;
@@ -67,6 +67,7 @@ pub struct AppState {
     pub oidc: Option<oidc::OidcProvider>,
     pub widget_integrations: widget_integrations::WidgetIntegrationService,
     pub podcast_media: podcast_media::PodcastMedia,
+    pub ntfy_events: ntfy::NtfyEventHub,
     pub site_origin: document::SiteOrigin,
 }
 
@@ -310,14 +311,14 @@ pub struct UpdateCodingCredentialRequest {
     pub clear: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CodingCredentialResponse {
     pub provider: String,
     pub host: String,
     pub connected: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CodingResponse {
     pub projects: Vec<CodingProject>,
     pub releases: Vec<widget_integrations::CodingRelease>,
@@ -331,6 +332,12 @@ pub struct CodingResponse {
 
 #[derive(Debug, Deserialize)]
 struct WidgetDataQuery {
+    #[serde(default)]
+    refresh: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodingDataQuery {
     #[serde(default)]
     refresh: bool,
 }
@@ -475,39 +482,32 @@ struct ErrorResponse {
     error: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum ApiError {
+    #[error("{0}")]
     BadRequest(&'static str),
+    #[error("email or password is incorrect")]
     Unauthorized,
+    #[error("administrator access is required")]
     Forbidden,
+    #[error("{0}")]
     AccessDenied(&'static str),
+    #[error("{0}")]
     Conflict(&'static str),
+    #[error("{0}")]
     NotFound(&'static str),
-    Database(sqlx::Error),
+    #[error("database operation failed")]
+    Database(#[from] sqlx::Error),
+    #[error("{0}")]
     Internal(&'static str),
+    #[error("single sign-on is not configured")]
     OidcUnavailable,
+    #[error("{0}")]
     AuthenticationDisabled(&'static str),
+    #[error("complete administrator setup first")]
     SetupRequired,
+    #[error("{0}")]
     Integration(String),
-}
-
-impl fmt::Display for ApiError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::BadRequest(message)
-            | Self::Conflict(message)
-            | Self::Internal(message)
-            | Self::AccessDenied(message) => formatter.write_str(message),
-            Self::Unauthorized => formatter.write_str("email or password is incorrect"),
-            Self::Forbidden => formatter.write_str("administrator access is required"),
-            Self::NotFound(message) => formatter.write_str(message),
-            Self::Integration(message) => formatter.write_str(message),
-            Self::Database(_) => formatter.write_str("database operation failed"),
-            Self::OidcUnavailable => formatter.write_str("single sign-on is not configured"),
-            Self::AuthenticationDisabled(message) => formatter.write_str(message),
-            Self::SetupRequired => formatter.write_str("complete administrator setup first"),
-        }
-    }
 }
 
 impl ResponseError for ApiError {
@@ -527,20 +527,21 @@ impl ResponseError for ApiError {
 
     fn error_response(&self) -> HttpResponse {
         match self {
-            Self::Database(error) => tracing::error!(%error, "database operation failed"),
-            Self::Internal(message) => tracing::error!(%message, "internal authentication error"),
+            Self::Database(error) => {
+                tracing::error!(error = %error, "database operation failed");
+            }
+            Self::Internal(message) => {
+                tracing::error!(error = %message, "internal server error");
+            }
+            Self::Integration(message) => {
+                tracing::warn!(error = %message, "integration request failed");
+            }
             _ => {}
         }
 
         HttpResponse::build(self.status_code()).json(ErrorResponse {
             error: self.to_string(),
         })
-    }
-}
-
-impl From<sqlx::Error> for ApiError {
-    fn from(error: sqlx::Error) -> Self {
-        Self::Database(error)
     }
 }
 
@@ -1124,8 +1125,26 @@ async fn delete_widget(
 async fn coding(
     state: web::Data<AppState>,
     request: HttpRequest,
+    query: web::Query<CodingDataQuery>,
 ) -> Result<web::Json<CodingResponse>, ApiError> {
     let account = authenticated_account(&state, &request).await?;
+    let (cache_generation, cached_response) = if query.refresh {
+        (
+            state
+                .widget_integrations
+                .clear_coding_cache(&account.id)
+                .await,
+            None,
+        )
+    } else {
+        state
+            .widget_integrations
+            .coding_cache_snapshot(&account.id)
+            .await
+    };
+    if let Some(response) = cached_response {
+        return Ok(web::Json(response));
+    }
     let (projects, stored_credentials) = tokio::try_join!(
         db::queries::list_coding_projects(&state.pool, &account.id),
         db::queries::list_coding_credentials(&state.pool, &account.id)
@@ -1236,7 +1255,7 @@ async fn coding(
             connected: true,
         })
         .collect();
-    Ok(web::Json(CodingResponse {
+    let response = CodingResponse {
         projects,
         releases,
         merge_requests: Vec::new(),
@@ -1245,7 +1264,12 @@ async fn coding(
         credentials,
         secret_storage_enabled: state.widget_integrations.secrets_enabled(),
         provider_errors,
-    }))
+    };
+    state
+        .widget_integrations
+        .cache_coding_if_current(&account.id, cache_generation, &response)
+        .await;
+    Ok(web::Json(response))
 }
 
 async fn create_coding_project(
@@ -1283,6 +1307,10 @@ async fn create_coding_project(
             ApiError::Database(error)
         }
     })?;
+    state
+        .widget_integrations
+        .clear_coding_cache(&account.id)
+        .await;
     Ok((web::Json(project), StatusCode::CREATED))
 }
 
@@ -1293,6 +1321,10 @@ async fn delete_coding_project(
 ) -> Result<HttpResponse, ApiError> {
     let account = authenticated_account(&state, &request).await?;
     if db::queries::delete_coding_project(&state.pool, &account.id, &project_id).await? {
+        state
+            .widget_integrations
+            .clear_coding_cache(&account.id)
+            .await;
         Ok(HttpResponse::NoContent().finish())
     } else {
         Err(ApiError::NotFound("Coding project not found"))
@@ -1324,6 +1356,10 @@ async fn update_coding_credential(
             &payload.host,
         )
         .await?;
+        state
+            .widget_integrations
+            .clear_coding_cache(&account.id)
+            .await;
         return Ok(web::Json(CodingCredentialResponse {
             provider: payload.provider.clone(),
             host: payload.host.clone(),
@@ -1351,6 +1387,10 @@ async fn update_coding_credential(
         &ciphertext,
     )
     .await?;
+    state
+        .widget_integrations
+        .clear_coding_cache(&account.id)
+        .await;
     Ok(web::Json(CodingCredentialResponse {
         provider: payload.provider.clone(),
         host: payload.host.clone(),
@@ -2477,6 +2517,7 @@ async fn fetch_rss_snapshot(
         .map(|item| RssItemDraft {
             external_id: truncate_text(item.external_id.trim(), 2048, &item.published_at),
             url: truncate_text(item.url.trim(), 2048, ""),
+            comments_url: truncate_text(item.comments_url.trim(), 2048, ""),
             title: truncate_text(item.title.trim(), 500, "Untitled"),
             summary: truncate_text(item.summary.trim(), 10_000, ""),
             published_at: item.published_at,
@@ -2489,13 +2530,13 @@ fn validate_rss_url(value: &str) -> Result<String, ApiError> {
     let value = validate_short_text(value, "RSS feed URL is required", 2048)?;
     let parsed =
         reqwest::Url::parse(value).map_err(|_| ApiError::BadRequest("RSS URL is invalid"))?;
-    if parsed.scheme() != "https"
+    if !matches!(parsed.scheme(), "http" | "https")
         || parsed.host_str().is_none()
         || parsed.username() != ""
         || parsed.password().is_some()
     {
         return Err(ApiError::BadRequest(
-            "RSS feeds must use a public HTTPS URL",
+            "RSS feeds must use a credential-free HTTP or HTTPS URL",
         ));
     }
     Ok(parsed.to_string())
@@ -2712,13 +2753,13 @@ fn validate_calendar_url(value: &str) -> Result<String, ApiError> {
     let value = validate_short_text(value, "calendar URL is required", 2048)?;
     let parsed =
         reqwest::Url::parse(value).map_err(|_| ApiError::BadRequest("calendar URL is invalid"))?;
-    if parsed.scheme() != "https"
+    if !matches!(parsed.scheme(), "http" | "https")
         || parsed.host_str().is_none()
         || parsed.username() != ""
         || parsed.password().is_some()
     {
         return Err(ApiError::BadRequest(
-            "calendars must use a public HTTPS URL",
+            "calendars must use a credential-free HTTP or HTTPS URL",
         ));
     }
     Ok(parsed.to_string())
@@ -3022,6 +3063,7 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
             )
             .route("/dashboard", web::get().to(dashboard))
             .configure(embedded_pages::configure)
+            .configure(network_policy::configure)
             .route("/widgets", web::post().to(create_widget))
             .route("/widgets/capabilities", web::get().to(widget_capabilities))
             .route("/widgets/layout", web::put().to(update_widget_layout))
@@ -3078,6 +3120,7 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
             .route("/tasks/{task_id}/restore", web::patch().to(restore_task))
             .configure(kanban::configure)
             .configure(lines::configure)
+            .configure(ntfy::configure)
             .configure(walls::configure)
             .configure(podcasts::configure)
             .route("/rss", web::get().to(rss_reader))
@@ -3343,13 +3386,16 @@ mod tests {
         let media_root =
             std::env::temp_dir().join(format!("pandan-test-media-{}", uuid::Uuid::new_v4()));
         web::Data::new(AppState {
-            pool,
+            pool: pool.clone(),
             cookie_secure: false,
             oidc: None,
-            widget_integrations: widget_integrations::WidgetIntegrationService::for_tests()
-                .expect("test widget integrations initialize"),
-            podcast_media: podcast_media::PodcastMedia::with_root(media_root)
+            widget_integrations: widget_integrations::WidgetIntegrationService::for_tests(
+                pool.clone(),
+            )
+            .expect("test widget integrations initialize"),
+            podcast_media: podcast_media::PodcastMedia::with_root_and_pool(media_root, pool)
                 .expect("test podcast media initializes"),
+            ntfy_events: ntfy::NtfyEventHub::default(),
             site_origin: document::SiteOrigin::default(),
         })
     }
@@ -3362,6 +3408,15 @@ mod tests {
             .expect("session cookie is set")
             .clone()
             .into_owned()
+    }
+
+    #[actix_web::test]
+    async fn database_errors_keep_their_source_and_expose_a_safe_message() {
+        let error = ApiError::from(sqlx::Error::RowNotFound);
+
+        assert_eq!(error.to_string(), "database operation failed");
+        assert_eq!(error.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(std::error::Error::source(&error).is_some());
     }
 
     #[actix_web::test]
@@ -3617,6 +3672,91 @@ mod tests {
         )
         .await;
         assert_eq!(lockout_attempt.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn network_access_rules_are_administrator_only_and_round_trip() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state(test_pool().await))
+                .configure(configure_api),
+        )
+        .await;
+        let setup_response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/setup")
+                .set_json(RegisterRequest {
+                    email: "admin@example.com".to_owned(),
+                    password: "correct horse battery staple".to_owned(),
+                    display_name: "Admin".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        let administrator_cookie = session_cookie(&setup_response);
+        let member_response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/auth/register")
+                .set_json(RegisterRequest {
+                    email: "member@example.com".to_owned(),
+                    password: "another secure password".to_owned(),
+                    display_name: "Member".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        let member_cookie = session_cookie(&member_response);
+
+        let forbidden = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/admin/network-access")
+                .cookie(member_cookie)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+        let created: db::entities::NetworkAccessRule = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/admin/network-access")
+                .cookie(administrator_cookie.clone())
+                .set_json(serde_json::json!({
+                    "action": "allow",
+                    "origin": "http://192.168.10.20:3000",
+                    "integration": "rss"
+                }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(created.action, "allow");
+        assert_eq!(created.scheme, "http");
+        assert_eq!(created.host, "192.168.10.20");
+        assert_eq!(created.port, 3000);
+        assert_eq!(created.integration, "rss");
+
+        let rules: Vec<db::entities::NetworkAccessRule> = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/admin/network-access")
+                .cookie(administrator_cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(rules, vec![created.clone()]);
+
+        let deleted = test::call_service(
+            &app,
+            test::TestRequest::delete()
+                .uri(&format!("/api/admin/network-access/{}", created.id))
+                .cookie(administrator_cookie)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
     }
 
     #[actix_web::test]
@@ -4797,12 +4937,7 @@ mod tests {
         .await;
         let cookie = session_cookie(&administrator);
 
-        for hostile in [
-            "http://example.com/feed.xml",
-            "https://user:pass@example.com/feed.xml",
-            "not a url",
-            "",
-        ] {
+        for hostile in ["https://user:pass@example.com/feed.xml", "not a url", ""] {
             let response = test::call_service(
                 &app,
                 test::TestRequest::post()
@@ -4818,6 +4953,23 @@ mod tests {
                 "{hostile} was not refused"
             );
         }
+
+        let plain_http = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/podcasts/requests")
+                .cookie(cookie.clone())
+                .set_json(serde_json::json!({
+                    "feed_url": "http://example.com/feed.xml"
+                }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(
+            plain_http.status(),
+            StatusCode::BAD_GATEWAY,
+            "plain HTTP syntax should reach and be refused by the network policy"
+        );
 
         // Loopback and private destinations are refused by the shared SSRF guard, which
         // reports a provider error rather than accepting the feed.

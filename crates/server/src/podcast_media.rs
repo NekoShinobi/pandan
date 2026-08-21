@@ -13,14 +13,15 @@
 //! redirect hop rather than letting reqwest follow them unchecked.
 
 use super::AppState;
-use super::widget_integrations::validate_public_https_url;
+use super::network_policy::{NetworkAccessScope, NetworkPolicy};
 use actix_web::web;
 use chrono::{Duration as ChronoDuration, Utc};
 use db::entities::{
     PodcastArtworkDraft, PodcastEpisodeDraft, PodcastFeedPreview, PodcastRefreshTarget,
 };
 use quick_xml::{Reader, events::Event};
-use reqwest::{Client, Response, StatusCode, header};
+use reqwest::{Client, ClientBuilder, Response, StatusCode, header};
+use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 use tokio::time::{Duration, sleep};
@@ -55,9 +56,14 @@ const PARTIAL_DIR: &str = ".partial";
 /// Remote fetching and on-disk storage for podcast audio and artwork.
 #[derive(Debug, Clone)]
 pub struct PodcastMedia {
-    feed_client: Client,
-    audio_client: Client,
+    network_policy: NetworkPolicy,
     root: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PodcastClientKind {
+    Feed,
+    Audio,
 }
 
 impl PodcastMedia {
@@ -67,10 +73,10 @@ impl PodcastMedia {
     ///
     /// Returns a message when the media root cannot be created or written, or when the
     /// HTTP clients cannot be built.
-    pub fn from_env() -> Result<Self, String> {
+    pub fn from_env(pool: SqlitePool) -> Result<Self, String> {
         let root = std::env::var("PANDAN_MEDIA_DIR")
             .map_or_else(|_| PathBuf::from("data/podcasts"), PathBuf::from);
-        Self::with_root(root)
+        Self::with_root_and_policy(root, NetworkPolicy::new(pool))
     }
 
     /// Prepares the media root and the HTTP clients at an explicit location.
@@ -79,7 +85,16 @@ impl PodcastMedia {
     ///
     /// Returns a message when the media root cannot be created or written, or when the
     /// HTTP clients cannot be built.
+    pub fn with_root_and_pool(root: PathBuf, pool: SqlitePool) -> Result<Self, String> {
+        Self::with_root_and_policy(root, NetworkPolicy::new(pool))
+    }
+
+    #[cfg(test)]
     pub fn with_root(root: PathBuf) -> Result<Self, String> {
+        Self::with_root_and_policy(root, NetworkPolicy::without_rules())
+    }
+
+    fn with_root_and_policy(root: PathBuf, network_policy: NetworkPolicy) -> Result<Self, String> {
         std::fs::create_dir_all(&root)
             .map_err(|error| format!("podcast media directory could not be created: {error}"))?;
         std::fs::create_dir_all(root.join(PARTIAL_DIR))
@@ -89,22 +104,15 @@ impl PodcastMedia {
             .map_err(|error| format!("podcast media directory is not writable: {error}"))?;
         let _ = std::fs::remove_file(&probe);
 
-        let feed_client = Client::builder()
-            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS))
-            .timeout(Duration::from_secs(FEED_TIMEOUT_SECONDS))
-            .redirect(reqwest::redirect::Policy::none())
+        podcast_client_builder(PodcastClientKind::Feed)
             .build()
             .map_err(|error| format!("podcast feed client could not be built: {error}"))?;
-        let audio_client = Client::builder()
-            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS))
-            .read_timeout(Duration::from_secs(AUDIO_STALL_TIMEOUT_SECONDS))
-            .redirect(reqwest::redirect::Policy::none())
+        podcast_client_builder(PodcastClientKind::Audio)
             .build()
             .map_err(|error| format!("podcast audio client could not be built: {error}"))?;
 
         Ok(Self {
-            feed_client,
-            audio_client,
+            network_policy,
             root,
         })
     }
@@ -159,7 +167,7 @@ impl PodcastMedia {
         source: &str,
     ) -> Result<(PodcastFeedPreview, Vec<PodcastEpisodeDraft>), String> {
         let response = self
-            .get_following_redirects(&self.feed_client, source)
+            .get_following_redirects(source, PodcastClientKind::Feed)
             .await?;
         let bytes = read_bounded(response, MAX_FEED_BYTES).await?;
         let feed = feed_rs::parser::parse(&bytes[..])
@@ -230,7 +238,7 @@ impl PodcastMedia {
     /// fetch is never written, so the cache cannot be poisoned by a bad response.
     pub async fn fetch_artwork(&self, source: &str) -> Result<PodcastArtworkDraft, String> {
         let response = self
-            .get_following_redirects(&self.feed_client, source)
+            .get_following_redirects(source, PodcastClientKind::Feed)
             .await?;
         let content_type = response
             .headers()
@@ -277,7 +285,7 @@ impl PodcastMedia {
         max_bytes: i64,
     ) -> Result<(String, String, i64), String> {
         let response = self
-            .get_following_redirects(&self.audio_client, source)
+            .get_following_redirects(source, PodcastClientKind::Audio)
             .await?;
 
         let content_type = response
@@ -405,13 +413,19 @@ impl PodcastMedia {
     /// DNS and address checks on the destination.
     async fn get_following_redirects(
         &self,
-        client: &Client,
         source: &str,
+        kind: PodcastClientKind,
     ) -> Result<Response, String> {
-        let mut current = validate_public_https_url(source).await?;
+        let mut current = source.to_owned();
         for _ in 0..MAX_REDIRECTS {
+            let target = self
+                .network_policy
+                .validate(&current, NetworkAccessScope::Podcasts)
+                .await?;
+            let client = target.build_client(podcast_client_builder(kind))?;
+            let current_url = target.into_url();
             let response = client
-                .get(current.clone())
+                .get(current_url.clone())
                 .send()
                 .await
                 .map_err(|error| request_message(&error))?;
@@ -426,12 +440,24 @@ impl PodcastMedia {
                 .get(header::LOCATION)
                 .and_then(|value| value.to_str().ok())
                 .ok_or_else(|| "redirect did not name a destination".to_owned())?;
-            let next = current
+            let next = current_url
                 .join(location)
                 .map_err(|_| "redirect destination is invalid".to_owned())?;
-            current = validate_public_https_url(next.as_str()).await?;
+            current = next.into();
         }
         Err("too many redirects".to_owned())
+    }
+}
+
+fn podcast_client_builder(kind: PodcastClientKind) -> ClientBuilder {
+    let builder = Client::builder()
+        .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS))
+        .redirect(reqwest::redirect::Policy::none());
+    match kind {
+        PodcastClientKind::Feed => builder.timeout(Duration::from_secs(FEED_TIMEOUT_SECONDS)),
+        PodcastClientKind::Audio => {
+            builder.read_timeout(Duration::from_secs(AUDIO_STALL_TIMEOUT_SECONDS))
+        }
     }
 }
 

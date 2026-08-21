@@ -47,6 +47,7 @@
     type PodcastSummary,
   } from "$lib/api";
   import { formatPlaybackTime, podcastPlayer } from "$lib/podcastPlayer.svelte";
+  import { motionDisclosure } from "$lib/motion.svelte";
   import { SvelteSet } from "svelte/reactivity";
   import TypedHeading from "$lib/TypedHeading.svelte";
 
@@ -160,7 +161,9 @@
       } catch (error) {
         if (cancelled) return;
         pageError =
-          error instanceof ApiError ? error.message : "Podcasts could not load.";
+          error instanceof ApiError
+            ? error.message
+            : "Podcasts could not load.";
       } finally {
         if (!cancelled) {
           loading = false;
@@ -333,9 +336,10 @@
    */
   function progressRatio(episode: PodcastEpisode): number {
     const isCurrent = podcastPlayer.episode?.id === episode.id;
-    const total = isCurrent && podcastPlayer.duration > 0
-      ? podcastPlayer.duration
-      : (episode.duration_seconds ?? 0);
+    const total =
+      isCurrent && podcastPlayer.duration > 0
+        ? podcastPlayer.duration
+        : (episode.duration_seconds ?? 0);
     const position = isCurrent
       ? podcastPlayer.currentTime
       : episode.position_seconds;
@@ -405,7 +409,10 @@
     requestError = "";
     requestFeedback = "";
     try {
-      const outcome = await submitPodcastRequest(feedUrl.trim(), requestNote.trim());
+      const outcome = await submitPodcastRequest(
+        feedUrl.trim(),
+        requestNote.trim(),
+      );
       feedUrl = "";
       requestNote = "";
       requestFeedback =
@@ -569,7 +576,9 @@
     }
   }
 
-  function toggleAdminSwitch(key: "requests_enabled" | "member_downloads_enabled") {
+  function toggleAdminSwitch(
+    key: "requests_enabled" | "member_downloads_enabled",
+  ) {
     const settings = adminSettings;
     if (!settings) return;
     adminSettings = { ...settings, [key]: !settings[key] };
@@ -638,7 +647,8 @@
           class={["podcast-progress", isCurrent && "podcast-progress--live"]}
           aria-hidden="true"
         >
-          <span style:width={`${Math.min(100, ratio * 100).toFixed(2)}%`}></span>
+          <span style:width={`${Math.min(100, ratio * 100).toFixed(2)}%`}
+          ></span>
         </div>
       {/if}
 
@@ -758,12 +768,20 @@
       {/if}
     </div>
 
-    {#if notes && expanded}
+    {#if notes}
       <div
-        class="podcast-episode-notes"
+        class="podcast-notes-disclosure"
         id={`podcast-notes-${episode.id}`}
-        {@attach renderSanitizedNotes(notes)}
-      ></div>
+        aria-hidden={!expanded}
+        inert={!expanded}
+        {@attach motionDisclosure(expanded)}
+      >
+        <div
+          class="podcast-episode-notes"
+          data-od-id={`podcast-notes-${episode.id}`}
+          {@attach renderSanitizedNotes(notes)}
+        ></div>
+      </div>
     {/if}
   </li>
 {/snippet}
@@ -796,8 +814,8 @@
         odId="podcasts-heading"
       />
       <p>
-        Shows are approved for the whole instance and downloaded once, then played
-        from this server.
+        Shows are approved for the whole instance and downloaded once, then
+        played from this server.
       </p>
     </div>
     <div class="header-actions">
@@ -826,7 +844,7 @@
   <nav class="podcast-view-tabs" aria-label="Podcast views">
     {#each [["listen", "Listen"], ["library", "Library"], ["saved", "Saved"], ["requests", "Requests"]] as [view, label] (view)}
       <button
-        class={activeView === view ? "active" : undefined}
+        class="ui-view-tab"
         type="button"
         aria-pressed={activeView === view}
         onclick={() => (activeView = view as PodcastView)}
@@ -874,7 +892,10 @@
     </div>
   {:else if activeView === "saved"}
     <div class="podcast-sections">
-      <section aria-labelledby="podcast-saved" data-od-id="podcast-saved-episodes">
+      <section
+        aria-labelledby="podcast-saved"
+        data-od-id="podcast-saved-episodes"
+      >
         <span>[ SAVED ]</span>
         <h3 id="podcast-saved">Saved episodes</h3>
         {@render episodeList(
@@ -933,7 +954,11 @@
                 </div>
                 {#if podcast.last_error}
                   <p class="podcast-episode-error">
-                    <CircleAlert size={12} strokeWidth={1.9} aria-hidden="true" />
+                    <CircleAlert
+                      size={12}
+                      strokeWidth={1.9}
+                      aria-hidden="true"
+                    />
                     Last refresh failed.
                   </p>
                 {/if}
@@ -982,7 +1007,8 @@
       </section>
 
       <section class="podcast-request-panel" aria-labelledby="podcast-ask">
-        <span>{isAdministrator ? "[ CATALOGUE.ADD ]" : "[ SHOW.REQUEST ]"}</span>
+        <span>{isAdministrator ? "[ CATALOGUE.ADD ]" : "[ SHOW.REQUEST ]"}</span
+        >
         <h3 id="podcast-ask">
           {isAdministrator ? "Add a show" : "Ask for a show"}
         </h3>
@@ -991,8 +1017,8 @@
             Adding a show publishes it for everyone on this instance and starts
             downloading its newest episodes.
           {:else if overview.policy.requests_enabled}
-            Paste a podcast's RSS address. An administrator reviews every request
-            before anything is downloaded to this server.
+            Paste a podcast's RSS address. An administrator reviews every
+            request before anything is downloaded to this server.
           {:else}
             Requests are closed. Ask an administrator to add a show for you.
           {/if}
@@ -1019,8 +1045,7 @@
                 rows="2"
                 maxlength="500"
                 bind:value={requestNote}
-                disabled={!overview.policy.requests_enabled}
-              ></textarea>
+                disabled={!overview.policy.requests_enabled}></textarea>
             </label>
           {/if}
           <button
@@ -1055,9 +1080,7 @@
         <span>[ REQUESTS ]</span>
         <h3 id="podcast-my-requests">Your requests</h3>
         {#if overview.requests.length === 0}
-          <p class="podcast-empty">
-            You have not asked for any shows yet.
-          </p>
+          <p class="podcast-empty">You have not asked for any shows yet.</p>
         {:else}
           <ul class="podcast-request-list">
             {#each overview.requests as request (request.id)}
@@ -1110,7 +1133,8 @@
               {#each reviewQueue as request (request.id)}
                 <li class="podcast-request">
                   <div>
-                    <strong>{request.resolved_title || request.feed_url}</strong>
+                    <strong>{request.resolved_title || request.feed_url}</strong
+                    >
                     <small>{request.resolved_author}</small>
                     <small>Asked by {request.requester_name}</small>
                     {#if request.note}
@@ -1205,7 +1229,9 @@
                   type="number"
                   min="1"
                   max="5120"
-                  value={Math.round(adminSettings.max_episode_bytes / 1024 ** 2)}
+                  value={Math.round(
+                    adminSettings.max_episode_bytes / 1024 ** 2,
+                  )}
                   oninput={(event) => {
                     if (!adminSettings) return;
                     adminSettings = {
@@ -1339,26 +1365,6 @@
     gap: 6px;
     overflow-x: auto;
   }
-  .podcast-view-tabs button {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    min-height: 44px;
-    padding: 0 13px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--page-surface, var(--surface));
-    color: var(--fg);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.02em;
-  }
-  .podcast-view-tabs button:hover,
-  .podcast-view-tabs button.active {
-    border-color: var(--fg);
-    background: var(--fg);
-    color: var(--surface);
-  }
   .podcast-view-tabs span {
     color: inherit;
     font-variant-numeric: tabular-nums;
@@ -1470,14 +1476,21 @@
     flex-wrap: wrap;
     padding: 12px 14px;
     border: 1px solid var(--border);
-    background: color-mix(in oklch, var(--page-surface, var(--surface)) 72%, transparent);
+    background: color-mix(
+      in oklch,
+      var(--page-surface, var(--surface)) 72%,
+      transparent
+    );
     transition: background-color 120ms var(--ease-out);
   }
   .podcast-sections > section > .podcast-episode-list .podcast-episode {
     border-width: 0 0 1px;
     background: transparent;
   }
-  .podcast-sections > section > .podcast-episode-list .podcast-episode:last-child {
+  .podcast-sections
+    > section
+    > .podcast-episode-list
+    .podcast-episode:last-child {
     border-bottom: 0;
   }
   .podcast-episode:hover,
@@ -1534,8 +1547,14 @@
    * Show notes take the full width of the row, below both of its columns, so the reading
    * measure does not have to share a line with the transport controls.
    */
-  .podcast-episode-notes {
+  .podcast-notes-disclosure {
     flex: 1 0 100%;
+    height: 0;
+    overflow: hidden;
+    opacity: 0;
+  }
+
+  .podcast-episode-notes {
     max-width: 78ch;
     padding-top: 12px;
     border-top: 1px solid var(--border);
@@ -1544,7 +1563,6 @@
     font-size: 13px;
     line-height: 1.6;
     overflow-wrap: anywhere;
-    animation: podcast-notes-enter 160ms var(--ease-out) both;
   }
   /* Feed markup arrives with its own block structure; only the outer edges are ours. */
   .podcast-episode-notes :global(> :first-child) {
@@ -1585,17 +1603,6 @@
     font-family: var(--font-display);
     font-size: 14px;
     letter-spacing: -0.01em;
-  }
-
-  @keyframes podcast-notes-enter {
-    from {
-      opacity: 0;
-      transform: translateY(-4px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
   }
 
   /*
@@ -1676,7 +1683,9 @@
     padding: 12px;
     border: 1px solid var(--border);
     background: var(--bg);
-    transition: border-color 120ms var(--ease-out), background-color 120ms var(--ease-out);
+    transition:
+      border-color 120ms var(--ease-out),
+      background-color 120ms var(--ease-out);
   }
   .podcast-card:hover,
   .podcast-card:focus-within {
@@ -1847,8 +1856,7 @@
   .podcast-request-form textarea:focus-visible,
   .podcast-settings-form input:focus-visible,
   .podcast-decision-note input:focus-visible,
-  .podcast-card-open:focus-visible,
-  .podcast-view-tabs button:focus-visible {
+  .podcast-card-open:focus-visible {
     outline: 2px solid var(--fg);
     outline-offset: 2px;
   }

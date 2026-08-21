@@ -106,6 +106,41 @@ body {
   background: transparent;
 }
 
+/* Compact scroll regions inside floating surfaces. The permanently reserved,
+   narrow gutter prevents rows from changing width when overflow appears. */
+.overlay-scroll-region {
+  --overlay-scrollbar-size: 5px;
+  scrollbar-color: color-mix(in oklch, var(--fg) 34%, transparent) transparent;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+.overlay-scroll-region::-webkit-scrollbar {
+  width: var(--overlay-scrollbar-size);
+  height: var(--overlay-scrollbar-size);
+}
+
+.overlay-scroll-region::-webkit-scrollbar-track {
+  background: transparent;
+  box-shadow: none;
+}
+
+.overlay-scroll-region::-webkit-scrollbar-thumb {
+  border: 1px solid transparent;
+  background: color-mix(in oklch, var(--fg) 34%, transparent);
+  background-clip: content-box;
+}
+
+.overlay-scroll-region::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklch, var(--fg) 56%, transparent);
+  background-clip: content-box;
+}
+
+.overlay-scroll-region::-webkit-scrollbar-thumb:active {
+  background: var(--accent);
+  background-clip: content-box;
+}
+
 button,
 input,
 select,
@@ -116,6 +151,10 @@ textarea {
 
 button {
   cursor: pointer;
+}
+
+:root dialog:not([open]) {
+  pointer-events: none;
 }
 
 :root dialog:not(.focus-session-dialog) {
@@ -211,6 +250,7 @@ button {
   transition:
     background-color 120ms var(--ease-out),
     border-color 120ms var(--ease-out),
+    box-shadow 120ms var(--ease-out),
     color 120ms var(--ease-out),
     transform 80ms var(--ease-out),
     opacity 120ms var(--ease-out);
@@ -293,8 +333,9 @@ button {
     .focus-session-secondary.focus-session-secondary
   ):hover:not(:disabled) {
   border-color: var(--fg);
-  background: var(--fg);
-  color: var(--bg);
+  background: var(--fg-soft);
+  box-shadow: inset 0 -2px 0 var(--fg);
+  color: var(--fg);
   transform: none;
 }
 
@@ -356,6 +397,49 @@ button {
 :root .ui-button.ui-button--icon {
   width: var(--control-height);
   padding: 0;
+}
+
+/* Shared view navigation: a border-only hover stays distinct from the
+   persistent filled state selected by aria-pressed. */
+:root .ui-view-tab {
+  min-height: var(--control-height);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 13px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--page-surface, var(--surface));
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 560;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  transition:
+    border-color 120ms var(--ease-out),
+    background-color 120ms var(--ease-out),
+    color 120ms var(--ease-out);
+}
+
+:root .ui-view-tab:hover:not(:disabled) {
+  border-color: var(--fg);
+  background: var(--page-surface, var(--surface));
+  color: var(--fg);
+}
+
+:root .ui-view-tab[aria-pressed="true"],
+:root .ui-view-tab[aria-pressed="true"]:hover:not(:disabled) {
+  border-color: var(--fg);
+  background: var(--fg);
+  color: var(--page-surface, var(--surface));
+}
+
+:root .ui-view-tab:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
 }
 
 :root .product-page.product-page {
@@ -2710,6 +2794,12 @@ body
 
 .command-dialog {
   width: min(580px, calc(100% - 32px));
+  overflow: hidden;
+  flex-direction: column;
+}
+
+.command-dialog[open] {
+  display: flex;
 }
 
 .settings-dialog {
@@ -3362,6 +3452,144 @@ body
   gap: 16px;
 }
 
+.network-access-intro,
+.network-access-note,
+.network-access-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.network-access-intro {
+  padding: 14px 16px 0;
+}
+
+.network-access-form {
+  display: grid;
+  grid-template-columns:
+    minmax(120px, 0.7fr) minmax(180px, 1fr) minmax(240px, 1.6fr)
+    auto;
+  align-items: end;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.network-access-form label {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.network-access-form .select-input,
+.network-access-form .text-input,
+.network-access-form .ui-button {
+  min-height: 44px;
+}
+
+.network-access-note {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.network-access-error,
+.network-access-empty {
+  margin: 12px 16px;
+}
+
+.network-access-rules {
+  display: grid;
+}
+
+.network-access-rules article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.network-access-rules article:last-child {
+  border-bottom: 0;
+}
+
+.network-access-rules article > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.network-access-rules strong {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.network-access-rules small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.network-rule-action {
+  min-width: 52px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.network-rule-action.allow {
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.network-rule-action.deny {
+  border-color: color-mix(in oklch, var(--danger) 52%, var(--border));
+  color: var(--danger);
+}
+
+@media (max-width: 920px) {
+  .network-access-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .network-access-origin {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 620px) {
+  .network-access-form {
+    grid-template-columns: 1fr;
+  }
+
+  .network-access-origin {
+    grid-column: auto;
+  }
+
+  .network-access-rules article {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .network-access-rules article .ui-button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+}
+
 .authentication-policy-heading {
   padding: 16px;
   border-bottom: 1px solid var(--border);
@@ -4006,6 +4234,11 @@ body
   outline: 0;
 }
 
+.command-search-input:focus-visible {
+  outline: 0;
+  box-shadow: inset 0 -1px 0 color-mix(in oklch, var(--fg) 46%, transparent);
+}
+
 .command-search-input::placeholder {
   color: var(--muted);
   opacity: 1;
@@ -4014,10 +4247,6 @@ body
 .command-search-input::-webkit-search-cancel-button {
   filter: invert(1);
   opacity: 0.68;
-}
-
-.dialog-head:focus-within {
-  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .dialog-close {
@@ -4033,8 +4262,11 @@ body
 }
 
 .command-list {
+  min-height: 0;
   display: grid;
   gap: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 10px;
 }
 
@@ -4266,8 +4498,12 @@ body
   border: 1px solid var(--border);
   background: var(--surface);
   box-shadow: 10px 10px 0 color-mix(in oklch, var(--bg) 72%, transparent);
-  transform: translateX(-50%);
-  animation: podcast-volume-enter 160ms var(--ease-out) both;
+  translate: -50% 0;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(6px);
+  will-change: opacity, transform;
 }
 
 .podcast-player-volume-panel input[type="range"] {
@@ -4284,17 +4520,6 @@ body
 /* Anything past 100% is amplified rather than attenuated, so the readout says so. */
 .podcast-player-volume-panel .podcast-player-time.is-boosted {
   color: var(--accent);
-}
-
-@keyframes podcast-volume-enter {
-  from {
-    opacity: 0;
-    transform: translate(-50%, 6px);
-  }
-  to {
-    opacity: 1;
-    transform: translate(-50%, 0);
-  }
 }
 
 @keyframes podcast-player-enter {
@@ -4447,6 +4672,142 @@ body
 .toast.show {
   opacity: 1;
   transform: translate(-50%, 0);
+}
+
+.toast--bottom-right {
+  right: clamp(12px, 2.8vw, 44px);
+  bottom: 24px;
+  left: auto;
+  width: 390px;
+  max-width: calc(100vw - 24px);
+  min-height: 52px;
+  padding: 10px 16px;
+  border: 1px solid color-mix(in oklch, var(--surface) 18%, transparent);
+  box-shadow: 0 18px 46px color-mix(in oklch, var(--fg) 26%, transparent);
+  line-height: 1.45;
+  transform: translateY(18px);
+}
+
+.toast--bottom-right.show {
+  transform: translateY(0);
+}
+
+.toast--notification {
+  --bg: oklch(11% 0.012 165);
+  --surface: oklch(15% 0.014 165);
+  --fg: oklch(91% 0.016 150);
+  --muted: oklch(65% 0.02 155);
+  --border: oklch(38% 0.025 155);
+  --accent: oklch(79% 0.16 145);
+  --danger: oklch(72% 0.17 25);
+  --accent-soft: color-mix(in oklch, var(--accent) 12%, transparent);
+  --fg-soft: color-mix(in oklch, var(--fg) 5%, transparent);
+  height: 116px;
+  min-height: 116px;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  border-color: var(--accent);
+  background: var(--bg);
+  box-shadow:
+    0 18px 46px color-mix(in oklch, var(--bg) 48%, transparent),
+    inset 0 1px 0 color-mix(in oklch, var(--accent) 12%, transparent);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  overflow: hidden;
+}
+
+.toast--notification.show {
+  pointer-events: auto;
+}
+
+.toast-notification-link {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.toast-notification-link:hover:not(:disabled) {
+  border: 0;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--accent) 34%, transparent);
+  color: inherit;
+  transform: none;
+}
+
+.toast-notification-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -4px;
+}
+
+.toast--notification > .ntfy-priority {
+  margin-top: 1px;
+}
+
+.toast-notification-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.toast-notification-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.toast-notification-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toast-notification-meta span:last-child:not(:first-child) {
+  flex: 0 0 auto;
+}
+
+.toast-notification-copy strong {
+  display: block;
+  overflow: hidden;
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toast-notification-copy p {
+  display: -webkit-box;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    transition: none;
+  }
 }
 
 .workspace[data-current="true"] .reveal {
@@ -4757,6 +5118,7 @@ body
   transition:
     background 150ms var(--ease-out),
     border-color 150ms var(--ease-out),
+    box-shadow 150ms var(--ease-out),
     transform 150ms var(--ease-out);
 }
 
@@ -4786,6 +5148,7 @@ body
   transition:
     background 150ms var(--ease-out),
     border-color 150ms var(--ease-out),
+    box-shadow 150ms var(--ease-out),
     transform 150ms var(--ease-out);
 }
 
@@ -4795,10 +5158,17 @@ body
   color: var(--fg);
 }
 
-.dashboard-edit-button:hover,
+.dashboard-edit-button:hover {
+  border-color: var(--fg);
+  background: var(--fg-soft);
+  box-shadow: inset 0 -2px 0 var(--fg);
+  color: var(--fg);
+}
+
 .dashboard-edit-button.is-active {
   border-color: var(--fg);
   background: var(--fg);
+  box-shadow: none;
   color: var(--surface);
 }
 
@@ -4913,7 +5283,6 @@ body
 .reading-panel,
 .custom-widget-section,
 .utility-box,
-.tasks-worklist,
 .tasks-summary-box,
 .rss-story-list,
 .rss-source-box,
@@ -5334,19 +5703,17 @@ body
 .tasks-worklist {
   min-width: 0;
   display: grid;
-  gap: 1px;
+  gap: 18px;
   overflow: hidden;
   padding: 0;
-  background: var(--border);
+  background: transparent;
 }
 
 .task-due-group {
   min-width: 0;
+  border: 1px solid var(--border);
   background: var(--page-surface, var(--surface));
-}
-
-.task-due-group + .task-due-group {
-  border-top: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 color-mix(in oklch, var(--fg) 6%, transparent);
 }
 
 .task-due-group-heading {
@@ -5357,6 +5724,7 @@ body
   gap: 16px;
   padding: 12px 22px;
   border-bottom: 1px solid var(--border);
+  background: color-mix(in oklch, var(--fg) 3%, transparent);
 }
 
 .task-due-group-heading > div {
@@ -5713,6 +6081,12 @@ body
   margin: 8px 12px 0 46px;
   padding: 15px 0 4px;
   border-top: 1px solid var(--border);
+}
+
+.motion-disclosure-shell {
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
 }
 
 .task-description-block,
@@ -6164,6 +6538,12 @@ body
   color: var(--muted);
 }
 
+.focus-settings-disclosure {
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+}
+
 .focus-settings-panel {
   position: relative;
   z-index: 2;
@@ -6177,7 +6557,6 @@ body
   background: rgb(0 0 0 / 78%);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
-  animation: focus-settings-enter 240ms var(--ease-out) both;
 }
 
 .focus-settings-heading {
@@ -6296,17 +6675,6 @@ body
 
 .focus-burst-pause {
   justify-self: center;
-}
-
-@keyframes focus-settings-enter {
-  from {
-    opacity: 0;
-    transform: translateY(24px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 .focus-session-footer {
@@ -7682,12 +8050,19 @@ body
 }
 
 .header-icon-button:hover,
-.dashboard-edit-button:hover,
+.dashboard-edit-button:hover {
+  border-color: var(--fg);
+  background: var(--fg-soft);
+  box-shadow: inset 0 -2px 0 var(--fg);
+  color: var(--fg);
+  transform: none;
+}
+
 .dashboard-edit-button.is-active {
   border-color: var(--fg);
   background: var(--fg);
+  box-shadow: none;
   color: var(--bg);
-  transform: none;
 }
 
 .dashboard-add-button {
@@ -7922,7 +8297,6 @@ body
 .reading-panel,
 .custom-widget-section,
 .utility-box,
-.tasks-worklist,
 .tasks-summary-box,
 .rss-story-list,
 .rss-source-box,
@@ -8368,6 +8742,10 @@ body
     padding-inline: 16px;
   }
 
+  .tasks-worklist {
+    gap: 12px;
+  }
+
   .focus-session-header,
   .focus-session-footer {
     min-height: 72px;
@@ -8581,6 +8959,13 @@ body
 
 .sidebar-nav-group > .sidebar-link svg:last-child.is-open {
   transform: rotate(180deg);
+}
+
+.sidebar-submenu-accordion {
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  will-change: height, opacity;
 }
 
 @media (min-width: 721px) {
@@ -9364,30 +9749,85 @@ body
   color: var(--fg);
 }
 
-/* Beats `.kanban-column > header > div`, which spaces the title block apart. The two
-   controls are a pair and should sit together. */
+/* The title strip remains the only drag handle. Column commands live in a compact,
+   independently interactive overflow menu. */
 .kanban-column > header > .kanban-column-actions {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 2px;
 }
 
-.kanban-column-delete:hover:not(:disabled) {
+.kanban-column-menu-trigger {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+}
+
+.kanban-column-menu-trigger[aria-expanded="true"] {
+  border-color: var(--border);
+  background: var(--fg-soft);
+  color: var(--fg);
+}
+
+.kanban-column-menu-popover {
+  position: absolute;
+  z-index: 6;
+  top: calc(100% + 5px);
+  right: 0;
+  width: 190px;
+  display: grid;
+  gap: 2px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  background: color-mix(in oklch, var(--surface) 97%, var(--bg));
+  box-shadow: 0 18px 44px color-mix(in oklch, var(--bg) 70%, transparent);
+}
+
+.kanban-column-menu-popover button,
+.kanban-context-actions button {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 550;
+  letter-spacing: 0.02em;
+  text-align: left;
+}
+
+.kanban-column-menu-popover button:hover:not(:disabled),
+.kanban-context-actions button:hover:not(:disabled) {
+  border-color: var(--border);
+  background: var(--fg-soft);
+  color: var(--fg);
+}
+
+.kanban-column-menu-popover .kanban-column-menu-delete:hover:not(:disabled),
+.kanban-context-actions .kanban-context-delete:hover:not(:disabled) {
   border-color: color-mix(in oklch, var(--danger) 55%, var(--border));
   background: color-mix(in oklch, var(--danger) 12%, transparent);
   color: var(--danger);
 }
 
-/* Primed for the second press. The server still refuses a column that holds cards and
-   says why, so this only confirms intent. */
-.kanban-column-delete.confirm {
+/* A second press commits the destructive action. Server-side permission and non-empty
+   column checks remain authoritative. */
+.kanban-column-menu-popover .kanban-column-menu-delete.confirm,
+.kanban-context-actions .kanban-context-delete.confirm {
   border-color: var(--danger);
   background: var(--danger);
   color: var(--bg);
 }
 
-.kanban-column-delete.confirm:hover:not(:disabled) {
+.kanban-column-menu-popover
+  .kanban-column-menu-delete.confirm:hover:not(:disabled),
+.kanban-context-actions .kanban-context-delete.confirm:hover:not(:disabled) {
   border-color: var(--danger);
   background: color-mix(in oklch, var(--danger) 86%, var(--fg));
   color: var(--bg);
@@ -9436,39 +9876,6 @@ body
   }
 }
 
-/* The quick-card composer replaces the add control in place, so it opens rather than
-   simply appearing. */
-.kanban-quick-card {
-  animation: kanban-composer-enter 180ms var(--ease-out) both;
-}
-
-.kanban-quick-card.is-leaving {
-  pointer-events: none;
-  animation: kanban-composer-exit 140ms ease-in both;
-}
-
-@keyframes kanban-composer-enter {
-  from {
-    opacity: 0;
-    transform: translate3d(0, 8px, 0);
-  }
-  to {
-    opacity: 1;
-    transform: translate3d(0, 0, 0);
-  }
-}
-
-@keyframes kanban-composer-exit {
-  from {
-    opacity: 1;
-    transform: translate3d(0, 0, 0);
-  }
-  to {
-    opacity: 0;
-    transform: translate3d(0, 6px, 0);
-  }
-}
-
 .kanban-add-card {
   width: 100%;
   min-height: 44px;
@@ -9494,24 +9901,12 @@ body
   color: var(--fg);
 }
 
-.kanban-quick-card {
-  display: grid;
-  gap: 8px;
-  margin-top: auto;
-  padding-top: 8px;
-}
-
-.kanban-quick-card > div,
 .kanban-row-actions,
 .kanban-inline-form,
 .kanban-new-label {
   display: flex;
   align-items: center;
   gap: 7px;
-}
-
-.kanban-quick-card > div {
-  justify-content: flex-end;
 }
 
 .kanban-invitation-card {
@@ -9697,9 +10092,74 @@ body
   -webkit-backdrop-filter: blur(8px) saturate(0.78);
 }
 
+/* Board creation dialogs should preserve spatial context. The board stays legible while
+   the lightweight veil still communicates that the dialog owns focus. */
+.kanban-board-workflow-dialog::backdrop {
+  background: color-mix(in oklch, var(--bg) 24%, transparent);
+  backdrop-filter: blur(1px) saturate(0.96);
+  -webkit-backdrop-filter: blur(1px) saturate(0.96);
+}
+
+.kanban-context-dialog::backdrop {
+  background: color-mix(in oklch, var(--bg) 12%, transparent);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .kanban-dialog {
   width: min(520px, calc(100vw - 24px));
   padding: 0;
+}
+
+.kanban-context-dialog {
+  position: fixed;
+  inset: auto;
+  top: var(--context-y);
+  left: var(--context-x);
+  width: min(260px, calc(100vw - 24px));
+  max-height: min(330px, calc(100dvh - 24px));
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: color-mix(in oklch, var(--surface) 98%, var(--bg));
+  color: var(--fg);
+  box-shadow: 0 24px 64px color-mix(in oklch, var(--bg) 76%, transparent);
+}
+
+.kanban-context-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 12px 11px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.kanban-context-dialog > header > div {
+  min-width: 0;
+}
+
+.kanban-context-dialog h3 {
+  max-width: 21ch;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.kanban-context-actions {
+  display: grid;
+  gap: 2px;
+  padding: 5px;
+}
+
+.kanban-context-dialog :is(button):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .dialog-close-row {
@@ -10265,13 +10725,8 @@ body
 
   /* Keep the confirmation that something arrived, drop the travel. */
   .kanban-card.is-entering,
-  .kanban-column.is-entering,
-  .kanban-quick-card {
+  .kanban-column.is-entering {
     animation-name: kanban-fade-enter;
-  }
-
-  .kanban-quick-card.is-leaving {
-    animation-name: kanban-fade-exit;
   }
 }
 
@@ -10281,15 +10736,6 @@ body
   }
   to {
     opacity: 1;
-  }
-}
-
-@keyframes kanban-fade-exit {
-  from {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
   }
 }
 
@@ -10313,7 +10759,7 @@ body
 }
 
 .sidebar-link--custom {
-  grid-template-columns: 28px 20px minmax(0, 1fr) auto;
+  grid-template-columns: 28px 20px minmax(0, 1fr);
   min-height: 56px;
 }
 
@@ -10334,16 +10780,6 @@ body
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sidebar-custom-scope {
-  padding: 3px 5px;
-  border: 1px solid color-mix(in oklch, var(--muted) 48%, transparent);
-  color: color-mix(in oklch, var(--muted) 88%, transparent);
-  font-size: 8px;
-  letter-spacing: 0.06em;
-  line-height: 1;
   white-space: nowrap;
 }
 
@@ -10530,7 +10966,7 @@ body
   line-height: 1.2;
 }
 
-.embedded-page-trust-badge {
+.embedded-page-permission-badge {
   flex: 0 0 auto;
   padding: 3px 6px;
   border: 1px solid color-mix(in oklch, var(--fg) 32%, var(--border));
@@ -10633,6 +11069,10 @@ body
   gap: 8px;
 }
 
+.embedded-page-height-preset {
+  width: min(100%, 360px);
+}
+
 .embedded-page-height-control span {
   color: var(--muted);
   font-family: var(--font-mono);
@@ -10641,35 +11081,57 @@ body
   text-transform: uppercase;
 }
 
-.embedded-page-trust-control {
+.embedded-page-permissions {
   display: grid;
   gap: 8px;
   margin-top: 6px;
   padding: 14px 0;
   border-block: 1px solid var(--border);
+  border-inline: 0;
 }
 
-.embedded-page-trust-toggle {
+.embedded-page-permissions legend {
+  padding: 0;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.embedded-page-permission-toggle {
   width: fit-content;
 }
 
-.embedded-page-trust-toggle > span:last-child {
+.embedded-page-permission-toggle > span:last-child {
   display: grid;
   gap: 2px;
   text-align: left;
 }
 
-.embedded-page-trust-toggle strong {
+.embedded-page-permission-toggle strong {
   color: var(--fg);
   font-size: 12px;
   font-weight: 600;
 }
 
-.embedded-page-trust-toggle small {
+.embedded-page-permission-toggle small {
   color: var(--muted);
   font-family: var(--font-mono);
   font-size: 9px;
   letter-spacing: 0.04em;
+}
+
+.embedded-page-permission-warning {
+  max-width: 70ch;
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  background: color-mix(in oklch, var(--fg) 5%, transparent);
+  font-size: 11px;
+  line-height: 1.55;
 }
 
 .embedded-page-form-actions {
@@ -10744,12 +11206,16 @@ body
   .auth-shell,
   .workspace,
   .widget-content,
-  .command-dialog,
+  .command-list,
   .settings-dialog,
   .destructive-content,
   .admin-directory,
   .settings-form-scroll,
   .embedded-pages-dialog-body,
+  .ntfy-popover-list,
+  .ntfy-page,
+  .ntfy-topic-list,
+  .ntfy-feed,
   .rss-subscription-scroll,
   .dashboard-main,
   .tasks-focus-panel,

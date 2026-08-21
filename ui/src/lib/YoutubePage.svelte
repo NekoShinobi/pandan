@@ -1,4 +1,11 @@
 <script lang="ts">
+  import { move } from "@dnd-kit/helpers";
+  import {
+    DragDropProvider,
+    KeyboardSensor,
+    PointerSensor,
+    type DragDropEventHandlers,
+  } from "@dnd-kit/svelte";
   import CirclePlay from "lucide-svelte/icons/circle-play";
   import Bookmark from "lucide-svelte/icons/bookmark";
   import Check from "lucide-svelte/icons/check";
@@ -13,7 +20,9 @@
   import Trash2 from "lucide-svelte/icons/trash-2";
   import X from "lucide-svelte/icons/x";
   import { onMount, tick } from "svelte";
+  import { MediaQuery } from "svelte/reactivity";
   import TypedHeading from "$lib/TypedHeading.svelte";
+  import YoutubeGroupSortable from "$lib/YoutubeGroupSortable.svelte";
   import {
     createYoutubeGroup,
     createYoutubeSubscription,
@@ -21,6 +30,7 @@
     deleteYoutubeSubscription,
     fetchYoutubeReader,
     refreshYoutubeSubscription,
+    reorderYoutubeGroups,
     setYoutubeWatchLater,
     updateYoutubeDisplayMode,
     updateYoutubeGroup,
@@ -32,6 +42,32 @@
   } from "$lib/api";
 
   type YoutubeView = "latest" | "watch-later";
+  type YoutubeDragHandlers = DragDropEventHandlers;
+  type YoutubeDragStartEvent = Parameters<
+    NonNullable<YoutubeDragHandlers["onDragStart"]>
+  >[0];
+  type YoutubeDragOverEvent = Parameters<
+    NonNullable<YoutubeDragHandlers["onDragOver"]>
+  >[0];
+  type YoutubeDragEndEvent = Parameters<
+    NonNullable<YoutubeDragHandlers["onDragEnd"]>
+  >[0];
+
+  const youtubeGroupSensors = [
+    PointerSensor,
+    KeyboardSensor.configure({
+      keyboardCodes: {
+        start: ["Space"],
+        cancel: ["Escape"],
+        end: ["Space", "Tab"],
+        up: ["ArrowUp"],
+        down: ["ArrowDown"],
+        left: ["ArrowLeft"],
+        right: ["ArrowRight"],
+      },
+    }),
+  ];
+  const reducedMotion = new MediaQuery("(prefers-reduced-motion: reduce)");
 
   let reader = $state.raw<YoutubeReaderResponse>({
     subscriptions: [],
@@ -52,6 +88,7 @@
   let subscriptionDialog = $state<HTMLDialogElement>();
   let channelInput = $state<HTMLInputElement>();
   let channelId = $state("");
+  let subscriptionGroupIds = $state<string[]>([]);
   let subscriptionError = $state("");
   let savingSubscription = $state(false);
 
@@ -63,6 +100,8 @@
   let groupError = $state("");
   let savingGroup = $state(false);
   let confirmingGroupDelete = $state(false);
+  let groupDragSnapshot: YoutubeGroup[] | null = null;
+  let savingGroupOrder = $state(false);
 
   let activeGroup = $derived(
     reader.groups.find((group) => group.id === activeGroupId) ?? null,
@@ -134,6 +173,7 @@
 
   async function openSubscriptionDialog() {
     channelId = "";
+    subscriptionGroupIds = [];
     subscriptionError = "";
     subscriptionDialog?.showModal();
     await tick();
@@ -146,7 +186,10 @@
     savingSubscription = true;
     subscriptionError = "";
     try {
-      reader = await createYoutubeSubscription(channelId.trim());
+      reader = await createYoutubeSubscription(
+        channelId.trim(),
+        subscriptionGroupIds,
+      );
       subscriptionDialog?.close();
     } catch (reason: unknown) {
       subscriptionError = message(
@@ -155,6 +198,60 @@
       );
     } finally {
       savingSubscription = false;
+    }
+  }
+
+  function toggleSubscriptionGroup(groupId: string) {
+    subscriptionGroupIds = subscriptionGroupIds.includes(groupId)
+      ? subscriptionGroupIds.filter((value) => value !== groupId)
+      : [...subscriptionGroupIds, groupId];
+  }
+
+  function applyGroupOrder(groups: YoutubeGroup[]) {
+    reader = {
+      ...reader,
+      groups: groups.map((group, position) => ({ ...group, position })),
+    };
+  }
+
+  function startGroupDrag(event: YoutubeDragStartEvent) {
+    if (event.operation.source?.type === "youtube-group") {
+      groupDragSnapshot = reader.groups.slice();
+    }
+  }
+
+  function previewGroupOrder(event: YoutubeDragOverEvent) {
+    if (event.operation.source?.type !== "youtube-group") return;
+    applyGroupOrder(move(reader.groups, event));
+  }
+
+  async function finishGroupDrag(event: YoutubeDragEndEvent) {
+    if (event.operation.source?.type !== "youtube-group") return;
+    if (event.canceled || !event.operation.target) {
+      if (groupDragSnapshot) applyGroupOrder(groupDragSnapshot);
+      groupDragSnapshot = null;
+      return;
+    }
+
+    const previous = groupDragSnapshot;
+    const groups = move(reader.groups, event);
+    applyGroupOrder(groups);
+    groupDragSnapshot = null;
+    if (
+      !previous ||
+      previous.every((group, index) => group.id === groups[index]?.id)
+    )
+      return;
+
+    savingGroupOrder = true;
+    pageError = "";
+    try {
+      reader = await reorderYoutubeGroups(groups.map((group) => group.id));
+    } catch (reason: unknown) {
+      applyGroupOrder(previous);
+      pageError = message(reason, "Unable to save the category order");
+    } finally {
+      savingGroupOrder = false;
     }
   }
 
@@ -364,7 +461,7 @@
 
   <nav class="youtube-view-tabs" aria-label="YouTube reader views" data-od-id="youtube-reader-views">
     <button
-      class={activeView === "latest" ? "active" : undefined}
+      class="ui-view-tab"
       type="button"
       aria-pressed={activeView === "latest"}
       onclick={() => selectView("latest")}
@@ -373,7 +470,7 @@
       Latest <span>{reader.videos.length}</span>
     </button>
     <button
-      class={activeView === "watch-later" ? "active" : undefined}
+      class="ui-view-tab"
       type="button"
       aria-pressed={activeView === "watch-later"}
       onclick={() => selectView("watch-later")}
@@ -386,27 +483,38 @@
 
   <div class="youtube-toolbar" data-od-id="youtube-view-controls">
     {#if activeView === "latest"}
-      <nav aria-label="YouTube groups">
+      <nav aria-label="YouTube categories">
         <button
-          class:active={activeGroupId === "all"}
           type="button"
+          aria-pressed={activeGroupId === "all"}
           onclick={() => (activeGroupId = "all")}>All channels</button
         >
-        {#each reader.groups as group (group.id)}
-          <button
-            class:active={activeGroupId === group.id}
-            type="button"
-            onclick={() => (activeGroupId = group.id)}
-            data-od-id={`youtube-group-${group.id}`}>{group.name}</button
-          >
-        {/each}
+        <DragDropProvider
+          sensors={youtubeGroupSensors}
+          onDragStart={startGroupDrag}
+          onDragOver={previewGroupOrder}
+          onDragEnd={(event) => void finishGroupDrag(event)}
+        >
+          <div class="youtube-group-list" aria-label="Reorderable categories">
+            {#each reader.groups as group, index (group.id)}
+              <YoutubeGroupSortable
+                {group}
+                {index}
+                active={activeGroupId === group.id}
+                disabled={savingGroupOrder}
+                reducedMotion={reducedMotion.current}
+                onselect={(groupId) => (activeGroupId = groupId)}
+              />
+            {/each}
+          </div>
+        </DragDropProvider>
         <button
           class="group-add"
           type="button"
           onclick={openNewGroup}
-          aria-label="Create channel group"
+          aria-label="Create channel category"
         >
-          <Plus size={15} strokeWidth={1.9} aria-hidden="true" /> Group
+          <Plus size={15} strokeWidth={1.9} aria-hidden="true" /> Category
         </button>
       </nav>
     {:else}
@@ -419,7 +527,7 @@
           type="button"
           onclick={() => openEditGroup(activeGroup)}
         >
-          <Settings2 size={15} strokeWidth={1.8} aria-hidden="true" /> Manage {activeGroup.name}
+          <Settings2 size={15} strokeWidth={1.8} aria-hidden="true" /> Manage Category
         </button>
       {/if}
       <label class="youtube-search">
@@ -429,7 +537,6 @@
       </label>
       <div class="display-switch" role="group" aria-label="Video display mode">
         <button
-          class:active={reader.display_mode === "thumbnails"}
           type="button"
           aria-label="Show thumbnails"
           aria-pressed={reader.display_mode === "thumbnails"}
@@ -438,7 +545,6 @@
           <Image size={16} strokeWidth={1.8} aria-hidden="true" />
         </button>
         <button
-          class:active={reader.display_mode === "compact"}
           type="button"
           aria-label="Hide thumbnails"
           aria-pressed={reader.display_mode === "compact"}
@@ -460,6 +566,77 @@
   {/if}
 
   <div class="youtube-layout">
+    <aside class="youtube-directory" data-od-id="youtube-channel-directory">
+      <header>
+        <div>
+          <span>[ ALL CHANNELS ]</span><strong
+            >{reader.subscriptions.length}</strong
+          >
+        </div>
+        <Layers3 size={18} strokeWidth={1.6} aria-hidden="true" />
+      </header>
+      {#each reader.subscriptions as subscription (subscription.channel_id)}
+        <article
+          class="youtube-channel"
+          data-od-id={`youtube-channel-${subscription.channel_id}`}
+        >
+          <a href={subscription.channel_url} target="_blank" rel="noreferrer">
+            {#if subscription.thumbnail_url}<img
+                class="youtube-channel-avatar directory-avatar"
+                src={subscription.thumbnail_url}
+                alt=""
+                loading="lazy"
+                referrerpolicy="no-referrer"
+              />{:else}<span
+                class="youtube-channel-mark directory-mark"
+                aria-hidden="true">{channelInitial(subscription.title)}</span
+              >{/if}
+            <span class="youtube-channel-name">
+              <strong>{subscription.title}</strong><small
+                >{subscription.channel_id}</small
+              >
+            </span>
+          </a>
+          <p class:error={subscription.last_error !== null}>
+            {subscription.last_error ?? dateLabel(subscription.last_fetched_at)}
+          </p>
+          <div>
+            <button
+              type="button"
+              disabled={busyChannelId !== ""}
+              onclick={() => refreshChannel(subscription)}
+            >
+              <RefreshCw
+                class={busyChannelId === subscription.channel_id
+                  ? "spinning"
+                  : undefined}
+                size={14}
+                strokeWidth={1.8}
+                aria-hidden="true"
+              /> Check now
+            </button>
+            <button
+              class="ui-button ui-button--danger"
+              class:confirm={pendingChannelDelete === subscription.channel_id}
+              type="button"
+              disabled={busyChannelId !== ""}
+              onclick={() => removeChannel(subscription)}
+            >
+              <Trash2
+                size={14}
+                strokeWidth={1.8}
+                aria-hidden="true"
+              />{pendingChannelDelete === subscription.channel_id
+                ? "Confirm"
+                : "Remove"}
+            </button>
+          </div>
+        </article>
+      {:else}
+        <p class="youtube-directory-empty">No channels subscribed.</p>
+      {/each}
+    </aside>
+
     <main
       class={["youtube-feed", reader.display_mode]}
       aria-label={activeView === "latest" ? "YouTube uploads" : "YouTube Watch Later"}
@@ -585,76 +762,6 @@
       {/if}
     </main>
 
-    <aside class="youtube-directory" data-od-id="youtube-channel-directory">
-      <header>
-        <div>
-          <span>[ SUBSCRIPTIONS ]</span><strong
-            >{reader.subscriptions.length}</strong
-          >
-        </div>
-        <Layers3 size={18} strokeWidth={1.6} aria-hidden="true" />
-      </header>
-      {#each reader.subscriptions as subscription (subscription.channel_id)}
-        <article
-          class="youtube-channel"
-          data-od-id={`youtube-channel-${subscription.channel_id}`}
-        >
-          <a href={subscription.channel_url} target="_blank" rel="noreferrer">
-            {#if subscription.thumbnail_url}<img
-                class="youtube-channel-avatar directory-avatar"
-                src={subscription.thumbnail_url}
-                alt=""
-                loading="lazy"
-                referrerpolicy="no-referrer"
-              />{:else}<span
-                class="youtube-channel-mark directory-mark"
-                aria-hidden="true">{channelInitial(subscription.title)}</span
-              >{/if}
-            <span class="youtube-channel-name">
-              <strong>{subscription.title}</strong><small
-                >{subscription.channel_id}</small
-              >
-            </span>
-          </a>
-          <p class:error={subscription.last_error !== null}>
-            {subscription.last_error ?? dateLabel(subscription.last_fetched_at)}
-          </p>
-          <div>
-            <button
-              type="button"
-              disabled={busyChannelId !== ""}
-              onclick={() => refreshChannel(subscription)}
-            >
-              <RefreshCw
-                class={busyChannelId === subscription.channel_id
-                  ? "spinning"
-                  : undefined}
-                size={14}
-                strokeWidth={1.8}
-                aria-hidden="true"
-              /> Check now
-            </button>
-            <button
-              class="ui-button ui-button--danger"
-              class:confirm={pendingChannelDelete === subscription.channel_id}
-              type="button"
-              disabled={busyChannelId !== ""}
-              onclick={() => removeChannel(subscription)}
-            >
-              <Trash2
-                size={14}
-                strokeWidth={1.8}
-                aria-hidden="true"
-              />{pendingChannelDelete === subscription.channel_id
-                ? "Confirm"
-                : "Remove"}
-            </button>
-          </div>
-        </article>
-      {:else}
-        <p class="youtube-directory-empty">No channels subscribed.</p>
-      {/each}
-    </aside>
   </div>
 
   <dialog
@@ -695,6 +802,28 @@
         >, then <strong>Copy channel ID</strong>. Pandan uses YouTube’s public
         feed—no API key is required.
       </p>
+      <fieldset>
+        <legend>Add to categories <span>(optional)</span></legend>
+        {#each reader.groups as group (group.id)}
+          {@const selected = subscriptionGroupIds.includes(group.id)}
+          <button
+            class="ui-toggle-button youtube-channel-toggle"
+            type="button"
+            aria-pressed={selected}
+            onclick={() => toggleSubscriptionGroup(group.id)}
+          >
+            <span class="ui-toggle-indicator" aria-hidden="true">
+              {#if selected}<Check size={13} />{/if}
+            </span>
+            <span>
+              <strong>{group.name}</strong>
+              <small>{group.channel_ids.length} {group.channel_ids.length === 1 ? "channel" : "channels"}</small>
+            </span>
+          </button>
+        {:else}
+          <p>No categories yet. The channel will stay in All channels.</p>
+        {/each}
+      </fieldset>
       {#if subscriptionError}<p class="youtube-form-error" role="alert">
           {subscriptionError}
         </p>{/if}
@@ -721,8 +850,8 @@
   >
     <header>
       <div>
-        <span>[ CHANNEL.GROUP ]</span>
-        <h2>{editingGroupId ? "Manage group" : "Create group"}</h2>
+        <span>[ CHANNEL.CATEGORY ]</span>
+        <h2>{editingGroupId ? "Manage category" : "Create category"}</h2>
       </div>
       <button
         class="ui-button ui-button--ghost ui-button--icon"
@@ -733,7 +862,7 @@
       >
     </header>
     <form onsubmit={saveGroup}>
-      <label for="youtube-group-name">Group name</label>
+      <label for="youtube-group-name">Category name</label>
       <input
         id="youtube-group-name"
         bind:value={groupName}
@@ -755,7 +884,7 @@
           >
         {:else}<p>Subscribe to a channel before adding it to a group.</p>{/each}
       </fieldset>
-      <p class="dialog-note">A channel can belong to more than one group.</p>
+      <p class="dialog-note">A channel can belong to more than one category.</p>
       {#if groupError}<p class="youtube-form-error" role="alert">
           {groupError}
         </p>{/if}
@@ -765,7 +894,7 @@
             type="button"
             disabled={savingGroup}
             onclick={removeGroup}
-            >{confirmingGroupDelete ? "Confirm remove" : "Remove group"}</button
+            >{confirmingGroupDelete ? "Confirm remove" : "Remove category"}</button
           >{/if}<button
           class="ui-button ui-button--secondary youtube-secondary-button"
           type="button"
@@ -774,7 +903,7 @@
           class="ui-button ui-button--primary youtube-primary-button"
           type="submit"
           disabled={savingGroup}
-          >{savingGroup ? "Saving…" : "Save group"}</button
+          >{savingGroup ? "Saving…" : "Save category"}</button
         >
       </footer>
     </form>
@@ -871,24 +1000,6 @@
     gap: 6px;
     overflow-x: auto;
   }
-  .youtube-view-tabs button {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    padding: 0 13px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface);
-    color: var(--fg);
-    font-family: var(--font-mono);
-    font-size: 10px;
-  }
-  .youtube-view-tabs button:hover,
-  .youtube-view-tabs button.active {
-    border-color: var(--fg);
-    background: var(--fg);
-    color: var(--surface);
-  }
   .youtube-view-tabs span {
     color: inherit;
     font-variant-numeric: tabular-nums;
@@ -906,24 +1017,33 @@
     overflow-x: auto;
     padding-bottom: 2px;
   }
+  .youtube-group-list {
+    display: flex;
+    gap: 4px;
+  }
   .youtube-toolbar nav button,
   .group-manage {
     flex: 0 0 auto;
     padding: 0 12px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 0;
     background: var(--surface);
     color: var(--fg);
     font-family: var(--font-mono);
     font-size: 10px;
+    transition:
+      border-color 120ms var(--ease-out),
+      background-color 120ms var(--ease-out),
+      color 120ms var(--ease-out);
   }
   .youtube-toolbar nav button:hover,
   .group-manage:hover {
     border-color: var(--fg);
-    background: var(--fg);
-    color: var(--surface);
+    background: var(--surface);
+    color: var(--fg);
   }
-  .youtube-toolbar nav button.active {
+  .youtube-toolbar nav button[aria-pressed="true"],
+  .youtube-toolbar nav button[aria-pressed="true"]:hover {
     border-color: var(--fg);
     background: var(--fg);
     color: var(--surface);
@@ -965,7 +1085,7 @@
     display: flex;
     padding: 3px;
     border: 1px solid var(--border);
-    border-radius: 7px;
+    border-radius: 0;
     background: var(--surface);
   }
   .display-switch button {
@@ -973,11 +1093,23 @@
     min-height: 44px;
     display: grid;
     place-items: center;
-    border-radius: 4px;
+    border: 1px solid transparent;
+    border-radius: 0;
+    background: transparent;
     color: var(--muted);
+    transition:
+      border-color 120ms var(--ease-out),
+      background-color 120ms var(--ease-out),
+      color 120ms var(--ease-out);
   }
-  .display-switch button:hover,
-  .display-switch button.active {
+  .display-switch button:hover {
+    border-color: var(--fg);
+    background: transparent;
+    color: var(--fg);
+  }
+  .display-switch button[aria-pressed="true"],
+  .display-switch button[aria-pressed="true"]:hover {
+    border-color: var(--fg);
     background: var(--fg);
     color: var(--surface);
   }
@@ -998,7 +1130,7 @@
   }
   .youtube-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(250px, 310px);
+    grid-template-columns: minmax(250px, 310px) minmax(0, 1fr);
     gap: 18px;
     align-items: start;
   }
@@ -1390,6 +1522,11 @@
     font-size: 10px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
+  }
+  .youtube-dialog legend span {
+    color: var(--muted);
+    letter-spacing: 0.02em;
+    text-transform: none;
   }
   .youtube-dialog form > input {
     min-height: 46px;

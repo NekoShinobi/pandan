@@ -229,8 +229,8 @@ fn normalize_feed_url(value: &str) -> Result<(String, String), ApiError> {
         return Err(ApiError::BadRequest("feed address is required"));
     }
     let parsed = Url::parse(value).map_err(|_| ApiError::BadRequest("feed address is invalid"))?;
-    if parsed.scheme() != "https" {
-        return Err(ApiError::BadRequest("feed address must use HTTPS"));
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(ApiError::BadRequest("feed address must use HTTP or HTTPS"));
     }
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(ApiError::BadRequest(
@@ -933,9 +933,11 @@ mod tests {
     }
 
     #[test]
-    fn insecure_and_credentialed_feed_addresses_are_refused() {
+    fn http_feed_addresses_reach_policy_but_credentials_are_refused() {
+        let (_, normalized) =
+            normalize_feed_url("http://example.com/feed").expect("HTTP syntax is valid");
+        assert_eq!(normalized, "http://example.com/feed");
         for hostile in [
-            "http://example.com/feed",
             "https://user:pass@example.com/feed",
             "ftp://example.com/feed",
             "not a url",

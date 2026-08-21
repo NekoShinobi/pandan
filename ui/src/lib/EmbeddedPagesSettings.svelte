@@ -23,6 +23,7 @@
   } from "$lib/api";
 
   const DEFAULT_IFRAME_HEIGHT = 720;
+  type HeightOption = "480" | "720" | "1080" | "custom";
 
   type Props = {
     pages: EmbeddedPagesResponse;
@@ -50,8 +51,10 @@
   let formTitle = $state("");
   let formDescription = $state("");
   let formUrl = $state("");
+  let formAllowScripts = $state(false);
   let formAllowSameOrigin = $state(false);
   let formIframeHeight = $state(DEFAULT_IFRAME_HEIGHT);
+  let formHeightOption = $state<HeightOption>("720");
   let formError = $state("");
   let listError = $state("");
   let busyAction = $state("");
@@ -101,6 +104,18 @@
     }
   }
 
+  function heightOptionFor(height: number): HeightOption {
+    if (height === 480 || height === 720 || height === 1080) {
+      return String(height) as HeightOption;
+    }
+    return "custom";
+  }
+
+  function chooseHeightOption(option: HeightOption) {
+    formHeightOption = option;
+    if (option !== "custom") formIframeHeight = Number(option);
+  }
+
   function openCreate(scope: EmbeddedPageScope) {
     if (scope === "global" && !isAdministrator) return;
     formScope = scope;
@@ -108,8 +123,10 @@
     formTitle = "";
     formDescription = "";
     formUrl = "";
+    formAllowScripts = false;
     formAllowSameOrigin = false;
     formIframeHeight = DEFAULT_IFRAME_HEIGHT;
+    formHeightOption = "720";
     formError = "";
     pendingDeleteId = "";
     formOpen = true;
@@ -121,8 +138,10 @@
     formTitle = page.title;
     formDescription = page.description;
     formUrl = page.url;
+    formAllowScripts = page.allow_scripts;
     formAllowSameOrigin = page.allow_same_origin;
     formIframeHeight = page.iframe_height;
+    formHeightOption = heightOptionFor(page.iframe_height);
     formError = "";
     pendingDeleteId = "";
     formOpen = true;
@@ -144,6 +163,7 @@
       title: formTitle,
       description: formDescription,
       url: formUrl,
+      allow_scripts: formAllowScripts,
       allow_same_origin: formAllowSameOrigin,
       iframe_height: formIframeHeight,
     };
@@ -279,8 +299,11 @@
               <span class="embedded-page-scope-badge">
                 {scope === "global" ? "GLOBAL · CUSTOM" : "PERSONAL · CUSTOM"}
               </span>
+              {#if page.allow_scripts}
+                <span class="embedded-page-permission-badge">SCRIPTS</span>
+              {/if}
               {#if page.allow_same_origin}
-                <span class="embedded-page-trust-badge">TRUSTED</span>
+                <span class="embedded-page-permission-badge">SAME ORIGIN</span>
               {/if}
             </div>
             <span>{pageHost(page)}</span>
@@ -472,52 +495,98 @@
           embedding; those pages can still be opened externally.
         </p>
 
-        <label for="embedded-page-height">Iframe height</label>
-        <div class="embedded-page-height-control">
-          <input
-            id="embedded-page-height"
-            class="text-input"
-            type="number"
-            bind:value={formIframeHeight}
-            min="320"
-            max="2400"
-            step="40"
-            inputmode="numeric"
-            required
-            data-od-id="embedded-page-height"
-          />
-          <span aria-hidden="true">px</span>
-        </div>
+        <label for="embedded-page-height-preset">Iframe height</label>
+        <select
+          id="embedded-page-height-preset"
+          class="select-input embedded-page-height-preset"
+          value={formHeightOption}
+          onchange={(event) =>
+            chooseHeightOption(event.currentTarget.value as HeightOption)}
+          data-od-id="embedded-page-height-preset"
+        >
+          <option value="480">Compact · 480px</option>
+          <option value="720">Standard · 720px</option>
+          <option value="1080">Tall · 1080px</option>
+          <option value="custom">Custom</option>
+        </select>
+        {#if formHeightOption === "custom"}
+          <label for="embedded-page-height">Custom iframe height</label>
+          <div class="embedded-page-height-control">
+            <input
+              id="embedded-page-height"
+              class="text-input"
+              type="number"
+              bind:value={formIframeHeight}
+              min="320"
+              max="2400"
+              step="40"
+              inputmode="numeric"
+              required
+              data-od-id="embedded-page-height-custom"
+            />
+            <span aria-hidden="true">px</span>
+          </div>
+        {/if}
         <p class="field-note">
-          Set between 320 and 2400 pixels. The iframe width remains responsive.
+          Custom heights may be set between 320 and 2400 pixels. The iframe width
+          remains responsive.
         </p>
 
-        <div class="embedded-page-trust-control">
+        <fieldset class="embedded-page-permissions">
+          <legend>Iframe permissions</legend>
           <button
-            class="ui-toggle-button embedded-page-trust-toggle"
+            class="ui-toggle-button embedded-page-permission-toggle"
             type="button"
-            aria-pressed={formAllowSameOrigin}
-            aria-describedby="embedded-page-trust-warning"
+            aria-pressed={formAllowScripts}
+            aria-describedby="embedded-page-scripts-warning"
             disabled={busyAction !== ""}
-            onclick={() => (formAllowSameOrigin = !formAllowSameOrigin)}
-            data-od-id="toggle-embedded-page-trust"
+            onclick={() => (formAllowScripts = !formAllowScripts)}
+            data-od-id="toggle-embedded-page-scripts"
           >
             <span class="ui-toggle-indicator" aria-hidden="true"></span>
             <span>
-              <strong>Trusted page</strong>
+              <strong>Allow scripts</strong>
               <small>
-                {formAllowSameOrigin
-                  ? "Same-origin access enabled"
-                  : "Restricted sandbox"}
+                {formAllowScripts ? "Script execution enabled" : "Scripts blocked"}
               </small>
             </span>
           </button>
-          <p id="embedded-page-trust-warning" class="field-note">
-            Enable only for a site you trust. It keeps the embedded site's real
-            origin, which can fix module-script CORS failures, but weakens iframe
-            isolation. It cannot override a site's embedding policy.
+          <p id="embedded-page-scripts-warning" class="field-note">
+            Enables JavaScript inside the embedded page. Interactive applications
+            may require this permission.
           </p>
-        </div>
+
+          <button
+            class="ui-toggle-button embedded-page-permission-toggle"
+            type="button"
+            aria-pressed={formAllowSameOrigin}
+            aria-describedby="embedded-page-origin-warning"
+            disabled={busyAction !== ""}
+            onclick={() => (formAllowSameOrigin = !formAllowSameOrigin)}
+            data-od-id="toggle-embedded-page-same-origin"
+          >
+            <span class="ui-toggle-indicator" aria-hidden="true"></span>
+            <span>
+              <strong>Allow same-origin</strong>
+              <small>
+                {formAllowSameOrigin
+                  ? "Same-origin access enabled"
+                  : "Opaque sandbox origin"}
+              </small>
+            </span>
+          </button>
+          <p id="embedded-page-origin-warning" class="field-note">
+            Preserves the embedded site's real origin for storage, cookies, and
+            origin checks. It cannot override a site's embedding policy.
+          </p>
+
+          {#if formAllowScripts && formAllowSameOrigin}
+            <p class="embedded-page-permission-warning" role="status">
+              Both permissions are enabled. This is the least isolated sandbox
+              mode; use it only for a page you trust.
+            </p>
+          {/if}
+        </fieldset>
 
         {#if formError}
           <p class="form-error" role="alert">{formError}</p>

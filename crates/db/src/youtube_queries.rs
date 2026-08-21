@@ -198,17 +198,58 @@ pub async fn create_youtube_subscription(
     user_id: &str,
     channel_id: &str,
 ) -> Result<bool, sqlx::Error> {
-    Ok(sqlx::query(
+    create_youtube_subscription_in_groups(pool, user_id, channel_id, &[]).await
+}
+
+/// Creates one user-to-channel subscription and its initial group memberships atomically.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the transaction cannot be committed or a group no
+/// longer belongs to the user.
+pub async fn create_youtube_subscription_in_groups(
+    pool: &SqlitePool,
+    user_id: &str,
+    channel_id: &str,
+    group_ids: &[String],
+) -> Result<bool, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    let inserted = sqlx::query(
         "INSERT INTO youtube_subscriptions (user_id, channel_id, created_at) VALUES (?, ?, ?) \
          ON CONFLICT(user_id, channel_id) DO NOTHING",
     )
     .bind(user_id)
     .bind(channel_id)
     .bind(chrono::Utc::now().to_rfc3339())
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?
     .rows_affected()
-        == 1)
+        == 1;
+    if !inserted {
+        transaction.rollback().await?;
+        return Ok(false);
+    }
+    for group_id in group_ids {
+        let added = sqlx::query(
+            "INSERT INTO youtube_group_channels (group_id, channel_id, position) \
+             SELECT g.id, ?, COALESCE(MAX(gc.position), -1) + 1 \
+             FROM youtube_groups g \
+             LEFT JOIN youtube_group_channels gc ON gc.group_id = g.id \
+             WHERE g.id = ? AND g.user_id = ? GROUP BY g.id",
+        )
+        .bind(channel_id)
+        .bind(group_id)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if added == 0 {
+            transaction.rollback().await?;
+            return Err(sqlx::Error::RowNotFound);
+        }
+    }
+    transaction.commit().await?;
+    Ok(true)
 }
 
 /// Removes a subscription and its user-owned group memberships.
@@ -498,6 +539,106 @@ pub async fn update_youtube_group(
     Ok(true)
 }
 
+/// Reorders every group owned by one user in a single transaction.
+///
+/// The caller must send the complete set of group IDs. A spare valid position is used as a swap
+/// slot so the per-user unique position constraint remains satisfied throughout the reorder.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the groups cannot be loaded or persisted.
+pub async fn reorder_youtube_groups(
+    pool: &SqlitePool,
+    user_id: &str,
+    group_ids: &[String],
+) -> Result<bool, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    let records = sqlx::query_as::<_, YoutubeGroupRecord>(
+        "SELECT id, name, position, created_at, updated_at FROM youtube_groups \
+         WHERE user_id = ? ORDER BY position ASC",
+    )
+    .bind(user_id)
+    .fetch_all(&mut *transaction)
+    .await?;
+    let requested = group_ids.iter().collect::<std::collections::HashSet<_>>();
+    if records.len() != group_ids.len()
+        || requested.len() != group_ids.len()
+        || records.iter().any(|group| !requested.contains(&group.id))
+    {
+        transaction.rollback().await?;
+        return Ok(false);
+    }
+
+    let mut positions = records
+        .into_iter()
+        .map(|group| (group.id, group.position))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut occupied = positions
+        .values()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    let first_spare_position = i64::try_from(group_ids.len()).unwrap_or(128);
+    let spare = (first_spare_position..=127)
+        .find(|position| !occupied.contains(position))
+        .ok_or(sqlx::Error::RowNotFound)?;
+    let now = chrono::Utc::now().to_rfc3339();
+
+    for (target, group_id) in group_ids.iter().enumerate() {
+        let target = i64::try_from(target).unwrap_or(127);
+        let current = positions[group_id];
+        if current == target {
+            continue;
+        }
+        let occupant = positions
+            .iter()
+            .find_map(|(id, position)| (*position == target).then(|| id.clone()));
+
+        sqlx::query(
+            "UPDATE youtube_groups SET position = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+        )
+        .bind(spare)
+        .bind(&now)
+        .bind(group_id)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?;
+        positions.insert(group_id.clone(), spare);
+        occupied.remove(&current);
+        occupied.insert(spare);
+
+        if let Some(occupant_id) = occupant {
+            sqlx::query(
+                "UPDATE youtube_groups SET position = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+            )
+            .bind(current)
+            .bind(&now)
+            .bind(&occupant_id)
+            .bind(user_id)
+            .execute(&mut *transaction)
+            .await?;
+            positions.insert(occupant_id, current);
+            occupied.remove(&target);
+            occupied.insert(current);
+        }
+
+        sqlx::query(
+            "UPDATE youtube_groups SET position = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+        )
+        .bind(target)
+        .bind(&now)
+        .bind(group_id)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?;
+        positions.insert(group_id.clone(), target);
+        occupied.remove(&spare);
+        occupied.insert(target);
+    }
+
+    transaction.commit().await?;
+    Ok(true)
+}
+
 /// Deletes one user-owned group.
 ///
 /// # Errors
@@ -739,6 +880,54 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+        let reordered = vec![japan.id.clone(), gaming.id.clone()];
+        assert!(
+            reorder_youtube_groups(&pool, &first.id, &reordered)
+                .await
+                .unwrap()
+        );
+        let groups = list_youtube_groups(&pool, &first.id).await.unwrap();
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![japan.id.as_str(), gaming.id.as_str()]
+        );
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.position)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert!(
+            !reorder_youtube_groups(&pool, &first.id, std::slice::from_ref(&gaming.id))
+                .await
+                .unwrap()
+        );
+
+        let second_channel_id = "UC0000000000000000000000";
+        ensure_youtube_channel(&pool, second_channel_id)
+            .await
+            .unwrap();
+        assert!(
+            create_youtube_subscription_in_groups(
+                &pool,
+                &first.id,
+                second_channel_id,
+                std::slice::from_ref(&japan.id),
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(
+            list_youtube_group_channels(&pool, &first.id)
+                .await
+                .unwrap()
+                .len(),
+            3
         );
 
         delete_youtube_subscription(&pool, &first.id, channel_id)
