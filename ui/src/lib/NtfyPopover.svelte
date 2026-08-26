@@ -20,6 +20,9 @@
   } from "$lib/api";
 
   const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1_000;
+  const PREVIEW_PAGE_SIZE = 5;
+  const PREVIEW_SCROLL_THRESHOLD_PX = 48;
+  const PREVIEW_MAX_ITEMS = 200;
   const SWIPE_THRESHOLD_PX = 72;
   const SWIPE_MAX_OFFSET_PX = 136;
   const SWIPE_EXIT_MS = 170;
@@ -36,6 +39,9 @@
 
   let open = $state(false);
   let loading = $state(false);
+  let loadingMore = $state(false);
+  let hasMore = $state(true);
+  let visibleLimit = $state(PREVIEW_PAGE_SIZE);
   let error = $state("");
   let response = $state.raw<NtfyResponse | null>(null);
   let popover = $state<HTMLDivElement>();
@@ -78,11 +84,12 @@
     };
   }
 
-  async function load() {
-    if (loading) return;
+  async function load({ announce = true, limit = visibleLimit } = {}) {
+    if (loading) return false;
     loading = true;
     try {
-      const next = await fetchNtfy({ limit: 5 });
+      const requestedLimit = Math.min(limit, PREVIEW_MAX_ITEMS);
+      const next = await fetchNtfy({ limit: requestedLimit });
       const unseen = next.notifications.filter(
         (notification) => !knownRemoteIds.has(notification.remote_id),
       );
@@ -91,18 +98,26 @@
       );
       response = {
         ...next,
-        notifications: next.notifications.filter(
-          (notification) => !dismissedPreviewIds.has(notification.id),
-        ),
+        notifications: next.notifications
+          .filter(
+            (notification) => !dismissedPreviewIds.has(notification.id),
+          )
+          .slice(0, visibleLimit),
       };
-      if (hasBaseline && unseen.length) announceNotifications(unseen);
+      hasMore =
+        requestedLimit < PREVIEW_MAX_ITEMS &&
+        next.notifications.length >= requestedLimit;
+      if (hasBaseline && announce && unseen.length)
+        announceNotifications(unseen);
       hasBaseline = true;
       error = "";
+      return true;
     } catch (reason: unknown) {
       error =
         reason instanceof Error
           ? reason.message
           : "Unable to load notifications";
+      return false;
     } finally {
       loading = false;
     }
@@ -111,6 +126,14 @@
   async function toggle() {
     open = !open;
     if (!open) return;
+    visibleLimit = PREVIEW_PAGE_SIZE;
+    hasMore = true;
+    if (response) {
+      response = {
+        ...response,
+        notifications: response.notifications.slice(0, PREVIEW_PAGE_SIZE),
+      };
+    }
     await load();
     if ((response?.unread_count ?? 0) > 0) {
       try {
@@ -161,7 +184,7 @@
           ...response.notifications.filter(
             (item) => item.remote_id !== notification.remote_id,
           ),
-        ].slice(0, 5),
+        ].slice(0, visibleLimit),
         unread_count: open ? 0 : realtime.unread_count,
       };
     } else {
@@ -199,7 +222,10 @@
           0,
           notification,
         );
-        response = { ...response, notifications: notifications.slice(0, 5) };
+        response = {
+          ...response,
+          notifications: notifications.slice(0, visibleLimit),
+        };
       }
       onToast(
         reason instanceof Error
@@ -217,6 +243,31 @@
         (item) => item.id !== notificationId,
       ),
     };
+  }
+
+  function handlePreviewScroll(event: Event) {
+    const list = event.currentTarget as HTMLDivElement;
+    const remaining = list.scrollHeight - list.scrollTop - list.clientHeight;
+    if (remaining > PREVIEW_SCROLL_THRESHOLD_PX) return;
+    void loadMore();
+  }
+
+  async function loadMore() {
+    if (loading || loadingMore || !hasMore) return;
+    const previousLimit = visibleLimit;
+    const nextLimit = Math.min(
+      previousLimit + PREVIEW_PAGE_SIZE,
+      PREVIEW_MAX_ITEMS,
+    );
+    if (nextLimit === previousLimit) {
+      hasMore = false;
+      return;
+    }
+    visibleLimit = nextLimit;
+    loadingMore = true;
+    const loaded = await load({ announce: false, limit: nextLimit });
+    if (!loaded) visibleLimit = previousLimit;
+    loadingMore = false;
   }
 
   function beginSwipe(event: PointerEvent, notification: NtfyNotification) {
@@ -450,7 +501,11 @@
         >
       </div>
     {:else}
-      <div class="ntfy-popover-list overlay-scroll-region">
+      <div
+        class="ntfy-popover-list overlay-scroll-region"
+        aria-busy={loadingMore}
+        onscroll={handlePreviewScroll}
+      >
         {#each response.notifications as notification (notification.id)}
           {@const destination = safeUrl(notification.click_url)}
           {@const tagPresentation = presentNtfyTags(notification.tags)}
@@ -536,6 +591,13 @@
             <p>New messages from subscribed topics will appear here.</p>
           </div>
         {/each}
+        {#if loadingMore}
+          <div class="ntfy-popover-page-status" role="status">
+            Loading older notifications…
+          </div>
+        {:else if !hasMore && response.notifications.length > PREVIEW_PAGE_SIZE}
+          <div class="ntfy-popover-page-status">End of notifications</div>
+        {/if}
       </div>
       {#if response.connection.last_error}
         <p class="ntfy-popover-sync-error" role="status">
@@ -637,6 +699,18 @@
   .ntfy-popover-list {
     max-height: min(460px, 60vh);
     overflow-y: auto;
+  }
+  .ntfy-popover-page-status {
+    display: grid;
+    min-height: 36px;
+    place-items: center;
+    padding: 8px 12px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    text-align: center;
+    text-transform: uppercase;
   }
   .ntfy-popover-swipe-shell {
     --swipe-offset: 0px;

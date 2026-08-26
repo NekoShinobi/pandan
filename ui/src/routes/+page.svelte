@@ -56,6 +56,7 @@
   import DashboardWidgetCard from "$lib/DashboardWidgetCard.svelte";
   import EmbeddedPage from "$lib/EmbeddedPage.svelte";
   import EmbeddedPagesSettings from "$lib/EmbeddedPagesSettings.svelte";
+  import IntegrationWidget from "$lib/IntegrationWidget.svelte";
   import JournalPage from "$lib/JournalPage.svelte";
   import KanbanPage from "$lib/KanbanPage.svelte";
   import LinesPage from "$lib/LinesPage.svelte";
@@ -313,12 +314,6 @@
       size: "wide",
     },
     {
-      kind: "task-progress",
-      title: "Task progress",
-      description: "A focused completion readout.",
-      size: "compact",
-    },
-    {
       kind: "feed-list",
       title: "Feed",
       description: "Filter and read the curated feed.",
@@ -383,12 +378,6 @@
       title: "Code releases",
       description: "GitHub, GitLab, Codeberg, Gitea, and Forgejo releases.",
       size: "wide",
-    },
-    {
-      kind: "streams",
-      title: "Live channels",
-      description: "Twitch or Kick channel availability.",
-      size: "standard",
     },
   ];
 
@@ -590,6 +579,7 @@
   let archivedTasksError = $state("");
   let feeds = $derived<FeedItem[]>(dashboard?.feeds ?? []);
   let widgets = $derived<DashboardWidget[]>(dashboard?.widgets ?? []);
+  let streamTrackerWidget = $derived(widgets.find(isUtilityStreamTracker));
   let savingLayout = $state(false);
   let layoutEditing = $state(false);
   let addingWidgetKind = $state<WidgetKind | "">("");
@@ -721,9 +711,6 @@
   const mobileNavigation = new MediaQuery("max-width: 720px", false);
 
   let completedCount = $derived(tasks.filter((task) => task.completed).length);
-  let taskProgress = $derived(
-    tasks.length === 0 ? 0 : Math.round((completedCount / tasks.length) * 100),
-  );
   let todayTasks = $derived(
     tasks.filter(
       (task) =>
@@ -2120,9 +2107,17 @@
   }
 
   function dashboardWidgets() {
-    return [...widgets].sort(
-      (a, b) =>
-        a.grid_y - b.grid_y || a.grid_x - b.grid_x || a.position - b.position,
+    return widgets
+      .filter((widget) => !isUtilityStreamTracker(widget))
+      .sort(
+        (a, b) =>
+          a.grid_y - b.grid_y || a.grid_x - b.grid_x || a.position - b.position,
+      );
+  }
+
+  function isUtilityStreamTracker(widget: DashboardWidget) {
+    return (
+      widget.kind === "streams" && widget.config.placement === "utility_rail"
     );
   }
 
@@ -3007,6 +3002,16 @@
       month: "short",
       year: "numeric",
     }).format(new Date(createdAt));
+  }
+
+  function lastLogin(lastLoginAt: string | null) {
+    if (!lastLoginAt) return "Never";
+    const date = new Date(lastLoginAt);
+    if (Number.isNaN(date.getTime())) return "Unknown";
+    return new Intl.DateTimeFormat("en", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(date);
   }
 
   async function signOut() {
@@ -3914,7 +3919,6 @@
                               {feeds}
                               settings={dashboard.settings}
                               {completedCount}
-                              {taskProgress}
                               {todayTasks}
                               {todayCompletedCount}
                               {todayTaskProgress}
@@ -4018,13 +4022,20 @@
                       {/each}
                     </div>
                   </section>
-                  <section class="utility-box utility-progress">
-                    <p>[ TASK.PROGRESS ]</p>
-                    <strong
-                      >{completedCount}<span> / {tasks.length}</span></strong
+                  {#if streamTrackerWidget}
+                    <section
+                      class="utility-box utility-stream-tracker"
+                      data-od-id="dashboard-stream-tracker"
                     >
-                    <span>Completed tasks</span>
-                  </section>
+                      <IntegrationWidget
+                        widget={streamTrackerWidget}
+                        variant="rail"
+                        onUpdate={updateWidgetInstance}
+                        onToast={showToast}
+                        onOpenCalendarDate={openDashboardCalendarDate}
+                      />
+                    </section>
+                  {/if}
                   <section class="utility-box utility-shortcuts">
                     <p>[ COMMANDS ]</p>
                     <button type="button" onclick={openWidgetLibrary}
@@ -6321,6 +6332,9 @@
                 </div>
                 <span>{user.email}</span>
                 <small>Joined {memberSince(user.created_at)}</small>
+                <small data-od-id={`user-last-login-${user.id}`}
+                  >Last login {lastLogin(user.last_login_at)}</small
+                >
               </div>
               <div class="admin-user-controls">
                 <label class="sr-only" for={`role-${user.id}`}

@@ -16,7 +16,6 @@
     feeds,
     settings,
     completedCount,
-    taskProgress,
     todayTasks,
     todayCompletedCount,
     todayTaskProgress,
@@ -36,7 +35,6 @@
     feeds: FeedItem[];
     settings: UserSettings;
     completedCount: number;
-    taskProgress: number;
     todayTasks: Task[];
     todayCompletedCount: number;
     todayTaskProgress: number;
@@ -91,7 +89,6 @@
       "task-summary": "Today",
       focus: "Next focus",
       "task-list": "Tasks",
-      "task-progress": "Progress",
       "feed-list": "Feed",
       "feed-sources": "Sources",
       youtube: "YouTube",
@@ -282,15 +279,6 @@
           {savingTask ? "Adding…" : "Add task"}
         </button>
       </form>
-    {:else if widget.kind === "task-progress"}
-      <p class="widget-kicker">Progress</p>
-      <div class="task-count mono">{completedCount} / {tasks.length}</div>
-      <p class="task-count-label">
-        Tasks completed. Select any task checkbox to update progress.
-      </p>
-      <div class="progress-track progress-spaced">
-        <div class="progress-fill" style:--progress={`${taskProgress}%`}></div>
-      </div>
     {:else if widget.kind === "feed-list"}
       <div class="widget-head feed-widget-head">
         <div class="filter-row" aria-label="Feed filters">

@@ -179,6 +179,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "047_ntfy_remove_archived",
         include_str!("../migrations/047_ntfy_remove_archived.sql"),
     ),
+    (
+        "048_user_last_login",
+        include_str!("../migrations/048_user_last_login.sql"),
+    ),
+    (
+        "049_stream_tracker_rail",
+        include_str!("../migrations/049_stream_tracker_rail.sql"),
+    ),
 ];
 
 /// Maps migration names used by earlier development builds to their canonical names.
@@ -744,6 +752,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_creation_records_and_preserves_the_users_last_login() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (user, _) = queries::create_account(
+            &pool,
+            "activity@example.com",
+            "$argon2id$activity",
+            "Activity",
+        )
+        .await
+        .expect("account creates");
+
+        let before_login = queries::list_managed_users(&pool)
+            .await
+            .expect("managed users load");
+        assert_eq!(before_login[0].last_login_at, None);
+
+        queries::create_session(&pool, "activity-session", &user.id, "2999-01-01T00:00:00Z")
+            .await
+            .expect("session creates");
+        let after_login = queries::list_managed_users(&pool)
+            .await
+            .expect("managed users reload");
+        assert!(after_login[0].last_login_at.is_some());
+
+        queries::delete_session(&pool, "activity-session")
+            .await
+            .expect("session deletes");
+        let after_logout = queries::list_managed_users(&pool)
+            .await
+            .expect("managed users reload after logout");
+        assert_eq!(after_logout[0].last_login_at, after_login[0].last_login_at);
+    }
+
+    #[tokio::test]
     async fn bible_verse_widget_migration_preserves_existing_widgets_and_secrets() {
         let options = SqliteConnectOptions::from_str("sqlite::memory:")
             .expect("memory database URL parses")
@@ -916,6 +958,85 @@ mod tests {
 
         assert!(
             queries::create_dashboard_widget(&pool, &user.id, "search", 0, "standard")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_tracker_migration_replaces_task_progress_and_preserves_legacy_streams() {
+        let options = SqliteConnectOptions::from_str("sqlite::memory:")
+            .expect("memory database URL parses")
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("database connects");
+
+        for (_, migration) in MIGRATIONS.iter().take(48) {
+            sqlx::raw_sql(*migration)
+                .execute(&pool)
+                .await
+                .expect("legacy migration applies");
+        }
+        let (user, _) = queries::create_account(
+            &pool,
+            "stream-upgrade@example.com",
+            "$argon2id$upgrade",
+            "Stream Upgrade",
+        )
+        .await
+        .expect("legacy account creates");
+        sqlx::query(
+            "DELETE FROM dashboard_widgets WHERE user_id = ? AND json_extract(config_json, '$.placement') = 'utility_rail'",
+        )
+        .bind(&user.id)
+        .execute(&pool)
+        .await
+        .expect("current default tracker is removed from the legacy fixture");
+        sqlx::query(
+            "INSERT INTO dashboard_widgets (id, user_id, kind, workspace, position, size, config_json, grid_x, grid_y, grid_w, grid_h, created_at, updated_at) VALUES (?, ?, 'task-progress', 0, 90, 'compact', '{}', 8, 9, 4, 6, datetime('now'), datetime('now'))",
+        )
+        .bind(format!("{}-task-progress", user.id))
+        .bind(&user.id)
+        .execute(&pool)
+        .await
+        .expect("legacy Task.Progress widget inserts");
+        let legacy_stream =
+            queries::create_dashboard_widget(&pool, &user.id, "streams", 0, "standard")
+                .await
+                .expect("legacy stream widget creates");
+        queries::upsert_widget_secret(&pool, &user.id, &legacy_stream.id, "encrypted-token")
+            .await
+            .expect("legacy stream secret stores");
+
+        sqlx::raw_sql(MIGRATIONS[48].1)
+            .execute(&pool)
+            .await
+            .expect("stream tracker migration applies");
+
+        let widgets = queries::list_dashboard_widgets(&pool, &user.id)
+            .await
+            .expect("widgets load");
+        assert!(widgets.iter().all(|widget| widget.kind != "task-progress"));
+        assert_eq!(
+            widgets
+                .iter()
+                .filter(|widget| widget.config["placement"] == "utility_rail")
+                .count(),
+            1
+        );
+        assert!(widgets.iter().any(|widget| widget.id == legacy_stream.id));
+        assert_eq!(
+            queries::get_widget_secret(&pool, &user.id, &legacy_stream.id)
+                .await
+                .expect("legacy stream secret loads")
+                .as_deref(),
+            Some("encrypted-token")
+        );
+        assert!(
+            queries::create_dashboard_widget(&pool, &user.id, "task-progress", 0, "compact")
                 .await
                 .is_err()
         );

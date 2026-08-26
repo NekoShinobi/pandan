@@ -78,6 +78,7 @@ Private dashboard accounts. Passwords are stored only as Argon2id PHC strings.
 | `password_hash` | TEXT | Required Argon2id hash                            |
 | `role`          | TEXT | `administrator` or `member`; defaults to `member` |
 | `created_at`    | TEXT | Required, RFC 3339 timestamp                      |
+| `last_login_at` | TEXT | Nullable RFC 3339 timestamp                       |
 
 The first-run setup transaction creates the initial user with the `administrator` role and writes
 `app_metadata.onboarding_complete`. Setup may use a password or a verified OIDC identity; for OIDC,
@@ -85,6 +86,9 @@ the matching `oidc_identities` row is committed in the same transaction. The met
 one-time database claim: setup can succeed only when both the claim and all users are absent.
 Existing installations promote their earliest account to administrator when migration
 `005_onboarding` is first applied.
+
+Creating a browser session records `last_login_at`; the value remains after logout or session
+expiry so the administrator directory can report the account's latest successful sign-in.
 
 Administrators can list all accounts, promote or demote other users, and remove other accounts.
 These operations are authorized on the server. A user cannot mutate their own administrator role
@@ -864,6 +868,9 @@ while retaining the manually entered topic names and labels so they can be polle
 Private local copies of ntfy messages. `(topic_id, remote_id)` is unique, making recovery polling
 and realtime replay idempotent. `seen_at` drives the header count. Deleting sends ntfy's sequence
 deletion request upstream first and permanently removes the local row only after that succeeds.
+Deleting the selected topic, or the combined inbox, submits one account-scoped Pandan request; the
+server processes the matching ntfy sequence deletions serially with non-blocking pacing so bulk
+actions stay below the provider's default request burst rate.
 Migration 047 purges rows archived by earlier builds; `archived_at` remains as a compatibility
 column but the application no longer writes or lists archived notifications. Tags and actions
 retain the bounded upstream JSON; view links and copy actions run in the browser, while HTTP actions
@@ -1011,6 +1018,11 @@ atomically so a resize or reorder cannot be only partially saved.
 The `search` web search widget was removed in migration `036`; web search now lives in the global
 command palette. The migration deletes placed instances, closes the reading-order gap they leave
 behind, and drops `search` from the `kind` check.
+
+Migration `049` removes the legacy `task-progress` kind and seeds one account-owned `streams`
+widget with `config_json.placement = "utility_rail"`. That system widget stores separate Twitch and
+Kick account lists for the dashboard's fixed right rail; legacy movable `streams` widgets remain
+valid and retain their encrypted credentials.
 
 | Column        | Type    | Constraints                                                         |
 | ------------- | ------- | ------------------------------------------------------------------- |

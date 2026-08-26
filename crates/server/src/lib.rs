@@ -1115,6 +1115,14 @@ async fn delete_widget(
     widget_id: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let account = authenticated_account(&state, &request).await?;
+    let widget = db::queries::get_dashboard_widget(&state.pool, &account.id, &widget_id)
+        .await?
+        .ok_or(ApiError::NotFound("widget not found"))?;
+    if widget.kind == "streams" && widget.config["placement"] == "utility_rail" {
+        return Err(ApiError::BadRequest(
+            "the dashboard stream tracker cannot be removed",
+        ));
+    }
     if db::queries::delete_dashboard_widget(&state.pool, &account.id, &widget_id).await? {
         Ok(HttpResponse::NoContent().finish())
     } else {
@@ -1423,7 +1431,6 @@ fn validate_widget_kind(kind: &str) -> Result<(), ApiError> {
             | "task-summary"
             | "focus"
             | "task-list"
-            | "task-progress"
             | "feed-list"
             | "feed-sources"
             | "youtube"
@@ -3816,6 +3823,15 @@ mod tests {
         assert_eq!(dashboard.settings.display_name, "Ada");
         assert_eq!(dashboard.tasks.len(), 3);
         assert_eq!(dashboard.widgets.len(), 7);
+        assert!(
+            dashboard
+                .widgets
+                .iter()
+                .all(|widget| widget.kind != "task-progress")
+        );
+        assert!(dashboard.widgets.iter().any(|widget| {
+            widget.kind == "streams" && widget.config["placement"] == "utility_rail"
+        }));
 
         let created_widget: DashboardWidget = test::call_and_read_body_json(
             &app,
@@ -4652,6 +4668,7 @@ mod tests {
         )
         .await;
         assert_eq!(users.len(), 2);
+        assert!(users.iter().all(|user| user.last_login_at.is_some()));
 
         let self_change = test::call_service(
             &app,
@@ -4681,6 +4698,7 @@ mod tests {
         )
         .await;
         assert_eq!(promoted.role, "administrator");
+        assert!(promoted.last_login_at.is_some());
 
         let delete_previous_administrator = test::call_service(
             &app,

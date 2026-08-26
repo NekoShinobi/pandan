@@ -20,9 +20,8 @@ const DEFAULT_WIDGETS: &[(&str, i64, i64, &str, i64, i64, i64, i64)] = &[
     ("task-summary", 0, 1, "compact", 8, 0, 4, 5),
     ("focus", 0, 2, "standard", 0, 5, 6, 4),
     ("task-list", 0, 3, "wide", 0, 9, 8, 6),
-    ("task-progress", 0, 4, "compact", 8, 9, 4, 6),
-    ("feed-list", 0, 5, "wide", 0, 15, 8, 6),
-    ("feed-sources", 0, 6, "compact", 8, 15, 4, 6),
+    ("feed-list", 0, 4, "wide", 0, 15, 8, 6),
+    ("feed-sources", 0, 5, "compact", 8, 9, 4, 6),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2857,6 +2856,17 @@ async fn insert_default_widgets(
         .execute(&mut **transaction)
         .await?;
     }
+    sqlx::query(
+        "INSERT INTO dashboard_widgets (id, user_id, kind, workspace, position, size, config_json, grid_x, grid_y, grid_w, grid_h, created_at, updated_at) VALUES (?, ?, 'streams', 0, ?, 'standard', ?, 0, 0, 4, 4, ?, ?)",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(user_id)
+    .bind(i64::try_from(DEFAULT_WIDGETS.len()).expect("default widget count fits i64"))
+    .bind(r#"{"placement":"utility_rail","twitch_channels":[],"kick_channels":[]}"#)
+    .bind(now)
+    .bind(now)
+    .execute(&mut **transaction)
+    .await?;
     Ok(())
 }
 
@@ -3485,15 +3495,22 @@ pub async fn create_session(
     expires_at: &str,
 ) -> Result<(), sqlx::Error> {
     let now = chrono::Utc::now().to_rfc3339();
+    let mut transaction = pool.begin().await?;
     sqlx::query(
         "INSERT INTO sessions (token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
     )
     .bind(token)
     .bind(user_id)
     .bind(expires_at)
-    .bind(now)
-    .execute(pool)
+    .bind(&now)
+    .execute(&mut *transaction)
     .await?;
+    sqlx::query("UPDATE users SET last_login_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
     Ok(())
 }
 
@@ -4033,7 +4050,8 @@ pub async fn update_user_appearance(
 /// Returns the underlying `SQLx` error when the query cannot be completed.
 pub async fn list_managed_users(pool: &SqlitePool) -> Result<Vec<ManagedUser>, sqlx::Error> {
     sqlx::query_as::<_, ManagedUser>(
-        "SELECT users.id, users.email, user_settings.display_name, users.role, users.created_at \
+        "SELECT users.id, users.email, user_settings.display_name, users.role, users.created_at, \
+                users.last_login_at \
          FROM users \
          JOIN user_settings ON user_settings.user_id = users.id \
          ORDER BY users.role = 'administrator' DESC, users.created_at ASC",
@@ -4229,7 +4247,8 @@ pub async fn update_managed_user_role(
     }
 
     let user = sqlx::query_as::<_, ManagedUser>(
-        "SELECT users.id, users.email, user_settings.display_name, users.role, users.created_at \
+        "SELECT users.id, users.email, user_settings.display_name, users.role, users.created_at, \
+                users.last_login_at \
          FROM users \
          JOIN user_settings ON user_settings.user_id = users.id \
          WHERE users.id = ?",

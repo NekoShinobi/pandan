@@ -81,6 +81,7 @@
   let query = $state("");
   let activeView = $state<YoutubeView>("latest");
   let activeGroupId = $state("all");
+  let activeChannelId = $state<string | null>(null);
   let busyChannelId = $state("");
   let busyVideoId = $state("");
   let pendingChannelDelete = $state("");
@@ -122,6 +123,7 @@
     const needle = query.trim().toLowerCase();
     const videos = activeView === "watch-later" ? reader.watch_later : reader.videos;
     return videos.filter((video) => {
+      if (activeChannelId && video.channel_id !== activeChannelId) return false;
       if (
         activeView === "latest" &&
         activeChannelIds &&
@@ -280,6 +282,7 @@
     try {
       await deleteYoutubeSubscription(subscription.channel_id);
       reader = await fetchYoutubeReader();
+      if (activeChannelId === subscription.channel_id) activeChannelId = null;
       pendingChannelDelete = "";
     } catch (reason: unknown) {
       pageError = message(reason, "Unable to remove this channel");
@@ -303,6 +306,17 @@
   function selectView(view: YoutubeView) {
     activeView = view;
     if (view === "watch-later") activeGroupId = "all";
+  }
+
+  function selectGroup(groupId: string) {
+    activeGroupId = groupId;
+    activeChannelId = null;
+  }
+
+  function toggleChannelFilter(channelIdValue: string) {
+    activeChannelId =
+      activeChannelId === channelIdValue ? null : channelIdValue;
+    if (activeChannelId) activeGroupId = "all";
   }
 
   async function toggleWatchLater(video: YoutubeVideo) {
@@ -486,8 +500,8 @@
       <nav aria-label="YouTube categories">
         <button
           type="button"
-          aria-pressed={activeGroupId === "all"}
-          onclick={() => (activeGroupId = "all")}>All channels</button
+          aria-pressed={activeGroupId === "all" && activeChannelId === null}
+          onclick={() => selectGroup("all")}>All channels</button
         >
         <DragDropProvider
           sensors={youtubeGroupSensors}
@@ -503,7 +517,7 @@
                 active={activeGroupId === group.id}
                 disabled={savingGroupOrder}
                 reducedMotion={reducedMotion.current}
-                onselect={(groupId) => (activeGroupId = groupId)}
+                onselect={selectGroup}
               />
             {/each}
           </div>
@@ -577,10 +591,21 @@
       </header>
       {#each reader.subscriptions as subscription (subscription.channel_id)}
         <article
-          class="youtube-channel"
+          class={[
+            "youtube-channel",
+            activeChannelId === subscription.channel_id && "active",
+          ]}
           data-od-id={`youtube-channel-${subscription.channel_id}`}
         >
-          <a href={subscription.channel_url} target="_blank" rel="noreferrer">
+          <button
+            class="youtube-channel-filter"
+            type="button"
+            aria-label={`Filter videos by ${subscription.title}`}
+            aria-pressed={activeChannelId === subscription.channel_id}
+            onclick={() => toggleChannelFilter(subscription.channel_id)}
+            data-od-id={`youtube-channel-filter-${subscription.channel_id}`}
+          ></button>
+          <div class="youtube-channel-identity">
             {#if subscription.thumbnail_url}<img
                 class="youtube-channel-avatar directory-avatar"
                 src={subscription.thumbnail_url}
@@ -596,11 +621,21 @@
                 >{subscription.channel_id}</small
               >
             </span>
+          </div>
+          <a
+            class="youtube-channel-external"
+            href={subscription.channel_url}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={`Open ${subscription.title} on YouTube`}
+            data-od-id={`youtube-channel-external-${subscription.channel_id}`}
+          >
+            <ExternalLink size={16} strokeWidth={1.8} aria-hidden="true" />
           </a>
           <p class:error={subscription.last_error !== null}>
             {subscription.last_error ?? dateLabel(subscription.last_fetched_at)}
           </p>
-          <div>
+          <div class="youtube-channel-actions">
             <button
               type="button"
               disabled={busyChannelId !== ""}
@@ -1366,20 +1401,62 @@
     font-weight: 520;
   }
   .youtube-channel {
+    position: relative;
     padding: 14px;
     border-bottom: 1px solid var(--border);
   }
   .youtube-channel:last-child {
     border-bottom: 0;
   }
-  .youtube-channel > a {
+  .youtube-channel-filter {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    width: 100%;
+    min-height: 44px;
+    border: 0;
+    background: transparent;
+  }
+  .youtube-channel-filter:hover,
+  .youtube-channel-filter[aria-pressed="true"] {
+    background: var(--fg-soft);
+  }
+  .youtube-channel-filter:focus-visible {
+    outline: 2px solid var(--fg);
+    outline-offset: -3px;
+  }
+  .youtube-channel-identity {
+    position: relative;
+    z-index: 1;
     min-height: 44px;
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     align-items: center;
     gap: 11px;
+    padding-right: 54px;
     color: var(--fg);
-    text-decoration: none;
+    pointer-events: none;
+  }
+  .youtube-channel-external {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    z-index: 2;
+    width: 44px;
+    height: 44px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    transition:
+      border-color 120ms var(--ease-out),
+      background-color 120ms var(--ease-out),
+      color 120ms var(--ease-out);
+  }
+  .youtube-channel-external:hover {
+    border-color: var(--fg);
+    background: var(--fg);
+    color: var(--surface);
   }
   .youtube-channel-name {
     min-width: 0;
@@ -1394,40 +1471,48 @@
   .directory-mark {
     font-size: 14px;
   }
-  .youtube-channel > a:hover strong {
+  .youtube-channel-filter:hover + .youtube-channel-identity strong,
+  .youtube-channel-filter[aria-pressed="true"]
+    + .youtube-channel-identity
+    strong {
     text-decoration: underline;
     text-underline-offset: 3px;
   }
-  .youtube-channel > a strong,
-  .youtube-channel > a small {
+  .youtube-channel-name strong,
+  .youtube-channel-name small {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .youtube-channel > a strong {
+  .youtube-channel-name strong {
     font-size: 15px;
     font-weight: 600;
     letter-spacing: -0.01em;
   }
-  .youtube-channel > a small,
+  .youtube-channel-name small,
   .youtube-channel > p {
     color: var(--muted);
     font-family: var(--font-mono);
     font-size: 9px;
   }
   .youtube-channel > p {
+    position: relative;
+    z-index: 1;
     margin-top: 8px;
     line-height: 1.45;
+    pointer-events: none;
   }
   .youtube-channel > p.error {
     color: var(--fg);
   }
-  .youtube-channel > div {
+  .youtube-channel-actions {
+    position: relative;
+    z-index: 2;
     display: flex;
     gap: 6px;
     margin-top: 11px;
   }
-  .youtube-channel > div button {
+  .youtube-channel-actions button {
     min-height: 44px;
     display: inline-flex;
     align-items: center;
@@ -1438,8 +1523,8 @@
     font-family: var(--font-mono);
     font-size: 9px;
   }
-  .youtube-channel > div button:hover,
-  .youtube-channel > div button.confirm {
+  .youtube-channel-actions button:hover,
+  .youtube-channel-actions button.confirm {
     border-color: var(--fg);
     background: var(--fg);
     color: var(--surface);
@@ -1551,10 +1636,8 @@
   .youtube-dialog fieldset {
     display: grid;
     gap: 1px;
-    max-height: 310px;
     margin: 5px 0 0;
     padding: 0;
-    overflow: auto;
     border: 1px solid var(--border);
   }
   .youtube-dialog fieldset legend {

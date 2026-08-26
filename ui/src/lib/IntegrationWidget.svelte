@@ -13,11 +13,13 @@
 
   let {
     widget,
+    variant = "widget",
     onUpdate,
     onToast,
     onOpenCalendarDate,
   }: {
     widget: DashboardWidget;
+    variant?: "widget" | "rail";
     onUpdate: (widget: DashboardWidget) => void;
     onToast: (message: string) => void;
     onOpenCalendarDate: (date: string) => void;
@@ -84,16 +86,22 @@
       case "releases":
         return hasList(config.repositories);
       case "streams":
-        return hasList(config.channels);
+        return (
+          hasList(config.twitch_channels) ||
+          hasList(config.kick_channels) ||
+          hasList(config.channels)
+        );
       default:
         return true;
     }
   });
   let visibleItems = $derived(
-    data?.items.slice(
-      0,
-      widget.size === "compact" ? 3 : widget.size === "standard" ? 5 : 10,
-    ) ?? [],
+    variant === "rail" && widget.kind === "streams"
+      ? (data?.items ?? [])
+      : (data?.items.slice(
+          0,
+          widget.size === "compact" ? 3 : widget.size === "standard" ? 5 : 10,
+        ) ?? []),
   );
   let configuredTimezones = $derived(
     stringArray(widget.config.timezones).slice(0, 8),
@@ -303,8 +311,14 @@
         listPrimary = lines(config.repositories);
         break;
       case "streams":
-        listPrimary = lines(config.channels);
-        selectValue = String(config.platform ?? "twitch");
+        if (hasList(config.twitch_channels) || hasList(config.kick_channels)) {
+          listPrimary = lines(config.twitch_channels);
+          listSecondary = lines(config.kick_channels);
+        } else if (config.platform === "kick") {
+          listSecondary = lines(config.channels);
+        } else {
+          listPrimary = lines(config.channels);
+        }
         textSecondary = String(config.client_id ?? "");
         break;
     }
@@ -353,8 +367,11 @@
         return { repositories: splitLines(listPrimary) };
       case "streams":
         return {
-          channels: splitLines(listPrimary),
-          platform: selectValue || "twitch",
+          ...(configPlacement(widget.config)
+            ? { placement: configPlacement(widget.config) }
+            : {}),
+          twitch_channels: splitLines(listPrimary),
+          kick_channels: splitLines(listSecondary),
           client_id: textSecondary.trim(),
         };
       default:
@@ -376,6 +393,13 @@
         formError = `${invalid} is not a valid IANA timezone.`;
         return;
       }
+    }
+    if (
+      widget.kind === "streams" &&
+      splitLines(listPrimary).length + splitLines(listSecondary).length > 20
+    ) {
+      formError = "A stream tracker can follow up to 20 accounts.";
+      return;
     }
     saving = true;
     formError = "";
@@ -424,9 +448,13 @@
   function openItem(item: WidgetDataItem) {
     return item.url && item.url !== "#" ? item.url : item.comments_url;
   }
+
+  function configPlacement(config: Record<string, unknown>) {
+    return typeof config.placement === "string" ? config.placement : "";
+  }
 </script>
 
-<div class="integration-widget">
+<div class={["integration-widget", variant === "rail" && "is-rail"]}>
   <div class="integration-head">
     <span class="widget-kicker">
       {widget.kind === "youtube"
@@ -468,6 +496,12 @@
   {#if loadError && data}
     <p class="integration-stale" role="status">
       Showing the last response · {loadError}
+    </p>
+  {/if}
+
+  {#if data?.partial}
+    <p class="integration-stale" role="status">
+      Some accounts could not be refreshed. Available statuses are shown.
     </p>
   {/if}
 
@@ -526,7 +560,9 @@
           aria-label={`${calendarMonthLabel} dates`}
         >
           {#each calendarWeekdays as weekday (weekday)}
-            <span class="calendar-month-weekday" aria-hidden="true">{weekday}</span>
+            <span class="calendar-month-weekday" aria-hidden="true"
+              >{weekday}</span
+            >
           {/each}
           {#each calendarMonthDays as day (day.key)}
             <button
@@ -646,7 +682,10 @@
           >
           <span>
             <strong>{item.title}</strong>
-            <small>{item.category ?? "No current category"}</small>
+            <small>
+              {item.provider ? `${item.provider} · ` : ""}{item.category ??
+                "No current category"}
+            </small>
           </span>
           <span class="mono">{item.viewers?.toLocaleString() ?? ""}</span>
         </a>
@@ -717,8 +756,15 @@
           id={`playlists-${widget.id}`}
           bind:value={listSecondary}
           rows="3"></textarea>
-        <button class="ui-toggle-button switch-row" type="button" aria-pressed={toggleValue} onclick={() => (toggleValue = !toggleValue)}>
-          <span class="ui-toggle-indicator" aria-hidden="true">{#if toggleValue}<Check size={13} />{/if}</span>
+        <button
+          class="ui-toggle-button switch-row"
+          type="button"
+          aria-pressed={toggleValue}
+          onclick={() => (toggleValue = !toggleValue)}
+        >
+          <span class="ui-toggle-indicator" aria-hidden="true"
+            >{#if toggleValue}<Check size={13} />{/if}</span
+          >
           <span>Include Shorts when channel feeds support them</span>
         </button>
       {:else if widget.kind === "rss"}
@@ -812,23 +858,32 @@
           instances.
         </p>
       {:else if widget.kind === "streams"}
-        <label for={`stream-provider-${widget.id}`}>Platform</label>
-        <select id={`stream-provider-${widget.id}`} bind:value={selectValue}>
-          <option value="twitch">Twitch</option>
-          <option value="kick">Kick</option>
-        </select>
-        <label for={`stream-channels-${widget.id}`}>Channel names</label>
+        <label for={`twitch-channels-${widget.id}`}>Twitch accounts</label>
         <textarea
-          id={`stream-channels-${widget.id}`}
+          id={`twitch-channels-${widget.id}`}
           bind:value={listPrimary}
-          rows="6"></textarea>
-        {#if selectValue === "twitch"}
-          <label for={`twitch-client-${widget.id}`}>Twitch client ID</label>
-          <input id={`twitch-client-${widget.id}`} bind:value={textSecondary} />
-        {/if}
+          rows="5"
+          placeholder="account-name"
+          data-od-id={`stream-tracker-twitch-${widget.id}`}></textarea>
+        <label for={`kick-channels-${widget.id}`}>Kick accounts</label>
+        <textarea
+          id={`kick-channels-${widget.id}`}
+          bind:value={listSecondary}
+          rows="5"
+          placeholder="account-name"
+          data-od-id={`stream-tracker-kick-${widget.id}`}></textarea>
+        <p class="field-note">
+          One account per line, up to 20 accounts across both platforms.
+        </p>
+        <label for={`twitch-client-${widget.id}`}>Twitch client ID</label>
+        <input
+          id={`twitch-client-${widget.id}`}
+          bind:value={textSecondary}
+          data-od-id={`stream-tracker-client-id-${widget.id}`}
+        />
       {/if}
 
-      {#if widget.kind === "reddit" || widget.kind === "releases" || (widget.kind === "streams" && selectValue === "twitch")}
+      {#if widget.kind === "reddit" || widget.kind === "releases" || widget.kind === "streams"}
         <label for={`secret-${widget.id}`}>
           {widget.kind === "reddit"
             ? "Reddit app secret"
@@ -846,12 +901,19 @@
         />
         {#if !secretStorageEnabled}
           <p class="field-note">
-            Set PANDAN_SECRET_KEY on the server to enable encrypted
-            credential storage.
+            Set PANDAN_SECRET_KEY on the server to enable encrypted credential
+            storage.
           </p>
         {:else if widget.has_secret}
-          <button class="ui-toggle-button switch-row" type="button" aria-pressed={clearSecret} onclick={() => (clearSecret = !clearSecret)}>
-            <span class="ui-toggle-indicator" aria-hidden="true">{#if clearSecret}<Check size={13} />{/if}</span>
+          <button
+            class="ui-toggle-button switch-row"
+            type="button"
+            aria-pressed={clearSecret}
+            onclick={() => (clearSecret = !clearSecret)}
+          >
+            <span class="ui-toggle-indicator" aria-hidden="true"
+              >{#if clearSecret}<Check size={13} />{/if}</span
+            >
             <span>Remove the stored credential</span>
           </button>
         {/if}

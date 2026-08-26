@@ -49,7 +49,7 @@ Pandan brings planning, reading, contacts, calendars, notes, lightweight instanc
 | **Podcasts** | An administrator-curated show catalogue for the whole instance, member requests with approve/reject review, per-account subscriptions, a play queue, saved episodes, expandable show notes on every episode, and episodes downloaded once and then streamed from this server. Playback follows you across sections with skip-to-episode, rewind and forward, volume, and speed controls, and resumes where you left off. Volume starts at 80% and can be pushed to 200% for a quietly mastered show. Administrators can queue a show's whole back catalogue in one action. |
 | **Coding** | Releases from GitHub, GitLab, Codeberg, Gitea, and Forgejo; connected accounts can also show owned repositories, open pull requests, and GitLab pipelines. Provider data is cached for one hour by default, with manual refresh available. |
 | **Subscriptions** | Recurring service costs, first-payment dates, filtering, and separate daily, weekly, monthly, and yearly totals for each currency. |
-| **Notifications** | An ntfy-powered header inbox backed by a persistent Rust subscription, so messages are retained even when no browser is open. It includes realtime Bell counts, fixed-size bottom-right delivery toasts, swipeable previews, a full topic view, manual topic subscriptions, clickable ntfy links and actions, and permanent upstream deletion. ntfy.sh and administrator-authorized self-hosted servers are supported. |
+| **Notifications** | An ntfy-powered header inbox backed by a persistent Rust subscription, so messages are retained even when no browser is open. It includes realtime Bell counts, fixed-size bottom-right delivery toasts, swipeable previews, a full topic view with expandable fixed-size cards and topic-scoped bulk deletion, manual topic subscriptions, clickable ntfy links and actions, and permanent upstream deletion. ntfy.sh and administrator-authorized self-hosted servers are supported. |
 | **Embedded pages** | Personal HTTPS webpages in the sidebar, plus administrator-managed global pages for every account. Each destination opens inside a restricted, responsive-width iframe with 480, 720, and 1,080 pixel presets or a custom height, and remains available through an external-open link when the site blocks embedding. Script execution and same-origin access are separate per-page opt-ins and may be enabled together for trusted destinations. |
 | **Trading** | A navigation placeholder for a future market workspace; watchlists and trade planning are not implemented yet. |
 
@@ -61,8 +61,8 @@ Accounts also have a private avatar, one to five sidebar monitor timezones, temp
 
 Pandan currently includes:
 
-- Weather, a deterministic daily Bible verse from the bundled English Revised Version, task summary, task list, task progress, focus timer, curated feed, feed sources, personal calendar, and world clocks.
-- YouTube uploads, RSS/Atom feeds, Reddit, market symbols, code releases, and Twitch or Kick live-channel status.
+- Weather, a deterministic daily Bible verse from the bundled English Revised Version, task summary, task list, focus timer, curated feed, feed sources, personal calendar, and world clocks.
+- YouTube uploads, RSS/Atom feeds, Reddit, market symbols, and code releases. A dedicated right-rail tracker follows up to 20 Twitch and Kick accounts and puts live channels first.
 - Sandboxed custom HTML and HTTPS iframe widgets. Custom HTML cannot run scripts, navigate the parent, or access the parent page; remote sites may still refuse iframe embedding.
 
 Provider credentials are optional. Anonymous integrations remain usable without a server encryption key, while features that persist Reddit, Twitch, ntfy, CardDAV, or source-control credentials require `PANDAN_SECRET_KEY`.

@@ -153,6 +153,7 @@ pub struct ManagedUser {
     pub display_name: String,
     pub role: String,
     pub created_at: String,
+    pub last_login_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]

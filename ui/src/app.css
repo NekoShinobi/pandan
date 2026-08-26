@@ -1664,6 +1664,41 @@ body
   min-width: 0;
 }
 
+.integration-widget.is-rail {
+  width: 100%;
+}
+
+.integration-widget.is-rail .integration-head {
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.integration-widget.is-rail .integration-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.integration-widget.is-rail .text-button {
+  min-height: 44px;
+}
+
+.integration-widget.is-rail .stream-grid {
+  max-height: 420px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.integration-widget.is-rail .stream-row {
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.integration-widget.is-rail .integration-loading,
+.integration-widget.is-rail .integration-error {
+  min-height: 120px;
+  padding: 18px 12px;
+}
+
 .integration-head,
 .integration-actions,
 .stream-row,
@@ -2806,6 +2841,20 @@ body
   width: min(520px, calc(100% - 32px));
 }
 
+/* Modal overflow contract: the dialog is a clipped shell and exactly one body
+   region owns vertical scrolling. This prevents competing tracks on short
+   viewports while keeping headings and action rails stable. */
+.settings-dialog[open]:not(.destructive-dialog) {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-dialog > :is(.settings-heading, header) {
+  flex: 0 0 auto;
+}
+
 .profile-settings-dialog {
   width: min(640px, calc(100% - 32px));
   max-height: min(860px, calc(100dvh - 40px));
@@ -2838,8 +2887,13 @@ body
 }
 
 .appearance-editor {
+  min-height: 0;
+  flex: 1;
   display: grid;
   gap: 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 24px;
 }
 
@@ -3255,9 +3309,15 @@ body
 }
 
 .widget-library-grid {
+  min-height: 0;
+  flex: 1;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
   gap: 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 18px;
 }
 
@@ -3421,8 +3481,10 @@ body
 }
 
 .admin-directory {
-  max-height: calc(100dvh - 180px);
-  overflow: auto;
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   scrollbar-gutter: stable;
   padding: 20px 24px 24px;
 }
@@ -5492,17 +5554,6 @@ body
   font-weight: 620;
   letter-spacing: -0.03em;
   line-height: 1.08;
-}
-
-.utility-progress > strong {
-  font-family: var(--font-mono);
-  font-size: 34px;
-}
-
-.utility-progress > strong span {
-  color: var(--muted);
-  font-size: 15px;
-  font-weight: 500;
 }
 
 .utility-analog-clock {
@@ -8420,10 +8471,6 @@ body
   letter-spacing: -0.04em;
 }
 
-.utility-progress > strong {
-  font-size: 34px;
-}
-
 .feature-page-intro {
   padding: 10px 0 16px;
 }
@@ -8437,8 +8484,7 @@ body
   font-family: var(--font-mono);
 }
 
-.tasks-summary-box > strong,
-.utility-progress > strong {
+.tasks-summary-box > strong {
   color: var(--accent);
   text-shadow: 0 0 18px color-mix(in oklch, var(--accent) 22%, transparent);
 }
@@ -10128,29 +10174,6 @@ body
   box-shadow: 0 24px 64px color-mix(in oklch, var(--bg) 76%, transparent);
 }
 
-.kanban-context-dialog > header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 12px 11px 16px;
-  border-bottom: 1px solid var(--border);
-}
-
-.kanban-context-dialog > header > div {
-  min-width: 0;
-}
-
-.kanban-context-dialog h3 {
-  max-width: 21ch;
-  margin: 4px 0 0;
-  overflow-wrap: anywhere;
-  font-family: var(--font-body);
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.4;
-}
-
 .kanban-context-actions {
   display: grid;
   gap: 2px;
@@ -10163,15 +10186,23 @@ body
 }
 
 .dialog-close-row {
-  display: flex;
-  justify-content: flex-end;
-  padding: 8px 8px 0;
+  position: absolute;
+  z-index: 1;
+  top: 8px;
+  right: 8px;
+  padding: 0;
+}
+
+.dialog-close-row .kanban-icon-button {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
 }
 
 .kanban-dialog-form {
   display: grid;
   gap: 16px;
-  padding: 4px 26px 27px;
+  padding: 24px 26px 27px;
 }
 
 .kanban-add-column-actions {
@@ -10848,11 +10879,23 @@ body
 
 .embedded-pages-dialog-body {
   min-height: 0;
+  flex: 1;
   display: grid;
   align-content: start;
   gap: 24px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 22px;
+  scrollbar-gutter: stable;
+}
+
+.calendar-dialog > form,
+.youtube-dialog > form,
+.sidebar-utility-form {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
 
@@ -11207,11 +11250,18 @@ body
   .workspace,
   .widget-content,
   .command-list,
-  .settings-dialog,
   .destructive-content,
   .admin-directory,
   .settings-form-scroll,
+  .widget-library-grid,
+  .appearance-editor,
   .embedded-pages-dialog-body,
+  .calendar-dialog > form,
+  .youtube-dialog > form,
+  .sidebar-utility-form,
+  .subscription-form-scroll,
+  .editor-scroll,
+  .weather-detail-body,
   .ntfy-popover-list,
   .ntfy-page,
   .ntfy-topic-list,
@@ -11221,6 +11271,7 @@ body
   .tasks-focus-panel,
   .focus-settings-panel,
   .task-editor-scroll,
+  .integration-widget.is-rail .stream-grid,
   .ui-dialog,
   .kanban-card-dialog {
     overflow-y: scroll;

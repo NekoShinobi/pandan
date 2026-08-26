@@ -28,6 +28,7 @@ const NTFY_KEEPALIVE_SECONDS: u64 = 20;
 const NTFY_RECONNECT_MAX_SECONDS: u64 = 60;
 const NTFY_HEALTHY_STREAM_SECONDS: u64 = 60;
 const NTFY_REPLAY_OVERLAP_SECONDS: u64 = 10;
+const NTFY_BULK_DELETE_INTERVAL_MS: u64 = 110;
 
 #[derive(Debug, Serialize)]
 struct NtfyConnectionResponse {
@@ -68,6 +69,11 @@ struct NtfyResponse {
 struct NtfyListQuery {
     topic_id: Option<String>,
     limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NtfyDeleteQuery {
+    topic_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -746,6 +752,38 @@ async fn delete_notification(
     Ok(HttpResponse::NoContent().finish())
 }
 
+async fn delete_notifications(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    query: web::Query<NtfyDeleteQuery>,
+) -> Result<HttpResponse, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    let notifications = db::ntfy_queries::list_ntfy_notifications(
+        &state.pool,
+        &account.id,
+        query.topic_id.as_deref(),
+        usize::MAX,
+    )
+    .await?;
+    let notification_count = notifications.len();
+
+    // ntfy exposes sequence deletion one message at a time. Keep this loop serial and paced below
+    // its default request burst rate so one user action cannot flood the provider.
+    for (index, notification) in notifications.iter().enumerate() {
+        delete_notification_record(&state, &account.id, notification).await?;
+        if index + 1 < notification_count {
+            tokio::time::sleep(Duration::from_millis(NTFY_BULK_DELETE_INTERVAL_MS)).await;
+        }
+    }
+    tracing::info!(
+        user_id = %account.id,
+        topic_id = query.topic_id.as_deref().unwrap_or("all"),
+        notification_count,
+        "ntfy bulk deletion completed"
+    );
+    Ok(HttpResponse::NoContent().finish())
+}
+
 async fn execute_action(
     state: web::Data<AppState>,
     request: HttpRequest,
@@ -1037,6 +1075,10 @@ pub fn configure(config: &mut web::ServiceConfig) {
         .route("/ntfy/topics/{topic_id}", web::patch().to(update_topic))
         .route("/ntfy/topics/{topic_id}", web::delete().to(delete_topic))
         .route("/ntfy/seen", web::post().to(mark_seen))
+        .route(
+            "/ntfy/notifications",
+            web::delete().to(delete_notifications),
+        )
         .route(
             "/ntfy/notifications/{notification_id}",
             web::delete().to(delete_notification),

@@ -1,5 +1,6 @@
 <script lang="ts">
   import Bell from "lucide-svelte/icons/bell";
+  import ChevronDown from "lucide-svelte/icons/chevron-down";
   import Clipboard from "lucide-svelte/icons/clipboard";
   import ExternalLink from "lucide-svelte/icons/external-link";
   import Pencil from "lucide-svelte/icons/pencil";
@@ -16,6 +17,7 @@
     createNtfyTopic,
     deleteNtfyConnection,
     deleteNtfyNotification,
+    deleteNtfyNotifications,
     deleteNtfyTopic,
     executeNtfyAction,
     fetchNtfy,
@@ -58,6 +60,9 @@
   let editingTopicLabel = $state("");
   let actionKey = $state("");
   const dismissingIds = new SvelteSet<string>();
+  const expandedIds = new SvelteSet<string>();
+  let bulkDeletePending = $state(false);
+  let bulkDeleting = $state(false);
   let hasEverLoaded = false;
   let loadPending = false;
 
@@ -111,6 +116,7 @@
 
   async function selectTopic(id: string) {
     if (selectedTopicId === id) return;
+    bulkDeletePending = false;
     selectedTopicId = id;
     await load();
   }
@@ -138,6 +144,7 @@
       return;
     }
     if (realtime.kind === "deleted") {
+      if (dismissingIds.has(realtime.notification_id)) return;
       data = {
         ...data,
         notifications: data.notifications.filter(
@@ -300,6 +307,7 @@
 
   async function removeNotification(notification: NtfyNotification) {
     if (dismissingIds.has(notification.id)) return;
+    expandedIds.delete(notification.id);
     dismissingIds.add(notification.id);
     try {
       const request = deleteNtfyNotification(notification.id);
@@ -319,6 +327,61 @@
     } finally {
       dismissingIds.delete(notification.id);
     }
+  }
+
+  async function removeSelectedNotifications() {
+    if (!data?.notifications.length || bulkDeleting) return;
+    if (!bulkDeletePending) {
+      bulkDeletePending = true;
+      return;
+    }
+
+    const notificationIds = data.notifications.map(
+      (notification) => notification.id,
+    );
+    expandedIds.clear();
+    for (const notificationId of notificationIds) {
+      dismissingIds.add(notificationId);
+    }
+    bulkDeleting = true;
+    error = "";
+    try {
+      const request = deleteNtfyNotifications(selectedTopicId || undefined);
+      await Promise.all([request, motionDelay()]);
+      await load();
+    } catch (reason: unknown) {
+      await load();
+      error =
+        reason instanceof Error
+          ? reason.message
+          : "Unable to delete the selected notifications";
+    } finally {
+      for (const notificationId of notificationIds) {
+        dismissingIds.delete(notificationId);
+      }
+      bulkDeleting = false;
+      bulkDeletePending = false;
+    }
+  }
+
+  function toggleNotification(notificationId: string) {
+    if (expandedIds.has(notificationId)) {
+      expandedIds.delete(notificationId);
+    } else {
+      expandedIds.add(notificationId);
+    }
+  }
+
+  function notificationNeedsExpansion(notification: NtfyNotification) {
+    const visibleActionCount =
+      notification.actions.length + (safeUrl(notification.click_url) ? 1 : 0);
+    return (
+      notification.title.length > 72 ||
+      notification.message.length > 220 ||
+      notification.message.split("\n").length > 3 ||
+      notification.tags.length > 6 ||
+      visibleActionCount > 2
+    );
   }
 
   async function runAction(
@@ -373,7 +436,7 @@
   function motionDelay() {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches)
       return Promise.resolve();
-    return new Promise<void>((resolve) => window.setTimeout(resolve, 170));
+    return new Promise<void>((resolve) => window.setTimeout(resolve, 190));
   }
 
   function safeUrl(value: string | null | undefined) {
@@ -419,8 +482,38 @@
   </div>
 
   <div class="ntfy-toolbar">
-    <span>[ REALTIME ]</span>
-    <span>{data?.connection?.base_url ?? "Not connected"}</span>
+    <div class="ntfy-toolbar-status">
+      <span>[ REALTIME ]</span>
+      <span>{data?.connection?.base_url ?? "Not connected"}</span>
+    </div>
+    {#if data?.connection}
+      <button
+        class={[
+          "ui-button",
+          "ui-button--danger",
+          "ntfy-delete-scope",
+          bulkDeletePending && "confirm",
+        ]}
+        type="button"
+        disabled={bulkDeleting || !data.notifications.length}
+        aria-label={selectedTopicId
+          ? "Delete every notification in the selected topic"
+          : "Delete every notification from all topics"}
+        onclick={removeSelectedNotifications}
+        data-od-id="delete-selected-ntfy-notifications"
+      >
+        <Trash2 size={14} />
+        {bulkDeleting
+          ? "Deleting…"
+          : bulkDeletePending
+            ? selectedTopicId
+              ? "Confirm topic delete"
+              : "Confirm delete all"
+            : selectedTopicId
+              ? "Delete topic messages"
+              : "Delete all messages"}
+      </button>
+    {/if}
   </div>
 
   {#if error}
@@ -577,10 +670,13 @@
         {#each data.notifications as notification (notification.id)}
           {@const destination = safeUrl(notification.click_url)}
           {@const tagPresentation = presentNtfyTags(notification.tags)}
+          {@const expandable = notificationNeedsExpansion(notification)}
           <article
             class={[
               dismissingIds.has(notification.id) && "is-dismissing",
               focusNotificationId === notification.id && "is-focused",
+              expandable && "is-expandable",
+              expandedIds.has(notification.id) && "is-expanded",
             ]}
             data-priority={notification.priority}
             aria-current={focusNotificationId === notification.id
@@ -596,20 +692,53 @@
                 ).toISOString()}>{formatTime(notification.occurred_at)}</time
               >
             </div>
-            <div class="ntfy-notification-body">
-              <div class="ntfy-notification-title">
-                <NtfyPriority priority={notification.priority} />
-                {#if tagPresentation.emojiTags.length}
-                  <div class="ntfy-tag-emojis">
-                    {#each tagPresentation.emojiTags as emojiTag, index (`${emojiTag.tag}:${index}`)}
-                      <span role="img" aria-label={emojiTag.tag}
-                        >{emojiTag.emoji}</span
-                      >
-                    {/each}
-                  </div>
-                {/if}
-                <h3>{notification.title}</h3>
-              </div>
+            <div
+              class="ntfy-notification-body"
+              id={`ntfy-notification-body-${notification.id}`}
+            >
+              {#if expandable}
+                <h3 class="ntfy-notification-title is-expandable-title">
+                  <button
+                    class="ui-button ui-button--ghost ntfy-notification-title-trigger"
+                    type="button"
+                    aria-expanded={expandedIds.has(notification.id)}
+                    aria-controls={`ntfy-notification-body-${notification.id}`}
+                    data-od-id={`expand-ntfy-notification-${notification.id}`}
+                    onclick={() => toggleNotification(notification.id)}
+                  >
+                    <NtfyPriority priority={notification.priority} />
+                    {#if tagPresentation.emojiTags.length}
+                      <span class="ntfy-tag-emojis">
+                        {#each tagPresentation.emojiTags as emojiTag, index (`${emojiTag.tag}:${index}`)}
+                          <span role="img" aria-label={emojiTag.tag}
+                            >{emojiTag.emoji}</span
+                          >
+                        {/each}
+                      </span>
+                    {/if}
+                    <span class="ntfy-notification-title-copy"
+                      >{notification.title}</span
+                    >
+                    <span class="ntfy-expand-indicator" aria-hidden="true">
+                      <ChevronDown size={16} />
+                    </span>
+                  </button>
+                </h3>
+              {:else}
+                <div class="ntfy-notification-title">
+                  <NtfyPriority priority={notification.priority} />
+                  {#if tagPresentation.emojiTags.length}
+                    <span class="ntfy-tag-emojis">
+                      {#each tagPresentation.emojiTags as emojiTag, index (`${emojiTag.tag}:${index}`)}
+                        <span role="img" aria-label={emojiTag.tag}
+                          >{emojiTag.emoji}</span
+                        >
+                      {/each}
+                    </span>
+                  {/if}
+                  <h3>{notification.title}</h3>
+                </div>
+              {/if}
               {#if notification.message}<p>{notification.message}</p>{/if}
               {#if tagPresentation.textTags.length}
                 <div class="ntfy-tags">
@@ -830,14 +959,28 @@
     background: var(--page-surface, var(--surface));
     padding: 5px;
   }
-  .ntfy-toolbar > span {
+  .ntfy-toolbar-status {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding-left: 7px;
+  }
+  .ntfy-toolbar-status span {
     overflow: hidden;
-    padding-right: 10px;
     color: var(--muted);
     font-family: var(--font-mono);
     font-size: 9px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .ntfy-delete-scope {
+    flex: 0 0 auto;
+    gap: 7px;
+  }
+  .ntfy-delete-scope.confirm {
+    border-color: var(--danger, var(--fg));
+    background: color-mix(in oklch, var(--danger, var(--fg)) 12%, transparent);
   }
   .ntfy-error,
   .ntfy-sync-error {
@@ -1004,15 +1147,35 @@
     scrollbar-gutter: stable;
   }
   .ntfy-feed > article {
+    display: flex;
+    height: 258px;
+    min-height: 258px;
+    flex-direction: column;
+    overflow: hidden;
     padding: 18px;
     border-bottom: 1px solid var(--border);
     transition:
       opacity 150ms var(--ease-out),
-      transform 150ms var(--ease-out);
+      transform 150ms var(--ease-out),
+      height 180ms var(--ease-out),
+      min-height 180ms var(--ease-out),
+      padding 180ms var(--ease-out),
+      border-color 180ms var(--ease-out);
+  }
+  .ntfy-feed > article.is-expanded {
+    height: auto;
+    min-height: 258px;
+    overflow: visible;
   }
   .ntfy-feed > article.is-dismissing {
+    height: 0;
+    min-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-bottom-color: transparent;
     opacity: 0;
-    transform: translateX(24px);
+    pointer-events: none;
+    transform: translateX(32px);
   }
   .ntfy-feed > article.is-focused {
     outline: 1px solid color-mix(in oklch, var(--accent) 58%, var(--border));
@@ -1031,11 +1194,14 @@
     text-transform: uppercase;
   }
   .ntfy-notification-body {
-    max-width: 76ch;
+    min-height: 0;
+    flex: 1;
+    overflow: hidden;
     padding: 13px 0;
   }
   .ntfy-notification-title {
     display: flex;
+    width: 100%;
     align-items: center;
     gap: 9px;
   }
@@ -1047,22 +1213,106 @@
     font-size: 17px;
     line-height: 1.35;
   }
-  .ntfy-notification-body h3 {
-    min-width: 0;
-    margin: 0;
+  .ntfy-notification-body h3,
+  .ntfy-notification-title-copy {
+    font-family: var(--font-body);
     font-size: 17px;
     font-weight: 580;
+    letter-spacing: normal;
     line-height: 1.35;
+    text-transform: none;
+  }
+  .ntfy-notification-body h3 {
+    min-width: 0;
+    flex: 1;
+    display: -webkit-box;
+    overflow: hidden;
+    margin: 0;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+  }
+  .ntfy-notification-body h3.is-expandable-title {
+    display: block;
+    width: 100%;
+    overflow: visible;
+    -webkit-line-clamp: unset;
+    line-clamp: unset;
+  }
+  .ntfy-notification-title-trigger {
+    width: 100%;
+    min-height: 44px;
+    justify-content: flex-start;
+    gap: 10px;
+    margin: -9px 0;
+    border-color: transparent;
+    background: transparent;
+    padding: 9px 0;
+    color: var(--fg);
+    text-align: left;
+    text-transform: none;
+  }
+  .ntfy-notification-title-trigger:hover,
+  .ntfy-notification-title-trigger:active {
+    border-color: transparent;
+    background: transparent;
+    color: var(--fg);
+  }
+  .ntfy-notification-title-copy {
+    min-width: 0;
+    display: -webkit-box;
+    overflow: hidden;
+    flex: 1;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+  }
+  .ntfy-expand-indicator {
+    display: grid;
+    flex: 0 0 auto;
+    place-items: center;
+    color: var(--muted);
+    transition: transform 150ms var(--ease-out);
+  }
+  .ntfy-feed > article.is-expanded
+    .ntfy-notification-title-copy {
+    display: block;
+    overflow: visible;
+    -webkit-line-clamp: unset;
+    line-clamp: unset;
+  }
+  .ntfy-feed > article.is-expanded .ntfy-expand-indicator {
+    transform: rotate(180deg);
   }
   .ntfy-notification-body p {
+    display: -webkit-box;
+    max-width: 76ch;
+    overflow: hidden;
     margin: 7px 0 0;
     color: var(--muted);
     font-size: 13px;
     line-height: 1.65;
-    white-space: pre-wrap;
+    white-space: pre-line;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+  }
+  .ntfy-feed > article.is-expanded .ntfy-notification-body {
+    overflow: visible;
+  }
+  .ntfy-feed > article.is-expanded .ntfy-notification-body h3,
+  .ntfy-feed > article.is-expanded .ntfy-notification-body p {
+    display: block;
+    overflow: visible;
+    -webkit-line-clamp: unset;
+    line-clamp: unset;
   }
   .ntfy-tags {
     display: flex;
+    max-width: 76ch;
+    max-height: 25px;
+    overflow: hidden;
     flex-wrap: wrap;
     gap: 5px;
     margin-top: 12px;
@@ -1074,11 +1324,17 @@
     font-family: var(--font-mono);
     font-size: 8px;
   }
+  .ntfy-feed > article.is-expanded .ntfy-tags {
+    max-height: none;
+    overflow: visible;
+  }
   .ntfy-notification-actions {
     display: flex;
+    flex: 0 0 auto;
     flex-wrap: wrap;
     align-items: center;
     gap: 7px;
+    margin-top: auto;
   }
   .ntfy-notification-actions .ui-button {
     gap: 6px;
@@ -1233,12 +1489,25 @@
       align-items: stretch;
       flex-direction: column;
     }
-    .ntfy-toolbar > span {
+    .ntfy-toolbar-status {
+      justify-content: space-between;
       padding: 3px 8px 6px;
+    }
+    .ntfy-delete-scope {
+      width: 100%;
+      justify-content: center;
     }
     .ntfy-notification-meta {
       align-items: flex-start;
       flex-direction: column;
+    }
+    .ntfy-feed > article {
+      height: 420px;
+      min-height: 420px;
+    }
+    .ntfy-feed > article.is-expanded {
+      height: auto;
+      min-height: 420px;
     }
     .ntfy-dialog footer {
       grid-template-columns: 1fr;
@@ -1249,7 +1518,10 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .ntfy-feed > article {
-      transition: opacity 100ms linear;
+      transition: none;
+    }
+    .ntfy-expand-indicator {
+      transition: none;
     }
     .ntfy-feed > article.is-dismissing {
       transform: none;

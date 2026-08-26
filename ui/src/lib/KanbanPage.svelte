@@ -645,12 +645,16 @@
 
   function openCardContext(card: KanbanCard, event: MouseEvent) {
     event.preventDefault();
+    if (cardContextDialog?.open) {
+      closeCardContext();
+      return;
+    }
     if (!canEditCard && !canCreateCard && !canDeleteCard) return;
     openColumnMenuId = "";
     pendingCardDelete = false;
     contextCard = card;
     const menuWidth = 260;
-    const menuHeight = 250;
+    const menuHeight = 156;
     const inset = 12;
     contextDialogX = Math.max(
       inset,
@@ -1271,7 +1275,7 @@
                     type="button"
                     onclick={openEditBoardDialog}
                     data-od-id="edit-kanban-board"
-                    ><Pencil size={15} />Edit board</button
+                    ><Pencil size={15} />Edit Board</button
                   >
                 {/if}
                 {#if canCreateColumn}
@@ -1282,7 +1286,7 @@
                     aria-controls="kanban-add-column-dialog"
                     onclick={openAddColumn}
                     data-od-id="show-add-kanban-column"
-                    ><Plus size={15} />Add column</button
+                    ><Plus size={15} />Add Column</button
                   >
                 {/if}
                 <button
@@ -1670,6 +1674,9 @@
   aria-labelledby="kanban-add-card-title"
   aria-describedby="kanban-add-card-description"
   onclose={resetAddCard}
+  onclick={(event) => {
+    if (event.target === event.currentTarget) closeAddCard();
+  }}
   data-od-id="add-kanban-card"
 >
   <form method="dialog" class="dialog-close-row">
@@ -1718,6 +1725,9 @@
   aria-labelledby="kanban-add-column-title"
   aria-describedby="kanban-add-column-description"
   onclose={resetAddColumn}
+  onclick={(event) => {
+    if (event.target === event.currentTarget) closeAddColumn();
+  }}
   data-od-id="add-kanban-column"
 >
   <form method="dialog" class="dialog-close-row">
@@ -1763,6 +1773,9 @@
   class="ui-dialog kanban-dialog"
   bind:this={workspaceDialog}
   onclose={() => (error = "")}
+  onclick={(event) => {
+    if (event.target === event.currentTarget) workspaceDialog?.close();
+  }}
   data-od-id="workspace-dialog"
 >
   <form method="dialog" class="dialog-close-row">
@@ -1790,6 +1803,9 @@
   class="ui-dialog kanban-dialog"
   bind:this={boardDialog}
   onclose={() => (error = "")}
+  onclick={(event) => {
+    if (event.target === event.currentTarget) boardDialog?.close();
+  }}
   data-od-id="board-dialog"
 >
   <form method="dialog" class="dialog-close-row">
@@ -1834,6 +1850,9 @@
   bind:this={archiveBoardDialog}
   aria-labelledby="archive-board-title"
   aria-describedby="archive-board-description"
+  onclick={(event) => {
+    if (event.target === event.currentTarget) archiveBoardDialog?.close();
+  }}
   data-od-id="archive-board-dialog"
 >
   <form method="dialog" class="dialog-close-row">
@@ -1866,26 +1885,18 @@
   bind:this={cardContextDialog}
   style:--context-x={`${contextDialogX}px`}
   style:--context-y={`${contextDialogY}px`}
-  aria-labelledby="kanban-card-actions-title"
+  aria-label="Card actions"
   onclose={resetCardContext}
   onclick={(event) => {
     if (event.target === event.currentTarget) closeCardContext();
   }}
+  oncontextmenu={(event) => {
+    event.preventDefault();
+    closeCardContext();
+  }}
   data-od-id="kanban-card-context-dialog"
 >
   {#if contextCard}
-    <header>
-      <div>
-        <span class="kanban-kicker">CARD ACTIONS</span>
-        <h3 id="kanban-card-actions-title">{contextCard.title}</h3>
-      </div>
-      <button
-        class="kanban-icon-button"
-        type="button"
-        aria-label="Close card actions"
-        onclick={closeCardContext}><X size={17} /></button
-      >
-    </header>
     <div class="kanban-context-actions" role="group">
       {#if canEditCard}
         <button type="button" onclick={() => void editContextCard()}
@@ -1922,6 +1933,9 @@
   oncancel={(event) => {
     event.preventDefault();
     void closeCardDialog();
+  }}
+  onclick={(event) => {
+    if (event.target === event.currentTarget) void closeCardDialog();
   }}
   onclose={() => {
     selectedCard = null;

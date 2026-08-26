@@ -711,7 +711,6 @@ export type WidgetKind =
   | "task-summary"
   | "focus"
   | "task-list"
-  | "task-progress"
   | "feed-list"
   | "feed-sources"
   | "youtube"
@@ -904,6 +903,7 @@ export interface ManagedUser {
   display_name: string;
   role: User["role"];
   created_at: string;
+  last_login_at: string | null;
 }
 
 export interface AuthResponse {
@@ -1295,6 +1295,16 @@ export function markNtfySeen(): Promise<void> {
 
 export function deleteNtfyNotification(id: string): Promise<void> {
   return requestEmpty(`/api/ntfy/notifications/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+
+export function deleteNtfyNotifications(topicId?: string): Promise<void> {
+  const query = new URLSearchParams();
+  if (topicId) query.set("topic_id", topicId);
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return requestEmpty(`/api/ntfy/notifications${suffix}`, {
     method: "DELETE",
     credentials: "same-origin",
   });

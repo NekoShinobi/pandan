@@ -1304,15 +1304,47 @@ impl WidgetIntegrationService {
     }
 
     async fn fetch_streams(&self, config: &Value, secret: Option<&str>) -> Result<Value, String> {
-        let platform = config_string(config, "platform").unwrap_or_else(|| "twitch".to_owned());
-        let channels = config_strings(config, "channels", 20);
-        if channels.is_empty() {
+        let mut twitch_channels = config_strings(config, "twitch_channels", 20);
+        let mut kick_channels = config_strings(config, "kick_channels", 20);
+        if twitch_channels.is_empty() && kick_channels.is_empty() {
+            let platform = config_string(config, "platform").unwrap_or_else(|| "twitch".to_owned());
+            let legacy_channels = config_strings(config, "channels", 20);
+            if platform == "kick" {
+                kick_channels = legacy_channels;
+            } else {
+                twitch_channels = legacy_channels;
+            }
+        }
+        if twitch_channels.is_empty() && kick_channels.is_empty() {
             return Err("add at least one channel".to_owned());
         }
-        if platform == "kick" {
-            return self.fetch_kick_streams(channels).await;
+
+        let mut items = Vec::new();
+        let mut partial = false;
+        if !twitch_channels.is_empty() {
+            match self
+                .fetch_twitch_streams(twitch_channels, config, secret)
+                .await
+            {
+                Ok(value) => items.extend(value["items"].as_array().cloned().unwrap_or_default()),
+                Err(error) if kick_channels.is_empty() => return Err(error),
+                Err(_) => partial = true,
+            }
         }
-        self.fetch_twitch_streams(channels, config, secret).await
+        if !kick_channels.is_empty() {
+            match self.fetch_kick_streams(kick_channels).await {
+                Ok(value) => items.extend(value["items"].as_array().cloned().unwrap_or_default()),
+                Err(error) if items.is_empty() => return Err(error),
+                Err(_) => partial = true,
+            }
+        }
+        items.sort_by(|left, right| {
+            right["live"]
+                .as_bool()
+                .cmp(&left["live"].as_bool())
+                .then_with(|| value_string(left, "title").cmp(&value_string(right, "title")))
+        });
+        Ok(json!({ "items": items, "partial": partial }))
     }
 
     async fn fetch_kick_streams(&self, channels: Vec<String>) -> Result<Value, String> {
@@ -1338,6 +1370,7 @@ impl WidgetIntegrationService {
                 Ok::<_, String>(json!({
                     "title": payload["user"]["username"].as_str().unwrap_or(&channel),
                     "url": format!("https://kick.com/{channel}"),
+                    "provider": "Kick",
                     "live": payload["livestream"].is_object(),
                     "viewers": payload["livestream"]["viewer_count"],
                     "category": payload["livestream"]["categories"][0]["name"],
@@ -1421,6 +1454,7 @@ impl WidgetIntegrationService {
                 json!({
                     "title": stream.and_then(|v| v["user_name"].as_str()).unwrap_or(channel),
                     "url": format!("https://twitch.tv/{channel}"),
+                    "provider": "Twitch",
                     "live": stream.is_some(),
                     "viewers": stream.map_or(Value::Null, |v| v["viewer_count"].clone()),
                     "category": stream.map_or(Value::Null, |v| v["game_name"].clone()),
@@ -1857,8 +1891,24 @@ pub fn validate_widget_config(kind: &str, config: &Value) -> Result<(), &'static
         "iframe" => validate_text(config, "url", 2_000),
         "html" => validate_text(config, "source", 20_000),
         "releases" => validate_array(config, "repositories", 12),
-        "streams" => validate_array(config, "channels", 20),
+        "streams" => validate_array(config, "channels", 20)
+            .and_then(|()| validate_array(config, "twitch_channels", 20))
+            .and_then(|()| validate_array(config, "kick_channels", 20))
+            .and_then(|()| validate_stream_account_count(config)),
         _ => Ok(()),
+    }
+}
+
+fn validate_stream_account_count(config: &Value) -> Result<(), &'static str> {
+    let count = ["twitch_channels", "kick_channels"]
+        .iter()
+        .filter_map(|key| config.get(*key).and_then(Value::as_array))
+        .map(Vec::len)
+        .sum::<usize>();
+    if count <= 20 {
+        Ok(())
+    } else {
+        Err("a stream tracker can contain at most 20 accounts")
     }
 }
 
