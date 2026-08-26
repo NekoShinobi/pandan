@@ -41,6 +41,18 @@ This file is the persistent visual and interaction contract for Pandan. Read it 
 - A control that reloads data keeps that data on screen. Only a first load may replace the content with a loading state; a refresh shows its own busy state on the control — the shared `.spinning` class in `ui/src/app.css` — and leaves the records in place. A failed refresh reports itself alongside the current data and never trades a working view for an error card.
 - `--product-view-height` is published on `.product-view`. A page that should fill the canvas sizes against that token rather than restating the viewport maths, and lets its own flex column hand the leftover height to the region that scrolls.
 
+## Installed and mobile application shell
+
+- Pandan uses `viewport-fit=cover`, so every fixed shell surface must include the relevant
+  `safe-area-inset-*`: the dashboard header and sidebar, fixed player and toast, authentication
+  chrome, dialogs, and their persistent action rails. A standalone launch in portrait or landscape
+  must never place a control under a notch, status area, or home indicator.
+- At phone widths the header keeps navigation, command search, and notifications visible. The
+  GitHub link is desktop-only, and the dashboard hides its duplicate header label while Edit layout
+  and Add widget are present; the overview heading immediately below continues to identify the page.
+- Installation guidance belongs in Account settings. Offline and update state are shell-level
+  status surfaces, not page-specific content, and must stay usable before authentication.
+
 ## Kanban board surfaces
 
 - Creating something shows where it went. A new card wipes in and a new column travels in, played once from a flag the page clears; do not animate the whole board on load or on every refetch. A card's entrance must not animate `transform`: dnd-kit owns that property on a sortable card and a drag begun mid-entrance would fight it.

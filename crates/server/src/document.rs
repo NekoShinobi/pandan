@@ -127,6 +127,51 @@ pub async fn spa_document(
         .body(render(&document, &state.site_origin.resolve(&request))))
 }
 
+/// Serves the root-scoped service worker without allowing an intermediary to
+/// reuse a stale worker script across deployments.
+///
+/// # Errors
+///
+/// Returns an Actix error when the UI has not been built or the worker file
+/// cannot be read.
+pub async fn service_worker() -> actix_web::Result<HttpResponse> {
+    let script = tokio::fs::read(format!("{UI_BUILD_DIR}/service-worker.js"))
+        .await
+        .map_err(ErrorInternalServerError)?;
+
+    Ok(service_worker_response(script))
+}
+
+/// Serves install metadata with the manifest media type and revalidation so
+/// icon or display-mode changes are discovered promptly.
+///
+/// # Errors
+///
+/// Returns an Actix error when the UI has not been built or the manifest file
+/// cannot be read.
+pub async fn web_app_manifest() -> actix_web::Result<HttpResponse> {
+    let manifest = tokio::fs::read(format!("{UI_BUILD_DIR}/app.webmanifest"))
+        .await
+        .map_err(ErrorInternalServerError)?;
+
+    Ok(web_app_manifest_response(manifest))
+}
+
+fn service_worker_response(script: Vec<u8>) -> HttpResponse {
+    HttpResponse::Ok()
+        .insert_header((header::CONTENT_TYPE, "text/javascript; charset=utf-8"))
+        .insert_header((header::CACHE_CONTROL, "no-cache"))
+        .insert_header(("Service-Worker-Allowed", "/"))
+        .body(script)
+}
+
+fn web_app_manifest_response(manifest: Vec<u8>) -> HttpResponse {
+    HttpResponse::Ok()
+        .insert_header((header::CONTENT_TYPE, "application/manifest+json"))
+        .insert_header((header::CACHE_CONTROL, "no-cache"))
+        .body(manifest)
+}
+
 /// Substitutes the resolved origin into the document.
 fn render(document: &str, origin: &str) -> String {
     document.replace(ORIGIN_PLACEHOLDER, origin)
@@ -199,5 +244,41 @@ mod tests {
 
         assert!(rendered.contains(r#"content="/og-card.png""#));
         assert!(!rendered.contains("<script>"));
+    }
+
+    #[test]
+    fn service_worker_is_revalidated_and_can_control_the_root_scope() {
+        let response = service_worker_response(Vec::new());
+
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&header::HeaderValue::from_static("no-cache")),
+        );
+        assert_eq!(
+            response.headers().get("Service-Worker-Allowed"),
+            Some(&header::HeaderValue::from_static("/")),
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE),
+            Some(&header::HeaderValue::from_static(
+                "text/javascript; charset=utf-8",
+            )),
+        );
+    }
+
+    #[test]
+    fn web_app_manifest_uses_the_install_manifest_media_type() {
+        let response = web_app_manifest_response(Vec::new());
+
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&header::HeaderValue::from_static("no-cache")),
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE),
+            Some(&header::HeaderValue::from_static(
+                "application/manifest+json",
+            )),
+        );
     }
 }

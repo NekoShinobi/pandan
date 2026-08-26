@@ -11,9 +11,9 @@ use argon2::{
 use chrono::{Datelike, Duration as ChronoDuration, Utc};
 use db::entities::{
     AuthenticationSettings, CalendarEvent, CalendarSubscription, CodingProject, Contact,
-    DashboardWidget, FeedItem, JournalNode, ManagedUser, PaymentSubscription, RssItem,
-    RssItemDraft, RssRefreshTarget, RssSubscription, RssSubscriptionDraft, SessionAccount, Task,
-    TaskDraft, TaskSubtaskDraft, User, UserAppearance, UserSettings,
+    DashboardWidget, FeedItem, JournalNode, LoginAppearance, ManagedUser, PaymentSubscription,
+    RssItem, RssItemDraft, RssRefreshTarget, RssSubscription, RssSubscriptionDraft, SessionAccount,
+    Task, TaskDraft, TaskSubtaskDraft, User, UserAppearance, UserSettings,
 };
 use futures_util::future::join_all;
 use rand_core::OsRng;
@@ -41,7 +41,7 @@ mod walls;
 pub mod widget_integrations;
 mod youtube_reader;
 
-pub use document::{SiteOrigin, spa_document};
+pub use document::{SiteOrigin, service_worker, spa_document, web_app_manifest};
 pub use embedded_pages::EmbeddedPagesResponse;
 pub use podcast_media::{PodcastMedia, spawn_podcast_workers};
 pub use youtube_reader::spawn_youtube_refresh_worker;
@@ -90,6 +90,10 @@ pub struct AuthenticationConfigResponse {
     pub oidc_enabled: bool,
     pub oidc_registration_enabled: bool,
     pub oidc_provider_name: Option<String>,
+    pub login_background_blur: i64,
+    pub login_background_brightness: i64,
+    pub login_background_contrast: i64,
+    pub login_background_saturation: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -571,6 +575,7 @@ async fn oidc_config(state: web::Data<AppState>) -> web::Json<OidcConfigResponse
 fn authentication_config_response(
     state: &AppState,
     settings: AuthenticationSettings,
+    appearance: LoginAppearance,
 ) -> AuthenticationConfigResponse {
     AuthenticationConfigResponse {
         password_login_enabled: settings.password_login_enabled || state.oidc.is_none(),
@@ -578,14 +583,23 @@ fn authentication_config_response(
         oidc_enabled: state.oidc.is_some(),
         oidc_registration_enabled: settings.oidc_registration_enabled,
         oidc_provider_name: state.oidc.as_ref().map(|provider| provider.name.clone()),
+        login_background_blur: appearance.background_blur,
+        login_background_brightness: appearance.background_brightness,
+        login_background_contrast: appearance.background_contrast,
+        login_background_saturation: appearance.background_saturation,
     }
 }
 
 async fn authentication_config(
     state: web::Data<AppState>,
 ) -> Result<web::Json<AuthenticationConfigResponse>, ApiError> {
-    let settings = db::queries::get_authentication_settings(&state.pool).await?;
-    Ok(web::Json(authentication_config_response(&state, settings)))
+    let (settings, appearance) = tokio::try_join!(
+        db::queries::get_authentication_settings(&state.pool),
+        db::queries::get_login_appearance(&state.pool),
+    )?;
+    Ok(web::Json(authentication_config_response(
+        &state, settings, appearance,
+    )))
 }
 
 async fn setup_status(
@@ -1591,6 +1605,33 @@ async fn update_appearance(
     ))
 }
 
+async fn update_login_appearance(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    payload: web::Json<UpdateAppearanceRequest>,
+) -> Result<web::Json<LoginAppearance>, ApiError> {
+    authenticated_administrator(&state, &request).await?;
+    if !(0..=24).contains(&payload.background_blur)
+        || !(40..=140).contains(&payload.background_brightness)
+        || !(50..=160).contains(&payload.background_contrast)
+        || !(0..=180).contains(&payload.background_saturation)
+    {
+        return Err(ApiError::BadRequest(
+            "background appearance value is invalid",
+        ));
+    }
+    Ok(web::Json(
+        db::queries::update_login_appearance(
+            &state.pool,
+            payload.background_blur,
+            payload.background_brightness,
+            payload.background_contrast,
+            payload.background_saturation,
+        )
+        .await?,
+    ))
+}
+
 async fn get_login_wallpaper(state: web::Data<AppState>) -> Result<HttpResponse, ApiError> {
     let wallpaper = db::queries::find_login_wallpaper(&state.pool)
         .await?
@@ -2163,8 +2204,13 @@ async fn get_authentication_settings(
     request: HttpRequest,
 ) -> Result<web::Json<AuthenticationConfigResponse>, ApiError> {
     authenticated_administrator(&state, &request).await?;
-    let settings = db::queries::get_authentication_settings(&state.pool).await?;
-    Ok(web::Json(authentication_config_response(&state, settings)))
+    let (settings, appearance) = tokio::try_join!(
+        db::queries::get_authentication_settings(&state.pool),
+        db::queries::get_login_appearance(&state.pool),
+    )?;
+    Ok(web::Json(authentication_config_response(
+        &state, settings, appearance,
+    )))
 }
 
 async fn update_authentication_settings(
@@ -2185,7 +2231,10 @@ async fn update_authentication_settings(
         payload.oidc_registration_enabled,
     )
     .await?;
-    Ok(web::Json(authentication_config_response(&state, settings)))
+    let appearance = db::queries::get_login_appearance(&state.pool).await?;
+    Ok(web::Json(authentication_config_response(
+        &state, settings, appearance,
+    )))
 }
 
 async fn update_user_role(
@@ -3116,6 +3165,10 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
                 "/admin/authentication",
                 web::put().to(update_authentication_settings),
             )
+            .route(
+                "/admin/appearance/login",
+                web::put().to(update_login_appearance),
+            )
             .route("/admin/users/{user_id}", web::patch().to(update_user_role))
             .route("/admin/users/{user_id}", web::delete().to(delete_user))
             .route("/tasks", web::post().to(create_task))
@@ -4001,6 +4054,35 @@ mod tests {
         .await;
         assert_eq!(appearance.background_blur, 6);
         assert_eq!(appearance.background_contrast, 116);
+
+        let login_appearance: LoginAppearance = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::put()
+                .uri("/api/admin/appearance/login")
+                .cookie(cookie.clone())
+                .set_json(UpdateAppearanceRequest {
+                    background_blur: 4,
+                    background_brightness: 88,
+                    background_contrast: 112,
+                    background_saturation: 68,
+                })
+                .to_request(),
+        )
+        .await;
+        assert_eq!(login_appearance.background_blur, 4);
+        assert_eq!(login_appearance.background_saturation, 68);
+
+        let public_appearance: AuthenticationConfigResponse = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/auth/config")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(public_appearance.login_background_blur, 4);
+        assert_eq!(public_appearance.login_background_brightness, 88);
+        assert_eq!(public_appearance.login_background_contrast, 112);
+        assert_eq!(public_appearance.login_background_saturation, 68);
 
         let png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
         let dashboard_wallpaper_update = test::call_service(
@@ -5357,6 +5439,22 @@ mod tests {
         )
         .await;
         assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+        let processing_refused = test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri("/api/admin/appearance/login")
+                .cookie(member.clone())
+                .set_json(UpdateAppearanceRequest {
+                    background_blur: 12,
+                    background_brightness: 90,
+                    background_contrast: 110,
+                    background_saturation: 80,
+                })
+                .to_request(),
+        )
+        .await;
+        assert_eq!(processing_refused.status(), StatusCode::FORBIDDEN);
 
         test::call_service(
             &app,

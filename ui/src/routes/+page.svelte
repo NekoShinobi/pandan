@@ -65,6 +65,7 @@
   import NtfyPriority from "$lib/NtfyPriority.svelte";
   import NetworkAccessSettings from "$lib/NetworkAccessSettings.svelte";
   import PodcastsPage from "$lib/PodcastsPage.svelte";
+  import PwaInstallSettings from "$lib/PwaInstallSettings.svelte";
   import RssReaderPage from "$lib/RssReaderPage.svelte";
   import SidebarUtilities from "$lib/SidebarUtilities.svelte";
   import SubscriptionsPage from "$lib/SubscriptionsPage.svelte";
@@ -106,6 +107,7 @@
     updateAuthenticationSettings,
     updateAvatar,
     updateDashboardWidgetLayout,
+    updateLoginAppearance,
     updateManagedUserRole,
     updateUserSettings,
     updateWallpaper,
@@ -185,26 +187,19 @@
     adminOnly: boolean;
   }> = [
     {
-      id: "login",
-      code: "PUBLIC SURFACE",
-      title: "Login",
-      description: "The global pre-authentication image for every visitor.",
-      adminOnly: true,
-    },
-  ];
-
-  const userWallpaperOptions: Array<{
-    id: WallpaperSlot;
-    code: string;
-    title: string;
-    description: string;
-  }> = [
-    {
       id: "welcome",
       code: "MAIN",
       title: "Main background",
       description:
         "Used by the Welcome loading screen and throughout authenticated pages.",
+      adminOnly: false,
+    },
+    {
+      id: "login",
+      code: "PUBLIC SURFACE",
+      title: "Login background",
+      description: "The global pre-authentication image for every visitor.",
+      adminOnly: true,
     },
   ];
 
@@ -676,6 +671,10 @@
   let backgroundBrightness = $state(78);
   let backgroundContrast = $state(108);
   let backgroundSaturation = $state(72);
+  let loginBackgroundBlur = $state(0);
+  let loginBackgroundBrightness = $state(78);
+  let loginBackgroundContrast = $state(108);
+  let loginBackgroundSaturation = $state(72);
   let appearanceError = $state("");
   let savingAppearance = $state(false);
   let editingTaskId = $state<string | null>(null);
@@ -1448,8 +1447,8 @@
     wallpaperRevisions.loading = revision;
   }
 
-  function openWallsFromSettings() {
-    settingsDialog?.close();
+  function openWallsFromAppearance() {
+    appearanceDialog?.close();
     openProductPage("walls");
   }
 
@@ -2495,6 +2494,7 @@
 
   function openSettings() {
     if (!dashboard) return;
+    sidebarOpen = false;
     clearUserSettingsDrafts();
     settingsDisplayName = dashboard.settings.display_name;
     settingsLocation = dashboard.settings.location;
@@ -2643,13 +2643,8 @@
     for (const slot of slots) clearWallpaperDraft(slot);
   }
 
-  function clearUserSettingsWallpaperDrafts() {
-    clearWallpaperDrafts(userWallpaperOptions.map((option) => option.id));
-  }
-
   function clearUserSettingsDrafts() {
     clearAvatarDraft();
-    clearUserSettingsWallpaperDrafts();
   }
 
   function resetAppearanceDraft() {
@@ -2659,6 +2654,10 @@
     backgroundBrightness = appearance?.background_brightness ?? 78;
     backgroundContrast = appearance?.background_contrast ?? 108;
     backgroundSaturation = appearance?.background_saturation ?? 72;
+    loginBackgroundBlur = authConfig.login_background_blur;
+    loginBackgroundBrightness = authConfig.login_background_brightness;
+    loginBackgroundContrast = authConfig.login_background_contrast;
+    loginBackgroundSaturation = authConfig.login_background_saturation;
     appearanceError = "";
   }
 
@@ -2701,19 +2700,22 @@
     setWallpaperError(slot, "");
   }
 
-  function setWallpaperError(slot: WallpaperSlot, message: string) {
-    if (slot === "welcome" || slot === "loading") {
-      settingsError = message;
-    } else {
-      appearanceError = message;
-    }
+  function setWallpaperError(_slot: WallpaperSlot, message: string) {
+    appearanceError = message;
   }
 
-  function resetBackgroundFilters() {
-    backgroundBlur = 0;
-    backgroundBrightness = 78;
-    backgroundContrast = 108;
-    backgroundSaturation = 72;
+  function resetBackgroundFilters(surface: "main" | "login") {
+    if (surface === "main") {
+      backgroundBlur = 0;
+      backgroundBrightness = 78;
+      backgroundContrast = 108;
+      backgroundSaturation = 72;
+      return;
+    }
+    loginBackgroundBlur = 0;
+    loginBackgroundBrightness = 78;
+    loginBackgroundContrast = 108;
+    loginBackgroundSaturation = 72;
   }
 
   function openAppearance() {
@@ -2810,6 +2812,21 @@
         background_contrast: backgroundContrast,
         background_saturation: backgroundSaturation,
       });
+      if (dashboard.user.role === "administrator") {
+        const loginAppearance = await updateLoginAppearance({
+          background_blur: loginBackgroundBlur,
+          background_brightness: loginBackgroundBrightness,
+          background_contrast: loginBackgroundContrast,
+          background_saturation: loginBackgroundSaturation,
+        });
+        authConfig = {
+          ...authConfig,
+          login_background_blur: loginAppearance.background_blur,
+          login_background_brightness: loginAppearance.background_brightness,
+          login_background_contrast: loginAppearance.background_contrast,
+          login_background_saturation: loginAppearance.background_saturation,
+        };
+      }
       dashboard = {
         ...dashboard,
         appearance,
@@ -2834,7 +2851,6 @@
     savingSettings = true;
     settingsError = "";
     try {
-      let appearance = dashboard.appearance;
       if (avatarFile) {
         await updateAvatar(avatarFile);
         avatarRevision = Date.now();
@@ -2844,22 +2860,6 @@
         avatarRevision = Date.now();
         avatarAvailable = false;
       }
-      for (const option of userWallpaperOptions) {
-        const draft = wallpaperDrafts[option.id];
-        if (draft.file) {
-          await updateWallpaper(option.id, draft.file);
-        } else if (draft.reset) {
-          await deleteWallpaper(option.id);
-        } else {
-          continue;
-        }
-        const hasWallpaper = Boolean(draft.file);
-        appearance =
-          option.id === "welcome"
-            ? { ...appearance, has_welcome_wallpaper: hasWallpaper }
-            : { ...appearance, has_loading_wallpaper: hasWallpaper };
-        wallpaperRevisions[option.id] = Date.now();
-      }
       const settings = await updateUserSettings({
         display_name: settingsDisplayName,
         location: settingsLocation,
@@ -2867,7 +2867,7 @@
         temperature_unit: settingsTemperatureUnit,
         lines_default_visibility: settingsLinesDefaultVisibility,
       });
-      dashboard = { ...dashboard, settings, appearance };
+      dashboard = { ...dashboard, settings };
       clearUserSettingsDrafts();
       settingsDialog?.close();
       showToast("Settings saved");
@@ -3047,6 +3047,12 @@
     const isTyping =
       target instanceof HTMLInputElement ||
       target instanceof HTMLTextAreaElement;
+
+    if (event.key === "Escape" && mobileNavigation.current && sidebarOpen) {
+      event.preventDefault();
+      sidebarOpen = false;
+      return;
+    }
 
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
@@ -3345,6 +3351,10 @@
   <main
     class="auth-shell"
     style:--login-background={wallpaperBackground("login")}
+    style:--login-wallpaper-blur={`${authConfig.login_background_blur}px`}
+    style:--login-wallpaper-brightness={`${authConfig.login_background_brightness}%`}
+    style:--login-wallpaper-contrast={`${authConfig.login_background_contrast}%`}
+    style:--login-wallpaper-saturation={`${authConfig.login_background_saturation}%`}
     data-od-id="login-page"
   >
     <div class="auth-brand" aria-label="Pandan">
@@ -4962,7 +4972,9 @@
             <span>+{toastNotification.count - 1} more</span>
           {/if}
         </div>
-        <strong>{toastNotification.notification.title || "New notification"}</strong>
+        <strong
+          >{toastNotification.notification.title || "New notification"}</strong
+        >
         <p>
           {toastNotification.notification.message ||
             "No additional details were provided."}
@@ -5628,6 +5640,7 @@
         class="settings-form-scroll"
         {@attach captureSettingsScrollContainer}
       >
+        <PwaInstallSettings />
         <div class="profile-avatar-editor" data-od-id="avatar-settings">
           <span class="settings-avatar" aria-hidden="true">
             {#if avatarPreviewSource()}
@@ -5664,76 +5677,6 @@
             >
           </div>
         </div>
-
-        <section
-          class="profile-wallpaper-editor"
-          aria-labelledby="session-wallpaper-heading"
-          data-od-id="session-wallpaper-settings"
-        >
-          <div class="profile-wallpaper-heading">
-            <strong id="session-wallpaper-heading">Background</strong>
-            <span>JPEG, PNG, WebP, or AVIF up to 30 MB.</span>
-          </div>
-          <div class="profile-wallpaper-list">
-            {#each userWallpaperOptions as option (option.id)}
-              <div
-                class="profile-wallpaper-row"
-                data-od-id={`user-${option.id}-wallpaper-settings`}
-              >
-                <div
-                  class="background-preview appearance-preview profile-wallpaper-preview"
-                  style:--background-preview={wallpaperBackground(option.id)}
-                  style:--preview-blur="0px"
-                  style:--preview-brightness={option.id === "welcome"
-                    ? "78%"
-                    : "88%"}
-                  style:--preview-contrast={option.id === "welcome"
-                    ? "108%"
-                    : "104%"}
-                  style:--preview-saturation={option.id === "welcome"
-                    ? "72%"
-                    : "82%"}
-                  aria-label={`${option.title} preview`}
-                  role="img"
-                >
-                  <span>[ {option.code} ]</span>
-                </div>
-                <div class="profile-wallpaper-copy">
-                  <strong>{option.title}</strong>
-                  <p>{option.description}</p>
-                  <small>{wallpaperFileLabel(option.id)}</small>
-                </div>
-                <div class="profile-wallpaper-actions">
-                  <label
-                    class="ui-button ui-button--secondary secondary-btn background-upload"
-                  >
-                    Choose image
-                    <input
-                      type="file"
-                      accept="image/jpeg,image/png,image/webp,image/avif"
-                      onchange={(event) => selectWallpaper(option.id, event)}
-                      data-od-id={`choose-${option.id}-wallpaper`}
-                    />
-                  </label>
-                  <button
-                    class="ui-button ui-button--secondary"
-                    type="button"
-                    onclick={openWallsFromSettings}
-                    data-od-id={`browse-walls-${option.id}`}
-                    >Browse Walls</button
-                  >
-                  <button
-                    class="ui-button ui-button--danger background-reset"
-                    type="button"
-                    onclick={() => resetWallpaper(option.id)}
-                    data-od-id={`reset-${option.id}-wallpaper`}
-                    >Use default</button
-                  >
-                </div>
-              </div>
-            {/each}
-          </div>
-        </section>
 
         <label for="settings-name">Display name</label>
         <input
@@ -5796,7 +5739,9 @@
         >
           <span
             ><strong>Appearance</strong><small
-              >Background processing and login surface</small
+              >{dashboard.user.role === "administrator"
+                ? "Main and Login backgrounds"
+                : "Main background and processing"}</small
             ></span
           >
           <ImageIcon size={18} strokeWidth={1.8} aria-hidden="true" />
@@ -5967,8 +5912,8 @@
         <h2>Appearance</h2>
         <p>
           {dashboard.user.role === "administrator"
-            ? "Page background processing and the global login wallpaper"
-            : "Page background processing"}
+            ? "Personal Main and global Login background controls"
+            : "Your Main background and processing controls"}
         </p>
       </div>
       <button
@@ -5984,58 +5929,101 @@
       onsubmit={saveAppearance}
       data-od-id="dashboard-appearance-form"
     >
-      {#if dashboard.user.role === "administrator"}
-        <div class="wallpaper-slot-grid" aria-label="Wallpaper surfaces">
-          {#each appearanceWallpaperOptions as option (option.id)}
+      <div class="appearance-surface-list" aria-label="Background surfaces">
+        {#each appearanceWallpaperOptions as option (option.id)}
+          {#if !option.adminOnly || dashboard.user.role === "administrator"}
             <section
-              class="wallpaper-slot-card"
+              class="appearance-surface-card"
               data-od-id={`wallpaper-${option.id}-settings`}
             >
-              <div
-                class="login-page-preview"
-                style:--background-preview={wallpaperBackground(option.id)}
-                aria-label={`${option.title} page preview with the selected wallpaper`}
-                role="img"
-                data-od-id="login-page-image-preview"
-              >
-                <div class="login-preview-brand" aria-hidden="true">
-                  <span>P&gt;</span>
-                  <strong>PANDAN</strong>
+              {#if option.id === "welcome"}
+                <div
+                  class="background-preview appearance-preview main-page-preview"
+                  style:--background-preview={wallpaperBackground(option.id)}
+                  style:--preview-blur={`${backgroundBlur}px`}
+                  style:--preview-brightness={`${backgroundBrightness}%`}
+                  style:--preview-contrast={`${backgroundContrast}%`}
+                  style:--preview-saturation={`${backgroundSaturation}%`}
+                  aria-label="Main page preview with the selected wallpaper and processing"
+                  role="img"
+                  data-od-id="main-page-image-preview"
+                >
+                  <div class="main-preview-rail" aria-hidden="true">
+                    <b>P&gt;</b>
+                    <i></i><i></i><i></i><i></i>
+                  </div>
+                  <div class="main-preview-canvas" aria-hidden="true">
+                    <header>
+                      <b>$ dashboard --overview</b>
+                      <i></i>
+                    </header>
+                    <div>
+                      <article></article>
+                      <article></article>
+                      <article></article>
+                    </div>
+                  </div>
+                  <span>[ {option.code} ]</span>
                 </div>
-                <div class="login-preview-context" aria-hidden="true">
-                  <div>
-                    <small>[ PRIVATE WORKSPACE ]</small>
-                    <strong>Your private workspace.</strong>
-                    <p>Dashboards, tasks, calendars, feeds, and journal.</p>
+              {:else}
+                <div
+                  class="login-page-preview"
+                  style:--background-preview={wallpaperBackground(option.id)}
+                  style:--preview-blur={`${loginBackgroundBlur}px`}
+                  style:--preview-brightness={`${loginBackgroundBrightness}%`}
+                  style:--preview-contrast={`${loginBackgroundContrast}%`}
+                  style:--preview-saturation={`${loginBackgroundSaturation}%`}
+                  aria-label="Login page preview with the selected wallpaper and processing"
+                  role="img"
+                  data-od-id="login-page-image-preview"
+                >
+                  <div class="login-preview-brand" aria-hidden="true">
+                    <span>P&gt;</span>
+                    <strong>PANDAN</strong>
+                  </div>
+                  <div class="login-preview-context" aria-hidden="true">
+                    <div>
+                      <small>[ PRIVATE WORKSPACE ]</small>
+                      <strong>Your private workspace.</strong>
+                      <p>Dashboards, tasks, calendars, feeds, and journal.</p>
+                    </div>
+                  </div>
+                  <div class="login-preview-access" aria-hidden="true">
+                    <div class="login-preview-copy">
+                      <small>[ ACCOUNT ACCESS ]</small>
+                      <strong>Welcome back.</strong>
+                      <p>Sign in to return to your dashboard.</p>
+                    </div>
+                    <div class="login-preview-modes">
+                      <span>Sign in</span>
+                      <span>Create account</span>
+                    </div>
+                    <div class="login-preview-form">
+                      <span>Email</span>
+                      <i></i>
+                      <span>Password</span>
+                      <i></i>
+                      <b>Enter dashboard</b>
+                    </div>
                   </div>
                 </div>
-                <div class="login-preview-access" aria-hidden="true">
-                  <div class="login-preview-copy">
-                    <small>[ ACCOUNT ACCESS ]</small>
-                    <strong>Welcome back.</strong>
-                    <p>Sign in to return to your dashboard.</p>
-                  </div>
-                  <div class="login-preview-modes">
-                    <span>Sign in</span>
-                    <span>Create account</span>
-                  </div>
-                  <div class="login-preview-form">
-                    <span>Email</span>
-                    <i></i>
-                    <span>Password</span>
-                    <i></i>
-                    <b>Enter dashboard</b>
-                  </div>
+              {/if}
+
+              <div class="appearance-surface-summary">
+                <div class="wallpaper-slot-copy">
+                  <strong>{option.title}</strong>
+                  <p>{option.description}</p>
+                  <small>
+                    {option.adminOnly
+                      ? "Administrator managed · publicly retrievable"
+                      : "Personal to your account"}
+                  </small>
                 </div>
+                <span class="background-file-name">
+                  {wallpaperFileLabel(option.id)}
+                </span>
               </div>
-              <div class="wallpaper-slot-copy">
-                <strong>{option.title}</strong>
-                <p>{option.description}</p>
-                <small>Administrator managed · publicly retrievable</small>
-              </div>
-              <span class="background-file-name">
-                {wallpaperFileLabel(option.id)}
-              </span>
+
               <div class="wallpaper-slot-actions">
                 <label
                   class="ui-button ui-button--secondary secondary-btn background-upload"
@@ -6049,6 +6037,12 @@
                   />
                 </label>
                 <button
+                  class="ui-button ui-button--secondary"
+                  type="button"
+                  onclick={openWallsFromAppearance}
+                  data-od-id={`browse-walls-${option.id}`}>Browse Walls</button
+                >
+                <button
                   class="ui-button ui-button--danger background-reset"
                   type="button"
                   onclick={() => resetWallpaper(option.id)}
@@ -6056,66 +6050,127 @@
                   >Use default</button
                 >
               </div>
+
+              <div class="appearance-control-heading">
+                <strong>{option.title}</strong>
+                <span>Processing applies only to this background.</span>
+              </div>
+
+              <div class="appearance-controls">
+                <label>
+                  <span
+                    ><strong>Blur</strong><output
+                      >{option.id === "welcome"
+                        ? backgroundBlur
+                        : loginBackgroundBlur}px</output
+                    ></span
+                  >
+                  <input
+                    type="range"
+                    min="0"
+                    max="24"
+                    step="1"
+                    value={option.id === "welcome"
+                      ? backgroundBlur
+                      : loginBackgroundBlur}
+                    oninput={(event) =>
+                      option.id === "welcome"
+                        ? (backgroundBlur = event.currentTarget.valueAsNumber)
+                        : (loginBackgroundBlur =
+                            event.currentTarget.valueAsNumber)}
+                  />
+                </label>
+                <label>
+                  <span
+                    ><strong>Brightness</strong><output
+                      >{option.id === "welcome"
+                        ? backgroundBrightness
+                        : loginBackgroundBrightness}%</output
+                    ></span
+                  >
+                  <input
+                    type="range"
+                    min="40"
+                    max="140"
+                    step="1"
+                    value={option.id === "welcome"
+                      ? backgroundBrightness
+                      : loginBackgroundBrightness}
+                    oninput={(event) =>
+                      option.id === "welcome"
+                        ? (backgroundBrightness =
+                            event.currentTarget.valueAsNumber)
+                        : (loginBackgroundBrightness =
+                            event.currentTarget.valueAsNumber)}
+                  />
+                </label>
+                <label>
+                  <span
+                    ><strong>Contrast</strong><output
+                      >{option.id === "welcome"
+                        ? backgroundContrast
+                        : loginBackgroundContrast}%</output
+                    ></span
+                  >
+                  <input
+                    type="range"
+                    min="50"
+                    max="160"
+                    step="1"
+                    value={option.id === "welcome"
+                      ? backgroundContrast
+                      : loginBackgroundContrast}
+                    oninput={(event) =>
+                      option.id === "welcome"
+                        ? (backgroundContrast =
+                            event.currentTarget.valueAsNumber)
+                        : (loginBackgroundContrast =
+                            event.currentTarget.valueAsNumber)}
+                  />
+                </label>
+                <label>
+                  <span
+                    ><strong>Saturation</strong><output
+                      >{option.id === "welcome"
+                        ? backgroundSaturation
+                        : loginBackgroundSaturation}%</output
+                    ></span
+                  >
+                  <input
+                    type="range"
+                    min="0"
+                    max="180"
+                    step="1"
+                    value={option.id === "welcome"
+                      ? backgroundSaturation
+                      : loginBackgroundSaturation}
+                    oninput={(event) =>
+                      option.id === "welcome"
+                        ? (backgroundSaturation =
+                            event.currentTarget.valueAsNumber)
+                        : (loginBackgroundSaturation =
+                            event.currentTarget.valueAsNumber)}
+                  />
+                </label>
+              </div>
+
+              <div class="appearance-surface-actions">
+                <button
+                  class="ui-button ui-button--secondary secondary-btn"
+                  type="button"
+                  onclick={() =>
+                    resetBackgroundFilters(
+                      option.id === "welcome" ? "main" : "login",
+                    )}
+                  data-od-id={`reset-${option.id}-background-filters`}
+                >
+                  <RotateCcw size={16} strokeWidth={1.8} aria-hidden="true" />
+                  Reset processing
+                </button>
+              </div>
             </section>
-          {/each}
-        </div>
-      {/if}
-
-      <div class="appearance-control-heading">
-        <strong>Page background processing</strong>
-        <span>Applied to the Main background behind authenticated pages.</span>
-      </div>
-
-      <div class="appearance-controls">
-        <label>
-          <span><strong>Blur</strong><output>{backgroundBlur}px</output></span>
-          <input
-            type="range"
-            min="0"
-            max="24"
-            step="1"
-            bind:value={backgroundBlur}
-          />
-        </label>
-        <label>
-          <span
-            ><strong>Brightness</strong><output>{backgroundBrightness}%</output
-            ></span
-          >
-          <input
-            type="range"
-            min="40"
-            max="140"
-            step="1"
-            bind:value={backgroundBrightness}
-          />
-        </label>
-        <label>
-          <span
-            ><strong>Contrast</strong><output>{backgroundContrast}%</output
-            ></span
-          >
-          <input
-            type="range"
-            min="50"
-            max="160"
-            step="1"
-            bind:value={backgroundContrast}
-          />
-        </label>
-        <label>
-          <span
-            ><strong>Saturation</strong><output>{backgroundSaturation}%</output
-            ></span
-          >
-          <input
-            type="range"
-            min="0"
-            max="180"
-            step="1"
-            bind:value={backgroundSaturation}
-          />
-        </label>
+          {/if}
+        {/each}
       </div>
 
       {#if appearanceError}
@@ -6123,15 +6178,6 @@
       {/if}
 
       <div class="appearance-actions">
-        <button
-          class="ui-button ui-button--secondary secondary-btn"
-          type="button"
-          onclick={resetBackgroundFilters}
-          data-od-id="reset-background-filters"
-        >
-          <RotateCcw size={16} strokeWidth={1.8} aria-hidden="true" />
-          Reset filters
-        </button>
         <button
           class="ui-button ui-button--primary primary-btn"
           type="submit"

@@ -607,14 +607,26 @@ p {
   scrollbar-gutter: stable;
   padding: 0;
   background-color: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono);
+}
+
+.auth-shell::after {
+  content: "";
+  position: fixed;
+  inset: -32px;
+  z-index: -2;
   background-image: var(
     --login-background,
     url("/wired-terminal-wallpaper.png")
   );
   background-position: center;
   background-size: cover;
-  color: var(--fg);
-  font-family: var(--font-mono);
+  filter: blur(var(--login-wallpaper-blur, 0px))
+    brightness(var(--login-wallpaper-brightness, 78%))
+    contrast(var(--login-wallpaper-contrast, 108%))
+    saturate(var(--login-wallpaper-saturation, 72%));
+  transform: scale(1.02);
 }
 
 .auth-shell::before {
@@ -2922,11 +2934,137 @@ body
   background: color-mix(in oklch, var(--bg) 18%, transparent);
 }
 
-.appearance-preview span {
+.appearance-preview > span {
   right: auto;
   bottom: 12px;
   left: 12px;
   color: var(--accent);
+}
+
+.appearance-surface-list {
+  display: grid;
+  gap: 18px;
+}
+
+.appearance-surface-card {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  background: color-mix(in oklch, var(--bg) 78%, transparent);
+  container-type: inline-size;
+}
+
+.appearance-surface-summary {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 18px;
+}
+
+.appearance-surface-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.appearance-surface-actions .secondary-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.main-page-preview {
+  isolation: isolate;
+  min-height: 300px;
+  display: grid;
+  grid-template-columns: 18% minmax(0, 1fr);
+  padding: 0;
+  color: var(--fg);
+  font-family: var(--font-mono);
+}
+
+.main-page-preview::before {
+  z-index: -2;
+}
+
+.main-page-preview::after {
+  z-index: -1;
+  background: color-mix(in oklch, var(--bg) 34%, transparent);
+}
+
+.main-preview-rail {
+  display: grid;
+  grid-template-rows: auto repeat(4, 18px);
+  align-content: start;
+  gap: 14px;
+  padding: 18px 14px;
+  border-right: 1px solid var(--border);
+  background: color-mix(in oklch, var(--bg) 92%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.main-preview-rail b {
+  color: var(--accent);
+  font-size: clamp(9px, 2cqi, 16px);
+}
+
+.main-preview-rail i {
+  width: 72%;
+  height: 5px;
+  display: block;
+  background: color-mix(in oklch, var(--fg) 22%, transparent);
+}
+
+.main-preview-canvas {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: 48px minmax(0, 1fr);
+}
+
+.main-preview-canvas > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in oklch, var(--bg) 78%, transparent);
+  backdrop-filter: blur(7px);
+}
+
+.main-preview-canvas > header b {
+  overflow: hidden;
+  font-size: clamp(7px, 1.7cqi, 13px);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.main-preview-canvas > header i {
+  width: 42px;
+  height: 12px;
+  border: 1px solid var(--border);
+}
+
+.main-preview-canvas > div {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  grid-template-rows: 1fr 0.75fr;
+  gap: 10px;
+  padding: 12px;
+}
+
+.main-preview-canvas article {
+  min-height: 0;
+  border: 1px solid var(--border);
+  background: color-mix(in oklch, var(--bg) 78%, transparent);
+  backdrop-filter: blur(6px);
+}
+
+.main-preview-canvas article:first-child {
+  grid-row: 1 / 3;
 }
 
 .wallpaper-slot-grid {
@@ -2975,9 +3113,16 @@ body
 
 .login-page-preview::before {
   z-index: -2;
+  inset: -28px;
   background-image: var(--background-preview);
   background-position: center;
   background-size: cover;
+  filter: blur(var(--preview-blur, 0px))
+    brightness(var(--preview-brightness, 78%))
+    contrast(var(--preview-contrast, 108%))
+    saturate(var(--preview-saturation, 72%));
+  transform: scale(1.02);
+  transition: filter 150ms var(--ease-out);
 }
 
 .login-page-preview::after {
@@ -3292,7 +3437,7 @@ body
 .appearance-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
   padding-top: 4px;
 }
@@ -8132,7 +8277,9 @@ body
 .product-view {
   /* Height of the canvas below the sticky header. Published as a token so a page
      that fills its column can size against it instead of restating the maths. */
-  --product-view-height: calc(100dvh - 76px);
+  --product-view-height: calc(
+    100dvh - var(--dashboard-header-height, 76px)
+  );
   min-height: var(--product-view-height);
   animation-name: terminal-view-enter;
   animation-duration: 220ms;
@@ -8715,7 +8862,7 @@ body
   }
 
   .product-view {
-    min-height: calc(100dvh - 68px);
+    min-height: calc(100dvh - var(--dashboard-header-height, 68px));
   }
 
   .welcome-copy {
@@ -8939,6 +9086,16 @@ body
 
   .appearance-preview {
     min-height: 180px;
+  }
+
+  .appearance-surface-summary {
+    grid-template-columns: 1fr;
+    align-items: start;
+    gap: 8px;
+  }
+
+  .appearance-surface-summary .background-file-name {
+    min-height: 0;
   }
 
   .wallpaper-slot-grid,
@@ -11238,6 +11395,153 @@ body
 
   .embedded-page-delete-confirmation > div {
     justify-content: flex-end;
+  }
+}
+
+/* Installed-app viewport safety.
+
+   `viewport-fit=cover` lets Pandan use the full display, including landscape
+   phones and standalone iOS windows. Keep shell chrome, fixed feedback, and
+   modal actions out of the system status and home-indicator regions. */
+.dashboard-app {
+  --dashboard-header-height: calc(
+    76px + env(safe-area-inset-top, 0px)
+  );
+}
+
+.dashboard-sidebar {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+.dashboard-header {
+  min-height: var(--dashboard-header-height);
+  padding-top: calc(12px + env(safe-area-inset-top, 0px));
+  padding-right: max(
+    clamp(20px, 2.5vw, 40px),
+    calc(14px + env(safe-area-inset-right, 0px))
+  );
+  padding-left: max(
+    clamp(20px, 2.5vw, 40px),
+    calc(14px + env(safe-area-inset-left, 0px))
+  );
+}
+
+.podcast-player-bar {
+  bottom: max(18px, env(safe-area-inset-bottom, 0px));
+  width: min(
+    1020px,
+    calc(
+      100vw - 24px - env(safe-area-inset-left, 0px) -
+        env(safe-area-inset-right, 0px)
+    )
+  );
+}
+
+.toast {
+  bottom: max(24px, env(safe-area-inset-bottom, 0px));
+}
+
+.toast--bottom-right {
+  right: max(12px, env(safe-area-inset-right, 0px));
+}
+
+.auth-brand {
+  top: max(24px, env(safe-area-inset-top, 0px));
+  left: max(28px, env(safe-area-inset-left, 0px));
+}
+
+.auth-footnote {
+  right: max(32px, env(safe-area-inset-right, 0px));
+  bottom: max(22px, env(safe-area-inset-bottom, 0px));
+}
+
+.settings-actions,
+.task-editor-actions,
+.appearance-actions {
+  padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
+}
+
+@media (max-width: 720px) {
+  .dashboard-app {
+    --dashboard-header-height: calc(
+      68px + env(safe-area-inset-top, 0px)
+    );
+  }
+
+  .dashboard-header {
+    gap: 8px;
+    padding-top: calc(10px + env(safe-area-inset-top, 0px));
+    padding-right: max(10px, env(safe-area-inset-right, 0px));
+    padding-left: max(14px, env(safe-area-inset-left, 0px));
+  }
+
+  .dashboard-title-group {
+    min-width: 44px;
+    flex: 1 1 auto;
+  }
+
+  .dashboard-title-group > div {
+    min-width: 0;
+  }
+
+  .dashboard-title-group h1 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dashboard-header-actions {
+    min-width: 0;
+    gap: 4px;
+  }
+
+  .github-star-button {
+    display: none;
+  }
+
+  /* Dashboard-only edit controls leave no honest room for a duplicate page
+     label at phone widths; the page's overview heading remains directly below. */
+  .dashboard-header:has(.dashboard-add-button) .dashboard-title-group > div {
+    display: none;
+  }
+
+  .auth-brand {
+    top: max(18px, env(safe-area-inset-top, 0px));
+    left: max(18px, env(safe-area-inset-left, 0px));
+  }
+
+  .auth-footnote {
+    right: auto;
+    left: max(18px, env(safe-area-inset-left, 0px));
+    bottom: max(18px, env(safe-area-inset-bottom, 0px));
+  }
+
+  :where(.command-dialog, .settings-dialog) {
+    width: calc(
+      100vw - max(16px, env(safe-area-inset-left, 0px)) -
+        max(16px, env(safe-area-inset-right, 0px))
+    );
+    max-height: calc(
+      100dvh - max(12px, env(safe-area-inset-top, 0px)) -
+        max(12px, env(safe-area-inset-bottom, 0px))
+    );
+  }
+
+  .embedded-pages-dialog {
+    width: calc(
+      100vw - max(8px, env(safe-area-inset-left, 0px)) -
+        max(8px, env(safe-area-inset-right, 0px))
+    );
+    height: calc(
+      100dvh - max(8px, env(safe-area-inset-top, 0px)) -
+        max(8px, env(safe-area-inset-bottom, 0px))
+    );
+    max-height: calc(
+      100dvh - max(8px, env(safe-area-inset-top, 0px)) -
+        max(8px, env(safe-area-inset-bottom, 0px))
+    );
   }
 }
 

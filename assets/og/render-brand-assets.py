@@ -453,6 +453,9 @@ def main() -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     render_card(type_, args.out_dir / "og-card.png")
     render_icon(type_, args.out_dir / "icon-192.png", 192, bleed=False)
+    render_icon(type_, args.out_dir / "icon-512.png", 512, bleed=False)
+    render_icon(type_, args.out_dir / "icon-maskable-192.png", 192, bleed=True)
+    render_icon(type_, args.out_dir / "icon-maskable-512.png", 512, bleed=True)
     render_icon(type_, args.out_dir / "apple-touch-icon.png", 180, bleed=True)
     # The tab favicon drops the frame; at 32px the border only crowds the mark.
     render_icon(type_, args.out_dir / "favicon-32.png", 32, bleed=True)

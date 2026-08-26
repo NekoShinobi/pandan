@@ -43,6 +43,11 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 ## Product invariants
 
 - Pandan has one dashboard canvas per account. Do not restore the removed multi-workspace UI.
+- Pandan is installable as a root-scoped PWA on mobile and desktop. The service worker precaches
+  only versioned UI/static assets and the offline connection document; it must never cache `/api`
+  responses, authenticated records, uploads, avatars, ntfy data, or podcast audio. A waiting worker
+  activates only after the user accepts the Update ready prompt, and `/service-worker.js` is served
+  with `Cache-Control: no-cache` plus root scope.
 - The dashboard right rail owns one account-scoped Twitch/Kick tracker backed by a `streams` widget
   whose `config_json.placement` is `utility_rail`. It accepts up to 20 accounts across separate
   provider lists, keeps legacy movable stream widgets intact, and replaces the removed
@@ -93,11 +98,14 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 
 - Wallpaper slots are:
   - `dashboard` — legacy private slot retained for existing data and API compatibility; do not expose it as a separate selector.
-  - `welcome` — private, per user, exposed in Account Settings as Main background, used by the authenticated `Welcome:{user}` loading transition and as the persistent background behind authenticated pages.
+  - `welcome` — private, per user, exposed to every account in Appearance as Main background, used by the authenticated `Welcome:{user}` loading transition and as the persistent background behind authenticated pages.
   - `loading` — legacy private slot retained for existing data and API compatibility; do not expose it as a separate selector.
   - `login` — global, administrator-managed, publicly readable before authentication.
 - Every wallpaper slot resolves in one order: an applied wall in `user_wallpaper_selections`, then the uploaded image in `user_wallpapers`, then the packaged default. Only a wall that is still `approved` resolves, so a wall rejected or deleted after it was applied falls back on its own with no cleanup pass. Uploading to a slot clears its selection and applying a wall clears its upload, so the two sources can never disagree.
 - The `login` slot stays a singleton across every administrator. Any writer — upload or apply — must clear both tables for that slot first, so the served image never depends on an `updated_at` tiebreak.
+- Main and Login background processing are separate appearance records with the same bounded blur,
+  brightness, contrast, and saturation controls. Main is personal and editable by every account;
+  Login is global, publicly readable for signed-out rendering, and administrator-writable only.
 - For an existing authenticated session, render the Welcome loading overlay in the initial server response so the dashboard surface never flashes before the boot transition.
 - Wallpaper formats are JPEG, PNG, WebP, and AVIF, with a 30 MB limit.
 - Avatars are private, per user, use the same image formats, and have a 10 MB limit. An OIDC `picture` claim may initialize a missing avatar through the guarded server-fetch policy, but must never replace an existing avatar or block login when fetching fails.
@@ -151,6 +159,9 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 ## Frontend conventions
 
 - Follow `DESIGN.md` for visual and interaction decisions. Its control rules apply across every feature.
+- Keep installed-app chrome clear of `safe-area-inset-*` on notched phones and tablets. Fixed
+  players, toasts, sidebars, headers, modal action rails, and full-height dialogs must remain inside
+  those insets in both portrait and landscape.
 - Use Svelte 5 patterns and run the Svelte autofixer after modifying a `.svelte` file.
 - Use the official `@dnd-kit/svelte` adapter and `@dnd-kit/helpers` for Kanban card sorting; do not replace it with native HTML drag events or `svelte-dnd-action`.
 - Use Lucide Svelte for interface icons; do not introduce emoji controls.

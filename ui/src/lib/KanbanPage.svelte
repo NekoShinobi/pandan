@@ -1181,14 +1181,14 @@
         class="ui-button ui-button--primary"
         type="button"
         onclick={() => workspaceDialog?.showModal()}
-        data-od-id="create-workspace"><Plus size={16} />New workspace</button
+        data-od-id="create-workspace"><Plus size={16} />New Workspace</button
       >
     {:else if displayedSection === "boards" && canCreateBoard && !board}
       <button
         class="ui-button ui-button--primary"
         type="button"
         onclick={openCreateBoardDialog}
-        data-od-id="create-board"><Plus size={16} />New board</button
+        data-od-id="create-board"><Plus size={16} />New Board</button
       >
     {/if}
   </header>
@@ -1239,7 +1239,7 @@
         <button
           class="ui-button ui-button--primary"
           type="button"
-          onclick={() => workspaceDialog?.showModal()}>Create workspace</button
+          onclick={() => workspaceDialog?.showModal()}>Create Workspace</button
         >
       </div>
     {:else}
@@ -1266,7 +1266,7 @@
                 class="ui-button ui-button--ghost"
                 type="button"
                 onclick={() => void closeBoard()}
-                ><ChevronLeft size={16} />All boards</button
+                ><ChevronLeft size={16} />All Boards</button
               >
               <div class="kanban-board-actions">
                 {#if canEditBoard}
@@ -1374,7 +1374,7 @@
                           class="kanban-column-drag-handle"
                           type="button"
                           disabled={!canEditColumn || busy}
-                          aria-label={`Drag ${column.name} column to reorder`}
+                          aria-label={`Drag ${column.name} Column to Reorder`}
                           {@attach columnHandle}
                           ><GripVertical size={15} aria-hidden="true" /><span
                             class="kanban-column-title">{column.name}</span
@@ -1404,7 +1404,7 @@
                                   <button
                                     type="button"
                                     onclick={() => openAddCard(column.id)}
-                                    ><Plus size={15} />Add card</button
+                                    ><Plus size={15} />Add Card</button
                                   >
                                 {/if}
                                 {#if canDeleteColumn}
@@ -1416,8 +1416,8 @@
                                     onclick={() => void removeColumn(column)}
                                     ><Trash2 size={15} />{pendingColumnDelete ===
                                     column.id
-                                      ? "Confirm delete"
-                                      : "Delete column"}</button
+                                      ? "Confirm Delete"
+                                      : "Delete Column"}</button
                                   >
                                 {/if}
                               </div>
@@ -1447,7 +1447,7 @@
                           class="kanban-add-card"
                           type="button"
                           onclick={() => openAddCard(column.id)}
-                          ><Plus size={15} />Add card</button
+                          ><Plus size={15} />Add Card</button
                         >
                       {/if}
                     {/snippet}
@@ -1503,8 +1503,8 @@
                   class="kanban-favorite"
                   type="button"
                   aria-label={item.favorite
-                    ? "Remove favorite"
-                    : "Add favorite"}
+                    ? "Remove Favorite"
+                    : "Add Favorite"}
                   onclick={() => toggleFavorite(item)}
                   ><Star
                     size={16}
@@ -1680,7 +1680,7 @@
   data-od-id="add-kanban-card"
 >
   <form method="dialog" class="dialog-close-row">
-    <button class="kanban-icon-button" aria-label="Close add card"
+    <button class="kanban-icon-button" aria-label="Close Add Card"
       ><X size={18} /></button
     >
   </form>
@@ -1712,7 +1712,7 @@
         class="ui-button ui-button--primary"
         type="submit"
         disabled={busy || !addCardTitle.trim()}
-        data-od-id="create-kanban-card">Add card</button
+        data-od-id="create-kanban-card">Add Card</button
       >
     </div>
   </form>
@@ -1731,7 +1731,7 @@
   data-od-id="add-kanban-column"
 >
   <form method="dialog" class="dialog-close-row">
-    <button class="kanban-icon-button" aria-label="Close add column"
+    <button class="kanban-icon-button" aria-label="Close Add Column"
       ><X size={18} /></button
     >
   </form>
@@ -1763,7 +1763,7 @@
         class="ui-button ui-button--primary"
         type="submit"
         disabled={busy || !newColumnName.trim()}
-        data-od-id="create-kanban-column">Create column</button
+        data-od-id="create-kanban-column">Create Column</button
       >
     </div>
   </form>
@@ -1794,7 +1794,7 @@
         maxlength="1000"
         bind:value={workspaceDescription}></textarea></label
     ><button class="ui-button ui-button--primary" type="submit" disabled={busy}
-      >Create workspace</button
+      >Create Workspace</button
     >
   </form>
 </dialog>
@@ -1840,7 +1840,7 @@
         ></select
       ></label
     ><button class="ui-button ui-button--primary" type="submit" disabled={busy}
-      >{boardDialogMode === "edit" ? "Save board" : "Create board"}</button
+      >{boardDialogMode === "edit" ? "Save Board" : "Create Board"}</button
     >
   </form>
 </dialog>
@@ -1856,7 +1856,7 @@
   data-od-id="archive-board-dialog"
 >
   <form method="dialog" class="dialog-close-row">
-    <button class="kanban-icon-button" aria-label="Close archive confirmation"
+    <button class="kanban-icon-button" aria-label="Close Archive Confirmation"
       ><X size={18} /></button
     >
   </form>
@@ -1874,7 +1874,7 @@
         onclick={() => archiveBoardDialog?.close()}>Cancel</button
       >
       <button class="ui-button ui-button--danger" type="submit" disabled={busy}
-        >Archive board</button
+        >Archive Board</button
       >
     </div>
   </form>
@@ -1919,7 +1919,7 @@
           disabled={busy}
           onclick={() => void deleteContextCard()}
           ><Trash2 size={16} />{pendingCardDelete
-            ? "Confirm delete"
+            ? "Confirm Delete"
             : "Delete"}</button
         >
       {/if}
@@ -1949,7 +1949,7 @@
         ><button
           class="kanban-icon-button"
           type="button"
-          aria-label="Close card"
+          aria-label="Close Card"
           onclick={() => void closeCardDialog()}><X size={19} /></button
         >
       </header>
@@ -1987,7 +1987,7 @@
               class="kanban-description-surface is-clickable"
               role="button"
               tabindex="0"
-              aria-label="Edit card description"
+              aria-label="Edit Card Description"
               onclick={startDescriptionEditing}
               onkeydown={handleDescriptionSurfaceKeydown}
             >
@@ -2021,7 +2021,7 @@
                   <strong>{checklist.name}</strong><button
                     class="kanban-icon-button"
                     type="button"
-                    aria-label="Delete checklist"
+                    aria-label="Delete Checklist"
                     onclick={() => removeChecklist(checklist.id)}
                     ><Trash2 size={14} /></button
                   >
@@ -2059,7 +2059,7 @@
                       })}
                   /><button
                     class="kanban-icon-button"
-                    aria-label="Add checklist item"><Plus size={15} /></button
+                    aria-label="Add Checklist Item"><Plus size={15} /></button
                   >
                 </form>
               </div>{/each}
@@ -2074,7 +2074,7 @@
                 placeholder="New checklist"
                 bind:value={checklistDraft}
               /><button class="ui-button ui-button--secondary" type="submit"
-                >Add checklist</button
+                >Add Checklist</button
               >
             </form>
           </section>
@@ -2117,7 +2117,7 @@
                       >{#if comment.user_id === viewerId || board.permissions.includes("comment:delete")}<button
                           class="kanban-icon-button"
                           type="button"
-                          aria-label="Delete comment"
+                          aria-label="Delete Comment"
                           onclick={() => removeComment(comment.id)}
                           ><Trash2 size={13} /></button
                         >{/if}
@@ -2178,7 +2178,7 @@
                 ><button
                   class="kanban-icon-button"
                   type="button"
-                  aria-label="Create label"
+                  aria-label="Create Label"
                   onclick={addLabel}><Plus size={15} /></button
                 >
               </div>{/if}
@@ -2186,7 +2186,7 @@
           <section>
             <h4>Attachments</h4>
             <label class="ui-button ui-button--secondary kanban-upload"
-              ><Paperclip size={14} />Attach file<input
+              ><Paperclip size={14} />Attach File<input
                 type="file"
                 onchange={uploadAttachment}
               /></label
@@ -2200,7 +2200,7 @@
                 ><button
                   class="kanban-icon-button"
                   type="button"
-                  aria-label="Delete attachment"
+                  aria-label="Delete Attachment"
                   onclick={() => removeAttachment(attachment.id)}
                   ><Trash2 size={13} /></button
                 >
@@ -2209,7 +2209,7 @@
           {#if canEditCard}<button
               class="ui-button ui-button--danger"
               type="button"
-              onclick={archiveCard}><Archive size={14} />Archive card</button
+              onclick={archiveCard}><Archive size={14} />Archive Card</button
             >{/if}
         </aside>
       </div>

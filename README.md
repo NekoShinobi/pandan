@@ -23,6 +23,7 @@ Pandan brings planning, reading, contacts, calendars, notes, lightweight instanc
 - [Dashboard widgets](#dashboard-widgets)
 - [Docker deployment](#docker-deployment)
 - [First run](#first-run)
+- [Install as an app](#install-as-an-app)
 - [Configuration](#configuration)
 - [OpenID Connect](#openid-connect)
 - [Data, backups, and upgrades](#data-backups-and-upgrades)
@@ -34,28 +35,28 @@ Pandan brings planning, reading, contacts, calendars, notes, lightweight instanc
 
 ## Features
 
-| Area | What it provides |
-| --- | --- |
-| **Dashboard** | One GridStack canvas per account with movable and resizable widgets; layout changes are enabled only in Edit mode. |
-| **Tasks** | Priorities, descriptions, labels, subtasks, attachments, due dates, recurring schedules, completion, archiving, and completed-task cleanup. |
-| **Kanban** | Shared workspaces with multiple boards, Todo / In Progress / Finished defaults, drag-and-drop cards, sanitized Markdown descriptions, assignees, live labels, due dates, comments, checklists, attachments, favorites, archives, in-app invitations, and configurable Admin / Member / Guest permissions. |
-| **Contacts** | Search, tags, favorites, archives, portraits, yearless birthdays, important dates, Pandan/Monica JSON import, Pandan JSON export, and CardDAV synchronization. |
-| **Calendar** | Task due dates, multiple guarded ICS feeds, recurring events, custom source colors, contact birthdays, a month grid, and a selected-day agenda. |
-| **RSS** | RSS and Atom subscriptions plus Reddit subreddit helpers, categories, source filters, article and comments links, read state, a pruning-safe Read Later queue, automatic background refresh every 30 minutes, manual refresh, and seven-day all-item retention by default. |
-| **Journal** | Nested documents that can contain Markdown content and child documents; rendered Markdown is sanitized before display. |
-| **Lines** | A Markdown timeline with account avatars, public or private posts, threaded replies composed in a modal, thread and author screens, hashtag discovery, search, file attachments, reactions, and administrator moderation of public posts. |
-| **Walls** | A shared wallpaper collection. Anyone can submit an image with a title, description, and tags; an administrator approves or rejects it with an optional note. Approved walls can be applied as your own background, or set by an administrator as the instance login screen. Submitters see their own pending and rejected entries with the reason, and can correct a wall's title, description, and tags at any time — before or after review. The search and tag filters sit with the view tabs and apply to the collection, your submissions, and the review queue alike. |
-| **YouTube** | Channel subscriptions with optional category assignment, drag-reorderable categories, a fixed all-channels directory, a private Watch Later queue, thumbnail or compact layouts, manual refresh, and server-side shared metadata caching. |
-| **Podcasts** | An administrator-curated show catalogue for the whole instance, member requests with approve/reject review, per-account subscriptions, a play queue, saved episodes, expandable show notes on every episode, and episodes downloaded once and then streamed from this server. Playback follows you across sections with skip-to-episode, rewind and forward, volume, and speed controls, and resumes where you left off. Volume starts at 80% and can be pushed to 200% for a quietly mastered show. Administrators can queue a show's whole back catalogue in one action. |
-| **Coding** | Releases from GitHub, GitLab, Codeberg, Gitea, and Forgejo; connected accounts can also show owned repositories, open pull requests, and GitLab pipelines. Provider data is cached for one hour by default, with manual refresh available. |
-| **Subscriptions** | Recurring service costs, first-payment dates, filtering, and separate daily, weekly, monthly, and yearly totals for each currency. |
-| **Notifications** | An ntfy-powered header inbox backed by a persistent Rust subscription, so messages are retained even when no browser is open. It includes realtime Bell counts, fixed-size bottom-right delivery toasts, swipeable previews, a full topic view with expandable fixed-size cards and topic-scoped bulk deletion, manual topic subscriptions, clickable ntfy links and actions, and permanent upstream deletion. ntfy.sh and administrator-authorized self-hosted servers are supported. |
-| **Embedded pages** | Personal HTTPS webpages in the sidebar, plus administrator-managed global pages for every account. Each destination opens inside a restricted, responsive-width iframe with 480, 720, and 1,080 pixel presets or a custom height, and remains available through an external-open link when the site blocks embedding. Script execution and same-origin access are separate per-page opt-ins and may be enabled together for trusted destinations. |
-| **Trading** | A navigation placeholder for a future market workspace; watchlists and trade planning are not implemented yet. |
+| Area               | What it provides                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Dashboard**      | One GridStack canvas per account with movable and resizable widgets; layout changes are enabled only in Edit mode.                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Tasks**          | Priorities, descriptions, labels, subtasks, attachments, due dates, recurring schedules, completion, archiving, and completed-task cleanup.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **Kanban**         | Shared workspaces with multiple boards, Todo / In Progress / Finished defaults, drag-and-drop cards, sanitized Markdown descriptions, assignees, live labels, due dates, comments, checklists, attachments, favorites, archives, in-app invitations, and configurable Admin / Member / Guest permissions.                                                                                                                                                                                                                                                                    |
+| **Contacts**       | Search, tags, favorites, archives, portraits, yearless birthdays, important dates, Pandan/Monica JSON import, Pandan JSON export, and CardDAV synchronization.                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **Calendar**       | Task due dates, multiple guarded ICS feeds, recurring events, custom source colors, contact birthdays, a month grid, and a selected-day agenda.                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **RSS**            | RSS and Atom subscriptions plus Reddit subreddit helpers, categories, source filters, article and comments links, read state, a pruning-safe Read Later queue, automatic background refresh every 30 minutes, manual refresh, and seven-day all-item retention by default.                                                                                                                                                                                                                                                                                                   |
+| **Journal**        | Nested documents that can contain Markdown content and child documents; rendered Markdown is sanitized before display.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **Lines**          | A Markdown timeline with account avatars, public or private posts, threaded replies composed in a modal, thread and author screens, hashtag discovery, search, file attachments, reactions, and administrator moderation of public posts.                                                                                                                                                                                                                                                                                                                                    |
+| **Walls**          | A shared wallpaper collection. Anyone can submit an image with a title, description, and tags; an administrator approves or rejects it with an optional note. Approved walls can be applied as your own background, or set by an administrator as the instance login screen. Submitters see their own pending and rejected entries with the reason, and can correct a wall's title, description, and tags at any time — before or after review. The search and tag filters sit with the view tabs and apply to the collection, your submissions, and the review queue alike. |
+| **YouTube**        | Channel subscriptions with optional category assignment, drag-reorderable categories, a fixed all-channels directory, a private Watch Later queue, thumbnail or compact layouts, manual refresh, and server-side shared metadata caching.                                                                                                                                                                                                                                                                                                                                    |
+| **Podcasts**       | An administrator-curated show catalogue for the whole instance, member requests with approve/reject review, per-account subscriptions, a play queue, saved episodes, expandable show notes on every episode, and episodes downloaded once and then streamed from this server. Playback follows you across sections with skip-to-episode, rewind and forward, volume, and speed controls, and resumes where you left off. Volume starts at 80% and can be pushed to 200% for a quietly mastered show. Administrators can queue a show's whole back catalogue in one action.   |
+| **Coding**         | Releases from GitHub, GitLab, Codeberg, Gitea, and Forgejo; connected accounts can also show owned repositories, open pull requests, and GitLab pipelines. Provider data is cached for one hour by default, with manual refresh available.                                                                                                                                                                                                                                                                                                                                   |
+| **Subscriptions**  | Recurring service costs, first-payment dates, filtering, and separate daily, weekly, monthly, and yearly totals for each currency.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Notifications**  | An ntfy-powered header inbox backed by a persistent Rust subscription, so messages are retained even when no browser is open. It includes realtime Bell counts, fixed-size bottom-right delivery toasts, swipeable previews, a full topic view with expandable fixed-size cards and topic-scoped bulk deletion, manual topic subscriptions, clickable ntfy links and actions, and permanent upstream deletion. ntfy.sh and administrator-authorized self-hosted servers are supported.                                                                                       |
+| **Embedded pages** | Personal HTTPS webpages in the sidebar, plus administrator-managed global pages for every account. Each destination opens inside a restricted, responsive-width iframe with 480, 720, and 1,080 pixel presets or a custom height, and remains available through an external-open link when the site blocks embedding. Script execution and same-origin access are separate per-page opt-ins and may be enabled together for trusted destinations.                                                                                                                            |
+| **Trading**        | A navigation placeholder for a future market workspace; watchlists and trade planning are not implemented yet.                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 A global command palette is available from every page with `Ctrl`/`Cmd` + `K`, the `/` key, or the header search control. It jumps to any product page or Kanban section, runs quick actions such as New task, Start focus session, and Account settings, and falls through to a web search on DuckDuckGo, Google, Bing, or Brave when the query matches nothing local.
 
-Accounts also have a private avatar, one to five sidebar monitor timezones, temperature and location preferences, a default Lines visibility, background adjustments, and a Main background used by the authenticated Welcome loading transition and behind authenticated pages. A background can be an image you upload or one you pick from Walls; picking a wall stores it once for the whole instance rather than a copy per account. Custom sidebar pages always follow the built-in navigation, grouped under Global custom and then Personal custom. Administrators manage accounts, authentication policy, global embedded pages, public Lines moderation, the Walls review queue, and the public Login wallpaper. Each user can permanently clear one content area at a time from Settings after explicit confirmation.
+Accounts also have a private avatar, one to five sidebar monitor timezones, temperature and location preferences, a default Lines visibility, and an Appearance view for choosing and previewing a personal Main background with blur, brightness, contrast, and saturation controls. A background can be an image you upload or one you pick from Walls; picking a wall stores it once for the whole instance rather than a copy per account. Administrators also manage the public Login background and its independent processing controls from the same view. Custom sidebar pages always follow the built-in navigation, grouped under Global custom and then Personal custom. Administrators manage accounts, authentication policy, global embedded pages, public Lines moderation, and the Walls review queue. Each user can permanently clear one content area at a time from Settings after explicit confirmation.
 
 ## Dashboard widgets
 
@@ -130,30 +131,44 @@ After setup, administrators can use **Settings → User administration** to:
 
 Pandan prevents an administrator from deleting their active account or removing the final administrator. Password login cannot be disabled unless OIDC is configured.
 
+## Install as an app
+
+Pandan is an installable Progressive Web App on mobile and desktop. Installation gives it an application icon, a standalone window, and an offline connection screen while keeping the same self-hosted server and account data.
+
+The deployed instance must use HTTPS for browsers to offer installation; `localhost` remains available for local development. Open **Account settings → Install Pandan** for device-specific guidance:
+
+- Chrome, Edge, and supported Android browsers expose **Install app** in the address bar or browser menu.
+- On iPhone and iPad, use the browser Share menu and choose **Add to Home Screen**.
+- In Safari on macOS, choose **File → Add to Dock**.
+
+Pandan precaches only its versioned interface assets and the offline connection screen. It deliberately does not cache `/api` responses, account records, uploads, avatars, notification data, or podcast audio. Existing content remains visible if the connection drops while the app is open, but a fresh offline launch shows the connection screen until the server is reachable.
+
+When a new deployment is ready, the running app shows an **Update ready** notice. Reloading from that notice activates the new worker without silently replacing the code underneath an active session. The existing ntfy inbox continues to store deliveries on the Pandan server while the app is closed; installing the PWA does not by itself turn those deliveries into operating-system push notifications.
+
 ## Configuration
 
 `just init` copies `.env.example` to `.env` without overwriting an existing file. Docker Compose reads `.env` automatically. When running the binary directly, export the same values in its environment.
 
 ### Server settings
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `DATABASE_URL` | `sqlite://data/pandan.db` | SQLx SQLite URL. Production Compose overrides this with `sqlite:///app/data/pandan.db`. |
-| `PORT` | `9651` | Server port when running directly; in production Compose it selects the published host port while the container continues to listen on `9651`. |
-| `RUST_LOG` | `info` | Rust tracing filter, such as `info`, `debug`, or a crate-specific filter. |
-| `COOKIE_SECURE` | `false` | Accepts `1`, `true`, or `yes` (case-insensitive) to mark session and OIDC state cookies as HTTPS-only. |
-| `PANDAN_BASE_URL` | unset in the server | Public absolute HTTP(S) application URL. Required when OIDC is enabled, where it derives the callback URL, and used for link-preview URLs. Without it, previews fall back to the address each request arrived on. |
-| `PANDAN_SECRET_KEY` | unset | Base64 text that decodes to exactly 32 bytes. Enables encrypted provider-credential storage, including ntfy access tokens. |
-| `INVIDIOUS_BASE_URL` | unset | Optional HTTPS Invidious base URL used before YouTube's public uploads feed. |
-| `INVIDIOUS_ALLOW_PRIVATE_NETWORK` | `false` | Accepts `1`, `true`, or `yes` (case-insensitive). Exempts the `INVIDIOUS_BASE_URL` host from the private-network guard, for a self-hosted instance that resolves to a private address. Scoped to that exact host and port; every other outbound URL stays fully validated. |
-| `PANDAN_MEDIA_DIR` | `data/podcasts` | Directory for downloaded podcast episodes. Must be writable and on a volume with room for the storage budget. Production Compose sets `/app/data/podcasts`. |
+| Variable                          | Default                   | Description                                                                                                                                                                                                                                                                |
+| --------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                    | `sqlite://data/pandan.db` | SQLx SQLite URL. Production Compose overrides this with `sqlite:///app/data/pandan.db`.                                                                                                                                                                                    |
+| `PORT`                            | `9651`                    | Server port when running directly; in production Compose it selects the published host port while the container continues to listen on `9651`.                                                                                                                             |
+| `RUST_LOG`                        | `info`                    | Rust tracing filter, such as `info`, `debug`, or a crate-specific filter.                                                                                                                                                                                                  |
+| `COOKIE_SECURE`                   | `false`                   | Accepts `1`, `true`, or `yes` (case-insensitive) to mark session and OIDC state cookies as HTTPS-only.                                                                                                                                                                     |
+| `PANDAN_BASE_URL`                 | unset in the server       | Public absolute HTTP(S) application URL. Required when OIDC is enabled, where it derives the callback URL, and used for link-preview URLs. Without it, previews fall back to the address each request arrived on.                                                          |
+| `PANDAN_SECRET_KEY`               | unset                     | Base64 text that decodes to exactly 32 bytes. Enables encrypted provider-credential storage, including ntfy access tokens.                                                                                                                                                 |
+| `INVIDIOUS_BASE_URL`              | unset                     | Optional HTTPS Invidious base URL used before YouTube's public uploads feed.                                                                                                                                                                                               |
+| `INVIDIOUS_ALLOW_PRIVATE_NETWORK` | `false`                   | Accepts `1`, `true`, or `yes` (case-insensitive). Exempts the `INVIDIOUS_BASE_URL` host from the private-network guard, for a self-hosted instance that resolves to a private address. Scoped to that exact host and port; every other outbound URL stays fully validated. |
+| `PANDAN_MEDIA_DIR`                | `data/podcasts`           | Directory for downloaded podcast episodes. Must be writable and on a volume with room for the storage budget. Production Compose sets `/app/data/podcasts`.                                                                                                                |
 
 ### Production container settings
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `PUID` | `99` | Numeric user ID assigned to the production application process at image build time. |
-| `PGID` | `100` | Numeric group ID assigned to the production application process at image build time. |
+| Variable | Default | Description                                                                          |
+| -------- | ------- | ------------------------------------------------------------------------------------ |
+| `PUID`   | `99`    | Numeric user ID assigned to the production application process at image build time.  |
+| `PGID`   | `100`   | Numeric group ID assigned to the production application process at image build time. |
 
 The supplied Compose file passes these values into the production image build. Rebuild the image after changing either value. Development containers continue to use `DEV_UID` and `DEV_GID` so bind-mounted source files match the current host user.
 
@@ -175,24 +190,24 @@ Add the result to `.env` as `PANDAN_SECRET_KEY` before saving provider credentia
 
 ### OIDC settings
 
-| Variable | Required | Description |
-| --- | --- | --- |
-| `OIDC_ISSUER` | With OIDC | Exact issuer URL advertised by the provider's discovery document; this is not the authorization or login endpoint. |
-| `OIDC_CLIENT_ID` | With OIDC | Registered client identifier. |
-| `OIDC_CLIENT_SECRET` | With OIDC | Registered client secret. |
-| `OIDC_PROVIDER_NAME` | No | Login button label; defaults to `Single sign-on` in the server. |
-| `PANDAN_BASE_URL` | With OIDC | Public application URL from which the callback is derived. |
+| Variable             | Required  | Description                                                                                                        |
+| -------------------- | --------- | ------------------------------------------------------------------------------------------------------------------ |
+| `OIDC_ISSUER`        | With OIDC | Exact issuer URL advertised by the provider's discovery document; this is not the authorization or login endpoint. |
+| `OIDC_CLIENT_ID`     | With OIDC | Registered client identifier.                                                                                      |
+| `OIDC_CLIENT_SECRET` | With OIDC | Registered client secret.                                                                                          |
+| `OIDC_PROVIDER_NAME` | No        | Login button label; defaults to `Single sign-on` in the server.                                                    |
+| `PANDAN_BASE_URL`    | With OIDC | Public application URL from which the callback is derived.                                                         |
 
 OIDC stays disabled when issuer, client ID, and client secret are all absent. A partial OIDC configuration causes startup to fail instead of silently weakening authentication.
 
 ### Development-only settings
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `API_URL` | `http://localhost:${PORT}` | API target for the Vite development proxy. Container development sets it to the API service. |
-| `UI_PORT` | `5173` | Published Vite port in `compose.dev.yml`. |
-| `VITE_USE_POLLING` | `true` in `.env.example` | Uses polling for Vite file watching, which is useful with bind mounts. |
-| `DEV_UID` / `DEV_GID` | Current host IDs through Just; otherwise `1000` | Ownership used by the development containers and named caches. |
+| Variable              | Default                                         | Description                                                                                  |
+| --------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `API_URL`             | `http://localhost:${PORT}`                      | API target for the Vite development proxy. Container development sets it to the API service. |
+| `UI_PORT`             | `5173`                                          | Published Vite port in `compose.dev.yml`.                                                    |
+| `VITE_USE_POLLING`    | `true` in `.env.example`                        | Uses polling for Vite file watching, which is useful with bind mounts.                       |
+| `DEV_UID` / `DEV_GID` | Current host IDs through Just; otherwise `1000` | Ownership used by the development containers and named caches.                               |
 
 ## OpenID Connect
 
@@ -220,11 +235,11 @@ OIDC can sign in an existing linked identity or link a verified email to an exis
 
 All account records, cached remote content, avatars, wallpapers, contact photos, task and Kanban attachments, and encrypted provider credentials live in SQLite. Pending migrations are embedded in the server and applied automatically at startup. SQLite uses WAL mode, a five-second busy timeout, and an eight-connection pool.
 
-| Run mode | Database location |
-| --- | --- |
-| Production Compose | `/app/data/pandan.db` in the `pandan-data` named volume |
-| Container development | `.devdata/pandan.db` in the repository bind mount |
-| Host development/default binary | `data/pandan.db` |
+| Run mode                        | Database location                                       |
+| ------------------------------- | ------------------------------------------------------- |
+| Production Compose              | `/app/data/pandan.db` in the `pandan-data` named volume |
+| Container development           | `.devdata/pandan.db` in the repository bind mount       |
+| Host development/default binary | `data/pandan.db`                                        |
 
 ### Back up Compose data
 
@@ -252,15 +267,15 @@ The `just db-reset` recipe permanently deletes the host and container-developmen
 
 ### Upload limits
 
-| Content | Accepted formats | Limit |
-| --- | --- | --- |
-| Wallpapers | JPEG, PNG, WebP, AVIF | 30 MB |
-| Wall submissions | JPEG, PNG, WebP, AVIF | 30 MB |
-| Avatars and contact photos | JPEG, PNG, WebP, AVIF | 10 MB |
-| Task attachments | Any content type accepted by the task attachment endpoint | 10 MB |
-| Kanban card attachments | Any content type accepted by the Kanban attachment endpoint | 10 MB |
-| Contact JSON import | Pandan or Monica JSON | 64 MB and at most 10,000 records |
-| Podcast episodes (downloaded, not uploaded) | Audio media types from a server-side allowlist | 500 MB per episode by default, within a 20 GB instance budget |
+| Content                                     | Accepted formats                                            | Limit                                                         |
+| ------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------- |
+| Wallpapers                                  | JPEG, PNG, WebP, AVIF                                       | 30 MB                                                         |
+| Wall submissions                            | JPEG, PNG, WebP, AVIF                                       | 30 MB                                                         |
+| Avatars and contact photos                  | JPEG, PNG, WebP, AVIF                                       | 10 MB                                                         |
+| Task attachments                            | Any content type accepted by the task attachment endpoint   | 10 MB                                                         |
+| Kanban card attachments                     | Any content type accepted by the Kanban attachment endpoint | 10 MB                                                         |
+| Contact JSON import                         | Pandan or Monica JSON                                       | 64 MB and at most 10,000 records                              |
+| Podcast episodes (downloaded, not uploaded) | Audio media types from a server-side allowlist              | 500 MB per episode by default, within a 20 GB instance budget |
 
 Podcast episode limits are administrator-configurable from the Podcasts page. Episode audio is the
 only content Pandan stores outside SQLite: files are written under `PANDAN_MEDIA_DIR` so playback can
@@ -321,7 +336,7 @@ curl --fail http://localhost:9651/api/health
 A healthy response is:
 
 ```json
-{"status":"ok","database":"connected"}
+{ "status": "ok", "database": "connected" }
 ```
 
 Both production and development containers use this endpoint for their Docker health checks.

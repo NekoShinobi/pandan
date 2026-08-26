@@ -922,6 +922,18 @@ export interface AuthenticationConfig {
   oidc_enabled: boolean;
   oidc_registration_enabled: boolean;
   oidc_provider_name: string | null;
+  login_background_blur: number;
+  login_background_brightness: number;
+  login_background_contrast: number;
+  login_background_saturation: number;
+}
+
+export interface LoginAppearance {
+  background_blur: number;
+  background_brightness: number;
+  background_contrast: number;
+  background_saturation: number;
+  updated_at: string;
 }
 
 export type NetworkAccessAction = "allow" | "deny";
@@ -1473,6 +1485,20 @@ export function updateAppearance(input: {
   background_saturation: number;
 }): Promise<UserAppearance> {
   return requestJson<UserAppearance>("/api/settings/appearance", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateLoginAppearance(input: {
+  background_blur: number;
+  background_brightness: number;
+  background_contrast: number;
+  background_saturation: number;
+}): Promise<LoginAppearance> {
+  return requestJson<LoginAppearance>("/api/admin/appearance/login", {
     method: "PUT",
     headers: { "content-type": "application/json" },
     credentials: "same-origin",

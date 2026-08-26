@@ -5,11 +5,11 @@ use crate::entities::{
     KanbanChecklist, KanbanChecklistItem, KanbanColumn, KanbanComment, KanbanDirectoryUser,
     KanbanInvitation, KanbanLabel, KanbanMember, KanbanMemberPermission, KanbanOverview,
     KanbanRolePermission, KanbanWorkspace, KanbanWorkspaceSettings, LineAuthorProfile, LinePost,
-    LinePostAttachment, LinePostDraft, LinePostReaction, ManagedUser, NetworkAccessRule,
-    OidcAuthorization, PaymentSubscription, RssItem, RssItemDraft, RssRefreshTarget,
-    RssSubscription, RssSubscriptionDraft, SessionAccount, Task, TaskAttachment, TaskDraft,
-    TaskSubtask, User, UserAppearance, UserAvatar, UserBackground, UserCredentials, UserSettings,
-    Workspace,
+    LinePostAttachment, LinePostDraft, LinePostReaction, LoginAppearance, ManagedUser,
+    NetworkAccessRule, OidcAuthorization, PaymentSubscription, RssItem, RssItemDraft,
+    RssRefreshTarget, RssSubscription, RssSubscriptionDraft, SessionAccount, Task, TaskAttachment,
+    TaskDraft, TaskSubtask, User, UserAppearance, UserAvatar, UserBackground, UserCredentials,
+    UserSettings, Workspace,
 };
 pub use crate::podcast_queries::*;
 pub use crate::youtube_queries::*;
@@ -4041,6 +4041,49 @@ pub async fn update_user_appearance(
     .execute(pool)
     .await?;
     find_user_appearance(pool, user_id).await
+}
+
+/// Loads the singleton processing controls for the public login background.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the query cannot be completed.
+pub async fn get_login_appearance(pool: &SqlitePool) -> Result<LoginAppearance, sqlx::Error> {
+    sqlx::query_as::<_, LoginAppearance>(
+        "SELECT background_blur, background_brightness, background_contrast, \
+                background_saturation, updated_at \
+         FROM login_appearance WHERE id = 1",
+    )
+    .fetch_one(pool)
+    .await
+}
+
+/// Replaces the singleton processing controls for the public login background.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the update cannot be completed.
+pub async fn update_login_appearance(
+    pool: &SqlitePool,
+    background_blur: i64,
+    background_brightness: i64,
+    background_contrast: i64,
+    background_saturation: i64,
+) -> Result<LoginAppearance, sqlx::Error> {
+    sqlx::query(
+        "UPDATE login_appearance \
+         SET background_blur = ?, background_brightness = ?, background_contrast = ?, \
+             background_saturation = ?, updated_at = ? \
+         WHERE id = 1",
+    )
+    .bind(background_blur)
+    .bind(background_brightness)
+    .bind(background_contrast)
+    .bind(background_saturation)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(pool)
+    .await?;
+    get_login_appearance(pool).await
 }
 
 /// Lists all accounts for the administrator directory.

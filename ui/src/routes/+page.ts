@@ -15,6 +15,10 @@ export const load: PageLoad = async ({ fetch }) => {
       oidc_enabled: false,
       oidc_registration_enabled: false,
       oidc_provider_name: null,
+      login_background_blur: 0,
+      login_background_brightness: 78,
+      login_background_contrast: 108,
+      login_background_saturation: 72,
     })),
   ]);
   if (setup.required) {

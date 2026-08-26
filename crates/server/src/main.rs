@@ -1,6 +1,9 @@
 use actix_files::Files;
 use actix_web::{App, HttpServer, web};
-use server::{AppState, SiteOrigin, UI_BUILD_DIR, configure_api, spa_document};
+use server::{
+    AppState, SiteOrigin, UI_BUILD_DIR, configure_api, service_worker, spa_document,
+    web_app_manifest,
+};
 use tracing::{info, warn};
 use tracing_actix_web::TracingLogger;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -75,6 +78,8 @@ async fn main() -> miette::Result<()> {
             // The application document is rendered rather than served from
             // disk, so the root route cannot be left to `Files::index_file`.
             .service(web::resource("/").to(spa_document))
+            .service(web::resource("/service-worker.js").to(service_worker))
+            .service(web::resource("/app.webmanifest").to(web_app_manifest))
             .service(
                 Files::new("/", UI_BUILD_DIR)
                     .prefer_utf8(true)

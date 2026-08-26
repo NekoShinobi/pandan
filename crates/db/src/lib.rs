@@ -187,6 +187,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "049_stream_tracker_rail",
         include_str!("../migrations/049_stream_tracker_rail.sql"),
     ),
+    (
+        "050_login_appearance",
+        include_str!("../migrations/050_login_appearance.sql"),
+    ),
 ];
 
 /// Maps migration names used by earlier development builds to their canonical names.

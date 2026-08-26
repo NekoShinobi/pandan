@@ -165,6 +165,15 @@ pub struct AuthenticationSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct LoginAppearance {
+    pub background_blur: i64,
+    pub background_brightness: i64,
+    pub background_contrast: i64,
+    pub background_saturation: i64,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
 pub struct NetworkAccessRule {
     pub id: String,
     pub action: String,

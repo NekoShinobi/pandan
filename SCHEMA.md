@@ -269,8 +269,8 @@ application canvas.
 
 ## `user_appearance`
 
-One dashboard appearance record per user. A trigger creates the default row with each account.
-Values are intentionally bounded so the wallpaper remains usable behind terminal surfaces.
+One Main background appearance record per user. A trigger creates the default row with each
+account. Values are intentionally bounded so the wallpaper remains usable behind terminal surfaces.
 
 | Column                  | Type    | Constraints                                         |
 | ----------------------- | ------- | --------------------------------------------------- |
@@ -280,6 +280,21 @@ Values are intentionally bounded so the wallpaper remains usable behind terminal
 | `background_contrast`   | INTEGER | Contrast percentage from 50–160                     |
 | `background_saturation` | INTEGER | Saturation percentage from 0–180                    |
 | `updated_at`            | TEXT    | Required, RFC 3339 timestamp                        |
+
+## `login_appearance`
+
+Singleton processing controls for the global Login background. The values are publicly readable
+with the authentication bootstrap so the signed-out page can render them, but only an administrator
+may update them. They are independent from every account's Main background processing.
+
+| Column                  | Type    | Constraints                                    |
+| ----------------------- | ------- | ---------------------------------------------- |
+| `id`                    | INTEGER | Primary key; singleton value `1`               |
+| `background_blur`       | INTEGER | Blur radius from 0–24 pixels                   |
+| `background_brightness` | INTEGER | Brightness percentage from 40–140              |
+| `background_contrast`   | INTEGER | Contrast percentage from 50–160                |
+| `background_saturation` | INTEGER | Saturation percentage from 0–180               |
+| `updated_at`            | TEXT    | Required, RFC 3339 timestamp                   |
 
 ## `sessions`
 
