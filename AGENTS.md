@@ -52,6 +52,11 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
   whose `config_json.placement` is `utility_rail`. It accepts up to 20 accounts across separate
   provider lists, keeps legacy movable stream widgets intact, and replaces the removed
   `task-progress` widget and Task.Progress utility box.
+- The dashboard right rail also owns one account-scoped bookmark list capped at 32 links. Bookmark
+  destinations open directly in the browser. The server derives the origin `/favicon.ico`, fetches
+  it through the `images` network policy with redirect and size guards, stores supported icon bytes
+  in SQLite, and serves them only to the owning authenticated account. A favicon failure must never
+  prevent the bookmark itself from being saved.
 - All private records and assets must be scoped to the authenticated account in both handlers and queries.
 - Administrator checks are enforced by the server, never only by the interface.
 - The final administrator cannot be demoted or deleted.
@@ -137,6 +142,12 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - RSS subscriptions refresh in a background worker every 30 minutes. Scheduling reads
   `rss_subscriptions.last_attempted_at`, which is stamped when a refresh is claimed, so a failing
   source backs off for a full window. Keep manual refresh available alongside it.
+- Every successful RSS refresh advances `rss_subscriptions.refresh_generation` and stamps returned
+  entries with that generation. Inbox may retain older generations, Current shows only the latest
+  successful generation, and a failed refresh must never advance or blank that snapshot. Current
+  entries remain retention-exempt while the source still exposes them. Dashboard RSS widgets select
+  account-owned subscriptions and read this cached Current projection; they must never fetch raw feed
+  URLs on demand.
 - New RSS subscriptions default to auto-deleting read and unread items after seven days; Read Later
   items stay exempt. Generated Reddit subscriptions use the public Atom `.rss` listing, and the
   fetcher normalizes legacy `.json` listing URLs to Atom because Reddit rejects anonymous server-side

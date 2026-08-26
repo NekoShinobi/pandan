@@ -1,12 +1,17 @@
 <script lang="ts">
   import Check from "lucide-svelte/icons/check";
+  import Bookmark from "lucide-svelte/icons/bookmark";
+  import MessageCircle from "lucide-svelte/icons/message-circle";
   import X from "lucide-svelte/icons/x";
   import { onMount } from "svelte";
   import {
     fetchWidgetCapabilities,
     fetchWidgetData,
+    fetchRssReader,
+    setRssItemSaved,
     updateDashboardWidgetConfig,
     type DashboardWidget,
+    type RssSubscription,
     type WidgetData,
     type WidgetDataItem,
   } from "$lib/api";
@@ -62,6 +67,13 @@
   let toggleValue = $state(false);
   let secretValue = $state("");
   let clearSecret = $state(false);
+  let rssSubscriptions = $state.raw<RssSubscription[]>([]);
+  let rssSubscriptionsLoading = $state(false);
+  let rssSubscriptionsError = $state("");
+  let rssSelectedSubscriptionIds = $state<string[]>([]);
+  let rssLimit = $state(24);
+  let rssDensity = $state<"compact" | "comfortable">("compact");
+  let rssSavingItemId = $state("");
   let now = $state(new Date());
 
   let isRemote = $derived(remoteKinds.has(widget.kind));
@@ -72,7 +84,7 @@
       case "youtube":
         return hasList(config.channels) || hasList(config.playlists);
       case "rss":
-        return hasList(config.urls);
+        return hasList(config.subscription_ids) || hasList(config.urls);
       case "reddit":
         return hasText(config.subreddit);
       case "stocks":
@@ -141,7 +153,19 @@
       }
     }, 30_000);
     if (isDataBacked && isConfigured) void loadData();
-    return () => window.clearInterval(timer);
+    const rssTimer = window.setInterval(() => {
+      if (
+        widget.kind === "rss" &&
+        isConfigured &&
+        document.visibilityState === "visible"
+      ) {
+        void loadData();
+      }
+    }, 5 * 60_000);
+    return () => {
+      window.clearInterval(timer);
+      window.clearInterval(rssTimer);
+    };
   });
 
   function captureConfigDialog(node: HTMLDialogElement) {
@@ -277,6 +301,11 @@
     toggleValue = false;
     secretValue = "";
     clearSecret = false;
+    rssSubscriptions = [];
+    rssSubscriptionsError = "";
+    rssSelectedSubscriptionIds = [];
+    rssLimit = 24;
+    rssDensity = "compact";
     formError = "";
     switch (widget.kind) {
       case "youtube":
@@ -285,7 +314,13 @@
         toggleValue = config.include_shorts === true;
         break;
       case "rss":
-        listPrimary = lines(config.urls);
+        rssSelectedSubscriptionIds = stringArray(config.subscription_ids);
+        rssLimit = Math.min(
+          40,
+          Math.max(1, Number(config.limit) || 24),
+        );
+        rssDensity = config.density === "comfortable" ? "comfortable" : "compact";
+        void loadRssSubscriptions(config);
         break;
       case "reddit":
         textPrimary = String(config.subreddit ?? "");
@@ -331,6 +366,41 @@
     configDialog?.showModal();
   }
 
+  async function loadRssSubscriptions(config: Record<string, unknown>) {
+    rssSubscriptionsLoading = true;
+    rssSubscriptionsError = "";
+    try {
+      const reader = await fetchRssReader();
+      rssSubscriptions = reader.subscriptions;
+      if (rssSelectedSubscriptionIds.length === 0) {
+        const legacyUrls = stringArray(config.urls);
+        rssSelectedSubscriptionIds = reader.subscriptions
+          .filter((subscription) => legacyUrls.includes(subscription.url))
+          .map((subscription) => subscription.id);
+      } else {
+        const available = new Set(reader.subscriptions.map((item) => item.id));
+        rssSelectedSubscriptionIds = rssSelectedSubscriptionIds.filter((id) =>
+          available.has(id),
+        );
+      }
+    } catch (reason: unknown) {
+      rssSubscriptionsError =
+        reason instanceof Error
+          ? reason.message
+          : "RSS subscriptions could not be loaded";
+    } finally {
+      rssSubscriptionsLoading = false;
+    }
+  }
+
+  function toggleRssSubscription(subscriptionId: string) {
+    rssSelectedSubscriptionIds = rssSelectedSubscriptionIds.includes(
+      subscriptionId,
+    )
+      ? rssSelectedSubscriptionIds.filter((id) => id !== subscriptionId)
+      : [...rssSelectedSubscriptionIds, subscriptionId];
+  }
+
   function buildConfig(): Record<string, unknown> {
     switch (widget.kind) {
       case "youtube":
@@ -341,7 +411,11 @@
           limit: 20,
         };
       case "rss":
-        return { urls: splitLines(listPrimary), limit: 24 };
+        return {
+          subscription_ids: rssSelectedSubscriptionIds,
+          limit: rssLimit,
+          density: rssDensity,
+        };
       case "reddit":
         return {
           subreddit: textPrimary.trim(),
@@ -393,6 +467,10 @@
         formError = `${invalid} is not a valid IANA timezone.`;
         return;
       }
+    }
+    if (widget.kind === "rss" && rssSelectedSubscriptionIds.length === 0) {
+      formError = "Choose at least one RSS subscription.";
+      return;
     }
     if (
       widget.kind === "streams" &&
@@ -449,6 +527,47 @@
     return item.url && item.url !== "#" ? item.url : item.comments_url;
   }
 
+  async function toggleRssSaved(item: WidgetDataItem) {
+    if (!item.id || rssSavingItemId) return;
+    const nextSaved = !item.saved_at;
+    const previous = data;
+    rssSavingItemId = item.id;
+    if (data) {
+      data = {
+        ...data,
+        items: data.items.map((candidate) =>
+          candidate.id === item.id
+            ? {
+                ...candidate,
+                saved_at: nextSaved ? new Date().toISOString() : null,
+              }
+            : candidate,
+        ),
+      };
+    }
+    try {
+      const updated = await setRssItemSaved(item.id, nextSaved);
+      if (data) {
+        data = {
+          ...data,
+          items: data.items.map((candidate) =>
+            candidate.id === updated.id
+              ? { ...candidate, saved_at: updated.saved_at }
+              : candidate,
+          ),
+        };
+      }
+    } catch (reason: unknown) {
+      data = previous;
+      loadError =
+        reason instanceof Error
+          ? reason.message
+          : "Read Later could not be updated";
+    } finally {
+      rssSavingItemId = "";
+    }
+  }
+
   function configPlacement(config: Record<string, unknown>) {
     return typeof config.placement === "string" ? config.placement : "";
   }
@@ -460,7 +579,7 @@
       {widget.kind === "youtube"
         ? "YouTube uploads"
         : widget.kind === "rss"
-          ? "RSS / Atom"
+          ? "RSS current"
           : widget.kind === "reddit"
             ? "Reddit"
             : widget.kind === "stocks"
@@ -474,7 +593,7 @@
                     : widget.kind}
     </span>
     <div class="integration-actions">
-      {#if isRemote && isConfigured}
+      {#if isRemote && isConfigured && widget.kind !== "rss"}
         <button
           class="ui-button ui-button--ghost text-button"
           type="button"
@@ -502,6 +621,26 @@
   {#if data?.partial}
     <p class="integration-stale" role="status">
       Some accounts could not be refreshed. Available statuses are shown.
+    </p>
+  {/if}
+
+  {#if widget.kind === "rss" && data}
+    <p class="rss-widget-status" role="status">
+      <span>
+        Latest snapshot {data.refreshed_at
+          ? formatRelative(data.refreshed_at)
+          : "is waiting for its first refresh"}
+      </span>
+      <span>
+        {data.source_count ?? 0} {(data.source_count ?? 0) === 1
+          ? "source"
+          : "sources"}
+        {#if data.stale_source_count}
+          · {data.stale_source_count} need attention
+        {:else if data.pending_source_count}
+          · {data.pending_source_count} pending
+        {/if}
+      </span>
     </p>
   {/if}
 
@@ -651,6 +790,78 @@
         <!-- eslint-enable svelte/no-navigation-without-resolve -->
       {/each}
     </div>
+  {:else if widget.kind === "rss"}
+    <div
+      class={[
+        "rss-widget-list",
+        widget.config.density === "comfortable" && "is-comfortable",
+      ]}
+    >
+      {#each visibleItems as item (item.id ?? item.url ?? item.title)}
+        <article class="rss-widget-row">
+          {#if openItem(item)}
+            <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- stored provider URL -->
+            <a
+              class="rss-widget-copy"
+              href={openItem(item)}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <strong>{item.title}</strong>
+              <small>
+                {item.source ?? "RSS"}{item.published_at
+                  ? ` · ${formatRelative(item.published_at)}`
+                  : ""}
+              </small>
+              {#if widget.config.density === "comfortable" && item.summary}
+                <span>{item.summary}</span>
+              {/if}
+            </a>
+          {:else}
+            <div class="rss-widget-copy">
+              <strong>{item.title}</strong>
+              <small>{item.source ?? "RSS"}</small>
+            </div>
+          {/if}
+          <div class="rss-widget-actions">
+            {#if item.comments_url && item.comments_url !== item.url}
+              <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- stored provider URL -->
+              <a
+                class="rss-widget-action"
+                href={item.comments_url}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={`Open comments for ${item.title}`}
+                title="Open comments"
+              >
+                <MessageCircle size={15} strokeWidth={1.8} aria-hidden="true" />
+              </a>
+            {/if}
+            <button
+              class={["rss-widget-action", item.saved_at && "is-active"]}
+              type="button"
+              disabled={rssSavingItemId !== ""}
+              aria-label={item.saved_at
+                ? `Remove ${item.title} from Read Later`
+                : `Save ${item.title} to Read Later`}
+              title={item.saved_at ? "Remove from Read Later" : "Save to Read Later"}
+              onclick={() => toggleRssSaved(item)}
+            >
+              <Bookmark
+                size={15}
+                strokeWidth={1.8}
+                fill={item.saved_at ? "currentColor" : "none"}
+                aria-hidden="true"
+              />
+            </button>
+          </div>
+        </article>
+      {:else}
+        <p class="integration-note rss-widget-empty">
+          No items are present in the latest cached snapshot.
+        </p>
+      {/each}
+    </div>
   {:else if widget.kind === "stocks"}
     <div class="market-grid">
       {#each visibleItems as item (item.symbol)}
@@ -768,16 +979,68 @@
           <span>Include Shorts when channel feeds support them</span>
         </button>
       {:else if widget.kind === "rss"}
-        <label for={`feeds-${widget.id}`}>Feed URLs</label>
-        <textarea
-          id={`feeds-${widget.id}`}
-          bind:value={listPrimary}
-          rows="6"
-          placeholder="https://example.com/feed.xml"></textarea>
-        <p class="field-note">
-          HTTPS RSS and Atom feeds only. Private-network destinations and
-          redirects are blocked.
-        </p>
+        <div class="rss-widget-source-heading">
+          <div>
+            <span class="rss-widget-source-label">Subscriptions</span>
+            <p class="field-note">
+              The dashboard reads the latest background-cached snapshot. It never fetches feeds on demand.
+            </p>
+          </div>
+          {#if rssSubscriptions.length > 0}
+            <button
+              class="ui-button ui-button--ghost text-button"
+              type="button"
+              onclick={() =>
+                (rssSelectedSubscriptionIds =
+                  rssSelectedSubscriptionIds.length === rssSubscriptions.length
+                    ? []
+                    : rssSubscriptions.map((item) => item.id))}
+            >
+              {rssSelectedSubscriptionIds.length === rssSubscriptions.length
+                ? "Clear all"
+                : "Select all"}
+            </button>
+          {/if}
+        </div>
+        {#if rssSubscriptionsLoading}
+          <p class="rss-widget-source-state" role="status">Loading subscriptions…</p>
+        {:else if rssSubscriptionsError}
+          <p class="form-error" role="alert">{rssSubscriptionsError}</p>
+        {:else if rssSubscriptions.length === 0}
+          <p class="rss-widget-source-state">
+            Add a feed from the RSS page before configuring this widget.
+          </p>
+        {:else}
+          <div class="rss-widget-source-picker" data-od-id={`rss-widget-sources-${widget.id}`}>
+            {#each rssSubscriptions as subscription (subscription.id)}
+              <button
+                class="ui-toggle-button rss-widget-source-option"
+                type="button"
+                aria-pressed={rssSelectedSubscriptionIds.includes(subscription.id)}
+                onclick={() => toggleRssSubscription(subscription.id)}
+              >
+                <span class="ui-toggle-indicator" aria-hidden="true"></span>
+                <span>
+                  <strong>{subscription.title}</strong>
+                  <small>{subscription.category}</small>
+                </span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+        <div class="rss-widget-display-settings">
+          <label for={`rss-limit-${widget.id}`}>
+            <span>Cached item limit</span>
+            <input id={`rss-limit-${widget.id}`} type="number" min="1" max="40" bind:value={rssLimit} />
+          </label>
+          <label for={`rss-density-${widget.id}`}>
+            <span>Row density</span>
+            <select id={`rss-density-${widget.id}`} bind:value={rssDensity}>
+              <option value="compact">Compact</option>
+              <option value="comfortable">Comfortable</option>
+            </select>
+          </label>
+        </div>
       {:else if widget.kind === "reddit"}
         <label for={`subreddit-${widget.id}`}>Subreddit</label>
         <input

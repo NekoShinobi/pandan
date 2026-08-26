@@ -191,6 +191,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "050_login_appearance",
         include_str!("../migrations/050_login_appearance.sql"),
     ),
+    (
+        "051_rss_snapshot_generations",
+        include_str!("../migrations/051_rss_snapshot_generations.sql"),
+    ),
+    (
+        "052_dashboard_bookmarks",
+        include_str!("../migrations/052_dashboard_bookmarks.sql"),
+    ),
 ];
 
 /// Maps migration names used by earlier development builds to their canonical names.
@@ -348,6 +356,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bookmarks_and_cached_favicons_are_account_scoped() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (owner, _) = queries::create_account(
+            &pool,
+            "bookmark-owner@example.com",
+            "$argon2id$bookmark-owner",
+            "Bookmark Owner",
+        )
+        .await
+        .expect("owner creates");
+        let (other, _) = queries::create_account(
+            &pool,
+            "bookmark-other@example.com",
+            "$argon2id$bookmark-other",
+            "Bookmark Other",
+        )
+        .await
+        .expect("other account creates");
+
+        let bookmark = queries::create_bookmark(
+            &pool,
+            &owner.id,
+            "Pandan",
+            "https://pandan.example.com/",
+            Some(("image/png", b"favicon")),
+        )
+        .await
+        .expect("bookmark create completes")
+        .expect("bookmark creates");
+        assert!(bookmark.has_favicon);
+        assert_eq!(
+            queries::list_bookmarks(&pool, &owner.id)
+                .await
+                .expect("owner bookmarks load"),
+            vec![bookmark.clone()]
+        );
+        assert!(
+            queries::list_bookmarks(&pool, &other.id)
+                .await
+                .expect("other bookmarks load")
+                .is_empty()
+        );
+        assert!(
+            queries::get_bookmark_favicon(&pool, &other.id, &bookmark.id)
+                .await
+                .expect("other favicon lookup completes")
+                .is_none()
+        );
+        assert!(
+            !queries::delete_bookmark(&pool, &other.id, &bookmark.id)
+                .await
+                .expect("other delete is refused")
+        );
+        assert!(
+            queries::delete_bookmark(&pool, &owner.id, &bookmark.id)
+                .await
+                .expect("owner delete completes")
+        );
+    }
+
+    #[tokio::test]
     async fn rss_comments_url_migration_preserves_existing_items() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -431,6 +500,96 @@ mod tests {
                 .await
                 .expect("migrated item loads");
         assert!(comments_url.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rss_snapshot_generation_migration_preserves_existing_items() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::from_str("sqlite::memory:")
+                    .expect("memory url parses")
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("database connects");
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS _migrations (\
+             name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("migration ledger creates");
+
+        let snapshot_index = MIGRATIONS
+            .iter()
+            .position(|(name, _)| *name == "051_rss_snapshot_generations")
+            .expect("RSS snapshot generation migration is registered");
+        for (name, migration_sql) in MIGRATIONS.iter().take(snapshot_index) {
+            let mut transaction = pool.begin().await.expect("migration starts");
+            sqlx::raw_sql(*migration_sql)
+                .execute(&mut *transaction)
+                .await
+                .expect("existing migration applies");
+            sqlx::query("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)")
+                .bind(*name)
+                .bind(chrono::Utc::now().to_rfc3339())
+                .execute(&mut *transaction)
+                .await
+                .expect("existing migration records");
+            transaction.commit().await.expect("migration commits");
+        }
+
+        let (owner, _) = queries::create_account(
+            &pool,
+            "rss-snapshot-upgrade@example.com",
+            "$argon2id$snapshot-upgrade",
+            "RSS Snapshot Upgrade",
+        )
+        .await
+        .expect("owner creates");
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO rss_subscriptions \
+             (id, user_id, url, base_url, title, category, auto_delete_days, auto_delete_mode, \
+              last_fetched_at, last_attempted_at, created_at, updated_at) \
+             VALUES ('legacy-snapshot-rss', ?, 'https://example.com/feed.xml', \
+                     'https://example.com', 'Legacy snapshot feed', 'General', 7, 'all', \
+                     ?, ?, ?, ?)",
+        )
+        .bind(&owner.id)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("legacy subscription stores");
+        sqlx::query(
+            "INSERT INTO rss_items \
+             (id, subscription_id, external_id, url, title, summary, published_at, fetched_at) \
+             VALUES ('legacy-snapshot-item', 'legacy-snapshot-rss', 'legacy-entry', \
+                     'https://example.com/article', 'Legacy article', '', ?, ?)",
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("legacy item stores");
+
+        run_migrations(&pool)
+            .await
+            .expect("RSS snapshot generation migration applies");
+
+        let generations: (i64, i64) = sqlx::query_as(
+            "SELECT s.refresh_generation, i.last_seen_generation \
+             FROM rss_subscriptions s JOIN rss_items i ON i.subscription_id = s.id \
+             WHERE i.id = 'legacy-snapshot-item'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("migrated generations load");
+        assert_eq!(generations, (0, 0));
     }
 
     #[tokio::test]
@@ -1552,6 +1711,19 @@ mod tests {
             .unwrap()
             .remove(0);
         assert_eq!(item.comments_url, "https://example.com/old/comments");
+        assert!(item.is_current);
+        assert_eq!(
+            queries::list_current_rss_items(
+                &pool,
+                &owner.id,
+                std::slice::from_ref(&subscription.id),
+                10,
+            )
+            .await
+            .unwrap()
+            .len(),
+            1
+        );
         assert!(
             queries::set_rss_item_read(&pool, &other.id, &item.id, true)
                 .await
@@ -1586,6 +1758,27 @@ mod tests {
                 .await
                 .unwrap()
                 .is_some()
+        );
+        queries::refresh_rss_subscription(&pool, &owner.id, &subscription.id, "Example feed", &[])
+            .await
+            .expect("subscription refreshes");
+        assert!(
+            !queries::list_rss_items(&pool, &owner.id)
+                .await
+                .unwrap()
+                .remove(0)
+                .is_current
+        );
+        assert!(
+            queries::list_current_rss_items(
+                &pool,
+                &owner.id,
+                std::slice::from_ref(&subscription.id),
+                10,
+            )
+            .await
+            .unwrap()
+            .is_empty()
         );
         assert_eq!(
             queries::prune_rss_items(&pool, &owner.id, 30, "read")

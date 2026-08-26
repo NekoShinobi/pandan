@@ -288,6 +288,7 @@ export interface RssSubscription {
   auto_delete_mode: RssRetentionMode;
   last_fetched_at: string | null;
   last_error: string | null;
+  refresh_generation: number;
   created_at: string;
   updated_at: string;
 }
@@ -306,6 +307,7 @@ export interface RssReaderItem {
   fetched_at: string;
   read_at: string | null;
   saved_at: string | null;
+  is_current: boolean;
 }
 
 export interface RssReaderResponse {
@@ -743,11 +745,21 @@ export interface DashboardWidget {
   updated_at: string;
 }
 
+export interface Bookmark {
+  id: string;
+  title: string;
+  url: string;
+  has_favicon: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface WidgetCapabilities {
   secret_storage_enabled: boolean;
 }
 
 export interface WidgetDataItem {
+  id?: string;
   title: string;
   url?: string;
   comments_url?: string;
@@ -766,11 +778,17 @@ export interface WidgetDataItem {
   live?: boolean;
   viewers?: number | null;
   category?: string | null;
+  saved_at?: string | null;
+  is_current?: boolean;
 }
 
 export interface WidgetData {
   items: WidgetDataItem[];
   partial?: boolean;
+  refreshed_at?: string | null;
+  source_count?: number;
+  stale_source_count?: number;
+  pending_source_count?: number;
 }
 
 export interface NtfyConnection {
@@ -970,8 +988,10 @@ export interface DashboardResponse {
   settings: UserSettings;
   appearance: UserAppearance;
   tasks: Task[];
+  archived_task_count: number;
   feeds: FeedItem[];
   widgets: DashboardWidget[];
+  bookmarks: Bookmark[];
   embedded_pages: EmbeddedPagesResponse;
 }
 
@@ -1070,6 +1090,29 @@ export function fetchDashboard(
   fetcher: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<DashboardResponse> {
   return requestJson<DashboardResponse>("/api/dashboard", undefined, fetcher);
+}
+
+export function createBookmark(input: {
+  title: string;
+  url: string;
+}): Promise<Bookmark> {
+  return requestJson<Bookmark>("/api/bookmarks", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteBookmark(id: string): Promise<void> {
+  return requestEmpty(`/api/bookmarks/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+
+export function bookmarkFaviconUrl(id: string): string {
+  return `/api/bookmarks/${encodeURIComponent(id)}/favicon`;
 }
 
 export function fetchEmbeddedPages(): Promise<EmbeddedPagesResponse> {

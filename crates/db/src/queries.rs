@@ -1,19 +1,19 @@
 use crate::entities::{
-    AppMetadata, AuthenticationSettings, CalendarEvent, CalendarEventDraft, CalendarSubscription,
-    CodingCredential, CodingProject, DashboardWidget, EmbeddedPage, FeedItem, JournalNode,
-    KanbanActivity, KanbanAttachment, KanbanBoard, KanbanBoardSummary, KanbanCard, KanbanCardDraft,
-    KanbanChecklist, KanbanChecklistItem, KanbanColumn, KanbanComment, KanbanDirectoryUser,
-    KanbanInvitation, KanbanLabel, KanbanMember, KanbanMemberPermission, KanbanOverview,
-    KanbanRolePermission, KanbanWorkspace, KanbanWorkspaceSettings, LineAuthorProfile, LinePost,
-    LinePostAttachment, LinePostDraft, LinePostReaction, LoginAppearance, ManagedUser,
-    NetworkAccessRule, OidcAuthorization, PaymentSubscription, RssItem, RssItemDraft,
-    RssRefreshTarget, RssSubscription, RssSubscriptionDraft, SessionAccount, Task, TaskAttachment,
-    TaskDraft, TaskSubtask, User, UserAppearance, UserAvatar, UserBackground, UserCredentials,
-    UserSettings, Workspace,
+    AppMetadata, AuthenticationSettings, Bookmark, BookmarkFavicon, CalendarEvent,
+    CalendarEventDraft, CalendarSubscription, CodingCredential, CodingProject, DashboardWidget,
+    EmbeddedPage, FeedItem, JournalNode, KanbanActivity, KanbanAttachment, KanbanBoard,
+    KanbanBoardSummary, KanbanCard, KanbanCardDraft, KanbanChecklist, KanbanChecklistItem,
+    KanbanColumn, KanbanComment, KanbanDirectoryUser, KanbanInvitation, KanbanLabel, KanbanMember,
+    KanbanMemberPermission, KanbanOverview, KanbanRolePermission, KanbanWorkspace,
+    KanbanWorkspaceSettings, LineAuthorProfile, LinePost, LinePostAttachment, LinePostDraft,
+    LinePostReaction, LoginAppearance, ManagedUser, NetworkAccessRule, OidcAuthorization,
+    PaymentSubscription, RssItem, RssItemDraft, RssRefreshTarget, RssSubscription,
+    RssSubscriptionDraft, SessionAccount, Task, TaskAttachment, TaskDraft, TaskSubtask, User,
+    UserAppearance, UserAvatar, UserBackground, UserCredentials, UserSettings, Workspace,
 };
 pub use crate::podcast_queries::*;
 pub use crate::youtube_queries::*;
-use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
+use sqlx::{FromRow, QueryBuilder, Sqlite, SqlitePool, Transaction};
 
 const DEFAULT_WIDGETS: &[(&str, i64, i64, &str, i64, i64, i64, i64)] = &[
     ("weather", 0, 0, "wide", 0, 0, 8, 5),
@@ -404,6 +404,18 @@ pub async fn list_tasks(pool: &SqlitePool, user_id: &str) -> Result<Vec<Task>, s
         tasks.push(hydrate_task(pool, record).await?);
     }
     Ok(tasks)
+}
+
+/// Counts archived tasks for one user without hydrating their related records.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the query cannot be completed.
+pub async fn count_archived_tasks(pool: &SqlitePool, user_id: &str) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM tasks WHERE user_id = ? AND archived_at IS NOT NULL")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
 }
 
 /// Loads archived tasks for one user, newest archive first.
@@ -1822,7 +1834,7 @@ pub async fn list_rss_subscriptions(
 ) -> Result<Vec<RssSubscription>, sqlx::Error> {
     sqlx::query_as::<_, RssSubscription>(
         "SELECT id, url, base_url, title, category, auto_delete_days, auto_delete_mode, \
-         last_fetched_at, last_error, created_at, updated_at \
+         last_fetched_at, last_error, refresh_generation, created_at, updated_at \
          FROM rss_subscriptions WHERE user_id = ? ORDER BY title COLLATE NOCASE ASC",
     )
     .bind(user_id)
@@ -1838,7 +1850,9 @@ pub async fn list_rss_subscriptions(
 pub async fn list_rss_items(pool: &SqlitePool, user_id: &str) -> Result<Vec<RssItem>, sqlx::Error> {
     sqlx::query_as::<_, RssItem>(
         "SELECT i.id, i.subscription_id, s.title AS source, s.category, s.base_url, i.url, \
-         i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at \
+         i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at, \
+         CASE WHEN s.refresh_generation > 0 AND i.last_seen_generation = s.refresh_generation \
+              THEN 1 ELSE 0 END AS is_current \
          FROM rss_items i JOIN rss_subscriptions s ON s.id = i.subscription_id \
          LEFT JOIN rss_read_later rl ON rl.item_id = i.id AND rl.user_id = ? \
          WHERE s.user_id = ? ORDER BY datetime(i.published_at) DESC, i.fetched_at DESC",
@@ -1847,6 +1861,45 @@ pub async fn list_rss_items(pool: &SqlitePool, user_id: &str) -> Result<Vec<RssI
     .bind(user_id)
     .fetch_all(pool)
     .await
+}
+
+/// Loads the latest successful RSS snapshot for selected user-owned subscriptions.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when current entries cannot be loaded.
+pub async fn list_current_rss_items(
+    pool: &SqlitePool,
+    user_id: &str,
+    subscription_ids: &[String],
+    limit: usize,
+) -> Result<Vec<RssItem>, sqlx::Error> {
+    if subscription_ids.is_empty() || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT i.id, i.subscription_id, s.title AS source, s.category, s.base_url, i.url, \
+         i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at, \
+         1 AS is_current FROM rss_items i \
+         JOIN rss_subscriptions s ON s.id = i.subscription_id \
+         LEFT JOIN rss_read_later rl ON rl.item_id = i.id AND rl.user_id = ",
+    );
+    query.push_bind(user_id);
+    query.push(" WHERE s.user_id = ");
+    query.push_bind(user_id);
+    query.push(
+        " AND s.refresh_generation > 0 \
+         AND i.last_seen_generation = s.refresh_generation AND s.id IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for subscription_id in subscription_ids {
+            separated.push_bind(subscription_id);
+        }
+    }
+    query.push(") ORDER BY datetime(i.published_at) DESC, i.fetched_at DESC LIMIT ");
+    query.push_bind(i64::try_from(limit).unwrap_or(i64::MAX));
+    query.build_query_as::<RssItem>().fetch_all(pool).await
 }
 
 /// Loads one user-owned RSS subscription.
@@ -1861,7 +1914,7 @@ pub async fn get_rss_subscription(
 ) -> Result<Option<RssSubscription>, sqlx::Error> {
     sqlx::query_as::<_, RssSubscription>(
         "SELECT id, url, base_url, title, category, auto_delete_days, auto_delete_mode, \
-         last_fetched_at, last_error, created_at, updated_at \
+         last_fetched_at, last_error, refresh_generation, created_at, updated_at \
          FROM rss_subscriptions WHERE id = ? AND user_id = ?",
     )
     .bind(id)
@@ -1924,16 +1977,19 @@ async fn upsert_rss_items(
     subscription_id: &str,
     items: &[RssItemDraft],
     fetched_at: &str,
+    generation: i64,
 ) -> Result<(), sqlx::Error> {
     for item in items {
         sqlx::query(
             "INSERT INTO rss_items \
-             (id, subscription_id, external_id, url, comments_url, title, summary, published_at, fetched_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             (id, subscription_id, external_id, url, comments_url, title, summary, published_at, \
+              fetched_at, last_seen_generation) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(subscription_id, external_id) DO UPDATE SET \
              url = excluded.url, comments_url = excluded.comments_url, \
              title = excluded.title, summary = excluded.summary, \
-             published_at = excluded.published_at, fetched_at = excluded.fetched_at",
+             published_at = excluded.published_at, fetched_at = excluded.fetched_at, \
+             last_seen_generation = excluded.last_seen_generation",
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(subscription_id)
@@ -1944,6 +2000,7 @@ async fn upsert_rss_items(
         .bind(&item.summary)
         .bind(&item.published_at)
         .bind(fetched_at)
+        .bind(generation)
         .execute(&mut **transaction)
         .await?;
     }
@@ -1967,8 +2024,8 @@ pub async fn create_rss_subscription(
     sqlx::query(
         "INSERT INTO rss_subscriptions \
          (id, user_id, url, base_url, title, category, auto_delete_days, auto_delete_mode, \
-          last_fetched_at, last_attempted_at, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          last_fetched_at, last_attempted_at, refresh_generation, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
     )
     .bind(&id)
     .bind(user_id)
@@ -1984,7 +2041,7 @@ pub async fn create_rss_subscription(
     .bind(&now)
     .execute(&mut *transaction)
     .await?;
-    upsert_rss_items(&mut transaction, &id, items, &now).await?;
+    upsert_rss_items(&mut transaction, &id, items, &now, 1).await?;
     transaction.commit().await?;
     get_rss_subscription(pool, user_id, &id)
         .await?
@@ -2039,7 +2096,8 @@ pub async fn refresh_rss_subscription(
     let mut transaction = pool.begin().await?;
     let result = sqlx::query(
         "UPDATE rss_subscriptions SET title = ?, last_fetched_at = ?, last_attempted_at = ?, \
-         last_error = NULL, updated_at = ? WHERE id = ? AND user_id = ?",
+         last_error = NULL, refresh_generation = refresh_generation + 1, updated_at = ? \
+         WHERE id = ? AND user_id = ?",
     )
     .bind(title)
     .bind(&now)
@@ -2053,7 +2111,14 @@ pub async fn refresh_rss_subscription(
         transaction.rollback().await?;
         return Ok(None);
     }
-    upsert_rss_items(&mut transaction, id, items, &now).await?;
+    let generation: i64 = sqlx::query_scalar(
+        "SELECT refresh_generation FROM rss_subscriptions WHERE id = ? AND user_id = ?",
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    upsert_rss_items(&mut transaction, id, items, &now, generation).await?;
     transaction.commit().await?;
     get_rss_subscription(pool, user_id, id).await
 }
@@ -2131,7 +2196,9 @@ pub async fn set_rss_item_read(
     }
     sqlx::query_as::<_, RssItem>(
         "SELECT i.id, i.subscription_id, s.title AS source, s.category, s.base_url, i.url, \
-         i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at \
+         i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at, \
+         CASE WHEN s.refresh_generation > 0 AND i.last_seen_generation = s.refresh_generation \
+              THEN 1 ELSE 0 END AS is_current \
          FROM rss_items i JOIN rss_subscriptions s ON s.id = i.subscription_id \
          LEFT JOIN rss_read_later rl ON rl.item_id = i.id AND rl.user_id = ? \
          WHERE i.id = ? AND s.user_id = ?",
@@ -2184,7 +2251,9 @@ pub async fn set_rss_item_saved(
     }
     sqlx::query_as::<_, RssItem>(
         "SELECT i.id, i.subscription_id, s.title AS source, s.category, s.base_url, i.url, \
-         i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at \
+         i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at, \
+         CASE WHEN s.refresh_generation > 0 AND i.last_seen_generation = s.refresh_generation \
+              THEN 1 ELSE 0 END AS is_current \
          FROM rss_items i JOIN rss_subscriptions s ON s.id = i.subscription_id \
          LEFT JOIN rss_read_later rl ON rl.item_id = i.id AND rl.user_id = ? \
          WHERE i.id = ? AND s.user_id = ?",
@@ -2205,6 +2274,9 @@ pub async fn apply_rss_retention(pool: &SqlitePool, user_id: &str) -> Result<u64
     Ok(sqlx::query(
         "DELETE FROM rss_items WHERE NOT EXISTS (\
          SELECT 1 FROM rss_read_later rl WHERE rl.item_id = rss_items.id AND rl.user_id = ?) \
+         AND NOT EXISTS (SELECT 1 FROM rss_subscriptions current \
+         WHERE current.id = rss_items.subscription_id AND current.refresh_generation > 0 \
+         AND rss_items.last_seen_generation = current.refresh_generation) \
          AND EXISTS (\
          SELECT 1 FROM rss_subscriptions s WHERE s.id = rss_items.subscription_id \
          AND s.user_id = ? AND s.auto_delete_days IS NOT NULL \
@@ -2232,6 +2304,9 @@ pub async fn prune_rss_items(
     Ok(sqlx::query(
         "DELETE FROM rss_items WHERE NOT EXISTS (\
          SELECT 1 FROM rss_read_later rl WHERE rl.item_id = rss_items.id AND rl.user_id = ?) \
+         AND NOT EXISTS (SELECT 1 FROM rss_subscriptions current \
+         WHERE current.id = rss_items.subscription_id AND current.refresh_generation > 0 \
+         AND rss_items.last_seen_generation = current.refresh_generation) \
          AND EXISTS (\
          SELECT 1 FROM rss_subscriptions s WHERE s.id = rss_items.subscription_id AND s.user_id = ?) \
          AND datetime(published_at) < datetime('now', '-' || ? || ' days') \
@@ -2824,6 +2899,148 @@ pub async fn delete_dashboard_widget(
     Ok(
         sqlx::query("DELETE FROM dashboard_widgets WHERE id = ? AND user_id = ?")
             .bind(widget_id)
+            .bind(user_id)
+            .execute(pool)
+            .await?
+            .rows_affected()
+            == 1,
+    )
+}
+
+/// Lists the authenticated account's bookmarks in title order.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the query cannot be completed.
+pub async fn list_bookmarks(
+    pool: &SqlitePool,
+    user_id: &str,
+) -> Result<Vec<Bookmark>, sqlx::Error> {
+    sqlx::query_as::<_, Bookmark>(
+        "SELECT id, title, url, favicon_data IS NOT NULL AS has_favicon, created_at, updated_at \
+         FROM bookmarks WHERE user_id = ? \
+         ORDER BY title COLLATE NOCASE ASC, created_at ASC, id ASC",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Counts bookmarks owned by one account.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the query cannot be completed.
+pub async fn count_bookmarks(pool: &SqlitePool, user_id: &str) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM bookmarks WHERE user_id = ?")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+}
+
+/// Finds an account-owned bookmark by its normalized destination.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the query cannot be completed.
+pub async fn find_bookmark_by_url(
+    pool: &SqlitePool,
+    user_id: &str,
+    url: &str,
+) -> Result<Option<Bookmark>, sqlx::Error> {
+    sqlx::query_as::<_, Bookmark>(
+        "SELECT id, title, url, favicon_data IS NOT NULL AS has_favicon, created_at, updated_at \
+         FROM bookmarks WHERE user_id = ? AND url = ?",
+    )
+    .bind(user_id)
+    .bind(url)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Creates one account-owned bookmark with an optional cached favicon.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the insert or follow-up query fails.
+pub async fn create_bookmark(
+    pool: &SqlitePool,
+    user_id: &str,
+    title: &str,
+    url: &str,
+    favicon: Option<(&str, &[u8])>,
+) -> Result<Option<Bookmark>, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let (favicon_content_type, favicon_data, favicon_fetched_at) = favicon
+        .map_or((None, None, None), |(content_type, data)| {
+            (Some(content_type), Some(data), Some(now.as_str()))
+        });
+    let result = sqlx::query(
+        "INSERT INTO bookmarks \
+         (id, user_id, title, url, favicon_content_type, favicon_data, favicon_fetched_at, \
+          created_at, updated_at) \
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? \
+         WHERE (SELECT COUNT(*) FROM bookmarks WHERE user_id = ?) < 32",
+    )
+    .bind(&id)
+    .bind(user_id)
+    .bind(title)
+    .bind(url)
+    .bind(favicon_content_type)
+    .bind(favicon_data)
+    .bind(favicon_fetched_at)
+    .bind(&now)
+    .bind(&now)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    Ok(Some(sqlx::query_as::<_, Bookmark>(
+        "SELECT id, title, url, favicon_data IS NOT NULL AS has_favicon, created_at, updated_at \
+         FROM bookmarks WHERE id = ? AND user_id = ?",
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?))
+}
+
+/// Loads cached favicon bytes only when the bookmark belongs to the account.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the query cannot be completed.
+pub async fn get_bookmark_favicon(
+    pool: &SqlitePool,
+    user_id: &str,
+    bookmark_id: &str,
+) -> Result<Option<BookmarkFavicon>, sqlx::Error> {
+    sqlx::query_as::<_, BookmarkFavicon>(
+        "SELECT favicon_content_type AS content_type, favicon_data AS data \
+         FROM bookmarks WHERE id = ? AND user_id = ? AND favicon_data IS NOT NULL",
+    )
+    .bind(bookmark_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Deletes one bookmark owned by the authenticated account.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the delete cannot be completed.
+pub async fn delete_bookmark(
+    pool: &SqlitePool,
+    user_id: &str,
+    bookmark_id: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(
+        sqlx::query("DELETE FROM bookmarks WHERE id = ? AND user_id = ?")
+            .bind(bookmark_id)
             .bind(user_id)
             .execute(pool)
             .await?

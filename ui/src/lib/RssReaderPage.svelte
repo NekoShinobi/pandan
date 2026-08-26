@@ -29,7 +29,7 @@
   } from "$lib/api";
 
   type FeedSourceKind = "feed" | "reddit";
-  type RssView = "stream" | "read-later";
+  type RssView = "inbox" | "current" | "read-later";
   type RedditSort = "hot" | "new" | "top" | "rising";
   type RedditTopPeriod = "hour" | "day" | "week" | "month" | "year" | "all";
 
@@ -40,7 +40,7 @@
   let loading = $state(true);
   let pageError = $state("");
   let query = $state("");
-  let activeView = $state<RssView>("stream");
+  let activeView = $state<RssView>("inbox");
   let categoryFilter = $state("all");
   let sourceFilter = $state("all");
   let unreadOnly = $state(false);
@@ -80,10 +80,24 @@
   let readLaterCount = $derived(
     reader.items.filter((item) => item.saved_at !== null).length,
   );
+  let currentCount = $derived(
+    reader.items.filter((item) => item.is_current).length,
+  );
+  let currentSourceCount = $derived(
+    reader.subscriptions.filter((item) => item.refresh_generation > 0).length,
+  );
+  let latestSnapshotAt = $derived.by(() =>
+    reader.subscriptions
+      .map((item) => item.last_fetched_at)
+      .filter((value): value is string => value !== null)
+      .sort()
+      .at(-1) ?? null,
+  );
   let filteredItems = $derived.by(() => {
     const needle = query.trim().toLowerCase();
     return reader.items.filter((item) => {
       if (activeView === "read-later" && item.saved_at === null) return false;
+      if (activeView === "current" && !item.is_current) return false;
       if (categoryFilter !== "all" && item.category !== categoryFilter)
         return false;
       if (sourceFilter !== "all" && item.subscription_id !== sourceFilter)
@@ -431,6 +445,30 @@
     }).format(date);
   }
 
+  function relativeTime(value: string | null) {
+    if (!value) return "waiting for first refresh";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "refresh time unavailable";
+    const minutes = Math.round((date.getTime() - Date.now()) / 60_000);
+    const formatter = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+    if (Math.abs(minutes) < 60) return formatter.format(minutes, "minute");
+    const hours = Math.round(minutes / 60);
+    if (Math.abs(hours) < 24) return formatter.format(hours, "hour");
+    return formatter.format(Math.round(hours / 24), "day");
+  }
+
+  function subscriptionCurrentCount(subscriptionId: string) {
+    return reader.items.filter(
+      (item) => item.subscription_id === subscriptionId && item.is_current,
+    ).length;
+  }
+
+  function subscriptionUnreadCount(subscriptionId: string) {
+    return reader.items.filter(
+      (item) => item.subscription_id === subscriptionId && item.read_at === null,
+    ).length;
+  }
+
   function plainText(value: string) {
     return value
       .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
@@ -503,16 +541,14 @@
     <div>
       <TypedHeading text={`$ rss --${activeView}`} odId="rss-heading" />
       <p>
-        {activeView === "stream"
+        {activeView === "inbox"
           ? `${unreadCount} unread across ${reader.subscriptions.length} sources`
-          : `${readLaterCount} saved ${readLaterCount === 1 ? "article" : "articles"}`}
+          : activeView === "current"
+            ? `${currentCount} items in the latest cached snapshots`
+            : `${readLaterCount} saved ${readLaterCount === 1 ? "article" : "articles"}`}
       </p>
     </div>
     <div class="rss-header-actions">
-      <button class="ui-button ui-button--secondary rss-secondary-button" type="button" onclick={openPrune}>
-        <Trash2 size={15} strokeWidth={1.8} aria-hidden="true" />
-        Prune
-      </button>
       <button class="ui-button ui-button--primary rss-primary-button" type="button" onclick={openAddFeed}>
         <Plus size={16} strokeWidth={2} aria-hidden="true" />
         Add Feed
@@ -524,11 +560,20 @@
     <button
       class="ui-view-tab"
       type="button"
-      aria-pressed={activeView === "stream"}
-      onclick={() => (activeView = "stream")}
-      data-od-id="rss-stream-view"
+      aria-pressed={activeView === "inbox"}
+      onclick={() => (activeView = "inbox")}
+      data-od-id="rss-inbox-view"
     >
-      Stream <span>{reader.items.length}</span>
+      Inbox <span>{unreadCount}</span>
+    </button>
+    <button
+      class="ui-view-tab"
+      type="button"
+      aria-pressed={activeView === "current"}
+      onclick={() => (activeView = "current")}
+      data-od-id="rss-current-view"
+    >
+      Current <span>{currentCount}</span>
     </button>
     <button
       class="ui-view-tab"
@@ -542,6 +587,21 @@
     </button>
   </nav>
 
+  {#if activeView === "current"}
+    <div class="rss-snapshot-status" data-od-id="rss-current-status" role="status">
+      <span class="rss-snapshot-icon" aria-hidden="true">
+        <RefreshCw size={15} strokeWidth={1.8} />
+      </span>
+      <span>
+        <strong>Latest cached snapshot</strong>
+        <small>{relativeTime(latestSnapshotAt)}</small>
+      </span>
+      <span class="rss-snapshot-sources">
+        {currentSourceCount} of {reader.subscriptions.length} sources ready
+      </span>
+    </div>
+  {/if}
+
   <div class="rss-filter-bar" data-od-id="rss-filters">
     <label class="rss-search">
       <Search size={16} strokeWidth={1.8} aria-hidden="true" />
@@ -549,11 +609,11 @@
       <input
         type="search"
         bind:value={query}
-        placeholder="Filter by base URL or any text…"
+        placeholder="Search titles, sources, or URLs…"
         data-od-id="rss-text-filter"
       />
     </label>
-    <label>
+    <label class="rss-mobile-source-filter">
       <span class="sr-only">Filter by source feed</span>
       <select bind:value={sourceFilter} data-od-id="rss-source-filter">
         <option value="all">All sources</option>
@@ -610,6 +670,9 @@
                 <span class="rss-item-meta">
                   <b>{item.source}</b>
                   <span>{item.category}</span>
+                  {#if activeView === "read-later" && !item.is_current}
+                    <span class="rss-history-state">No longer current</span>
+                  {/if}
                   <time datetime={item.published_at}>{itemDate(item.published_at)}</time>
                 </span>
                 <strong>{item.title}</strong>
@@ -675,6 +738,8 @@
             <strong>
               {activeView === "read-later"
                 ? "Nothing saved for later"
+                : activeView === "current" && currentSourceCount === 0
+                  ? "Waiting for the first cached snapshot"
                 : reader.subscriptions.length
                   ? "No items match this view"
                   : "Your reader is empty"}
@@ -682,11 +747,13 @@
             <p>
               {activeView === "read-later"
                 ? "Use the bookmark control on any article to keep it out of pruning and return to it here."
+                : activeView === "current" && currentSourceCount === 0
+                  ? "The background worker will populate Current after each source completes a successful refresh."
                 : reader.subscriptions.length
                   ? "Change the text, source, or category filter."
                   : "Subscribe to an RSS, Atom, or Reddit source to start reading."}
             </p>
-            {#if activeView === "stream" && reader.subscriptions.length === 0}
+            {#if activeView === "inbox" && reader.subscriptions.length === 0}
               <button class="ui-button ui-button--secondary rss-secondary-button" type="button" onclick={openAddFeed}>Add your first feed</button>
             {/if}
           </div>
@@ -700,9 +767,12 @@
           <span>[ SOURCES ]</span>
           <strong>{reader.subscriptions.length}</strong>
         </div>
-        {#if sourceFilter !== "all"}
-          <button type="button" onclick={() => (sourceFilter = "all")}>Show all</button>
-        {/if}
+        <div class="rss-source-tools">
+          {#if sourceFilter !== "all"}
+            <button type="button" onclick={() => (sourceFilter = "all")}>Show all</button>
+          {/if}
+          <button type="button" onclick={openPrune}>Prune</button>
+        </div>
       </div>
       <div class="rss-source-list">
         {#each reader.subscriptions as subscription (subscription.id)}
@@ -714,9 +784,19 @@
               onclick={() =>
                 (sourceFilter = sourceFilter === subscription.id ? "all" : subscription.id)}
             >
-              <span><strong>{subscription.title}</strong><small>{hostLabel(subscription.base_url)}</small></span>
+              <span>
+                <strong>{subscription.title}</strong>
+                <small>
+                  {hostLabel(subscription.base_url)} · {subscriptionCurrentCount(subscription.id)} current · {subscriptionUnreadCount(subscription.id)} unread
+                </small>
+              </span>
               <em>{subscription.category}</em>
             </button>
+            <p class="rss-source-freshness">
+              {subscription.refresh_generation > 0
+                ? `Updated ${relativeTime(subscription.last_fetched_at)}`
+                : "Waiting for first refresh"}
+            </p>
             {#if subscription.last_error}
               <p class="rss-source-error">Refresh failed · {subscription.last_error}</p>
             {/if}
@@ -981,7 +1061,7 @@
         <span class="ui-toggle-indicator" aria-hidden="true"></span>
         <span class="rss-check-copy">
           <strong>Auto-delete old items</strong>
-          <small>Applied whenever the reader loads or this feed refreshes.</small>
+          <small>Applied whenever the reader loads or this feed refreshes. Current and Read Later items stay protected.</small>
         </span>
       </button>
 
@@ -1036,7 +1116,7 @@
       </button>
     </header>
     <form onsubmit={pruneItems}>
-      <p class="rss-prune-copy">Remove items older than a fixed age across every subscription. Saved Read Later items are always kept, and feed-specific auto-delete settings are unchanged.</p>
+      <p class="rss-prune-copy">Remove historical items older than a fixed age across every subscription. Items in the latest cached snapshot and saved Read Later items are always kept, and feed-specific auto-delete settings are unchanged.</p>
       <div class="rss-retention-grid">
         <label for="rss-prune-days">Older than</label>
         <input id="rss-prune-days" type="number" bind:value={pruneDays} min="1" max="3650" required />
@@ -1065,7 +1145,7 @@
   .rss-view-tabs { display: flex; gap: 6px; overflow-x: auto; }
   .rss-view-tabs span { color: inherit; font-variant-numeric: tabular-nums; opacity: .7; }
   button, input, select { font: inherit; }
-  button { min-height: 42px; }
+  button { min-height: 44px; }
   .rss-primary-button, .rss-secondary-button, .rss-danger-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 14px; border: 1px solid var(--border); border-radius: 7px; font-family: var(--font-mono); font-size: 11px; font-weight: 560; letter-spacing: .02em; }
   .rss-primary-button { border-color: var(--fg); background: var(--fg); color: var(--surface); }
   .rss-primary-button:hover { background: transparent; color: var(--fg); }
@@ -1075,7 +1155,14 @@
   .rss-danger-button:hover { background: var(--fg); color: var(--surface); }
   button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
   button:disabled { cursor: wait; opacity: .55; }
-  .rss-filter-bar { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(150px, .55fr) minmax(150px, .55fr) auto; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 9px; background: color-mix(in oklch, var(--page-surface, var(--surface)) 86%, transparent); }
+  .rss-snapshot-status { min-height: 54px; display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 9px 13px; border: 1px solid var(--border); background: color-mix(in oklch, var(--page-surface, var(--surface)) 86%, transparent); }
+  .rss-snapshot-icon { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--border); color: var(--fg); }
+  .rss-snapshot-status > span:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
+  .rss-snapshot-status strong { font-family: var(--font-mono); font-size: 11px; font-weight: 560; }
+  .rss-snapshot-status small, .rss-snapshot-sources { color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
+  .rss-snapshot-sources { text-align: right; }
+  .rss-filter-bar { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(150px, .55fr) auto; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 9px; background: color-mix(in oklch, var(--page-surface, var(--surface)) 86%, transparent); }
+  .rss-mobile-source-filter { display: none; }
   .rss-search { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 0 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--muted); }
   .rss-search input, .rss-filter-bar select { width: 100%; min-height: 42px; border: 0; outline: 0; background: transparent; color: var(--fg); font-family: var(--font-mono); font-size: 12px; }
   .rss-filter-bar label:not(.rss-search) { min-width: 170px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
@@ -1096,6 +1183,7 @@
   .rss-item-meta { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
   .rss-item-meta b { max-width: 32ch; overflow: hidden; color: var(--fg); font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
   .rss-item-meta span::before { content: "/"; margin-right: 8px; color: var(--border); }
+  .rss-item-meta .rss-history-state { color: var(--fg); }
   .rss-item-meta time { margin-left: auto; font-variant-numeric: tabular-nums; }
   .rss-unread-dot { width: 6px; height: 6px; flex: 0 0 auto; border: 1px solid var(--muted); border-radius: 50%; }
   .rss-item:not(.is-read) .rss-unread-dot { border-color: var(--accent); background: var(--accent); }
@@ -1109,6 +1197,7 @@
   .rss-source-heading > div { display: flex; align-items: baseline; gap: 10px; }
   .rss-source-heading strong { font-family: var(--font-mono); font-size: 24px; font-weight: 520; }
   .rss-source-heading button { min-height: auto; color: var(--fg); font-family: var(--font-mono); font-size: 10px; text-decoration: underline; }
+  .rss-source-tools { display: flex; align-items: center; gap: 10px; }
   .rss-source { padding: 14px; border-bottom: 1px solid var(--border); }
   .rss-source:last-child { border-bottom: 0; }
   .rss-source.is-active { background: var(--bg); }
@@ -1118,6 +1207,7 @@
   .rss-source-select strong { font-size: 12px; font-weight: 560; }
   .rss-source-select small { color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
   .rss-source-select em { flex: 0 0 auto; color: var(--muted); font-family: var(--font-mono); font-size: 9px; font-style: normal; }
+  .rss-source-freshness { margin-top: 7px; color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
   .rss-source-actions { margin-top: 11px; }
   .rss-source-actions button { min-height: 31px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; border: 1px solid var(--border); color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
   .rss-source-actions button:hover { border-color: var(--fg); color: var(--fg); }
@@ -1202,17 +1292,20 @@
     .rss-reader { padding: 20px 16px; }
     .rss-reader-header { align-items: start; flex-direction: column; }
     .rss-filter-bar { grid-template-columns: 1fr; }
+    .rss-mobile-source-filter { display: block; }
     .rss-filter-bar label:not(.rss-search) { min-width: 0; }
     .rss-reader-layout { grid-template-columns: 1fr; }
-    .rss-source-panel { position: static; order: -1; }
+    .rss-source-panel { position: static; }
   }
   @media (max-width: 560px) {
     .rss-header-actions { width: 100%; }
     .rss-header-actions button { flex: 1; }
+    .rss-snapshot-status { grid-template-columns: 32px minmax(0, 1fr); }
+    .rss-snapshot-sources { grid-column: 2; text-align: left; }
+    .rss-item { grid-template-columns: 1fr; }
     .rss-item-open { min-height: 82px; padding: 10px; }
-    .rss-item-actions { padding: 0 4px; }
+    .rss-item-actions { justify-content: flex-end; padding: 4px; border-top: 1px solid var(--border); border-left: 0; }
     .rss-item-action { width: 42px; min-height: 44px; }
-    .rss-item-actions .rss-item-action:last-child:not(:first-child) { display: none; }
     .rss-item-meta span { display: none; }
     .rss-item-meta b { max-width: 20ch; }
     .rss-detail-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }

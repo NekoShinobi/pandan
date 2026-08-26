@@ -310,6 +310,7 @@ pub struct RssSubscription {
     pub auto_delete_mode: String,
     pub last_fetched_at: Option<String>,
     pub last_error: Option<String>,
+    pub refresh_generation: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -329,6 +330,7 @@ pub struct RssItem {
     pub fetched_at: String,
     pub read_at: Option<String>,
     pub saved_at: Option<String>,
+    pub is_current: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -634,6 +636,22 @@ pub struct DashboardWidget {
     pub has_secret: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct Bookmark {
+    pub id: String,
+    pub title: String,
+    pub url: String,
+    pub has_favicon: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
+pub struct BookmarkFavicon {
+    pub content_type: String,
+    pub data: Vec<u8>,
 }
 
 #[derive(Debug, Clone, FromRow, PartialEq, Eq)]

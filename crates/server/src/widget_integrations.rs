@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use sqlx::SqlitePool;
 use std::{
     cmp::Reverse,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -534,6 +534,66 @@ impl WidgetIntegrationService {
         self.fetch_validated_image(&client, url, max_bytes).await
     }
 
+    /// Fetches a small favicon while revalidating every redirect through the image policy.
+    ///
+    /// Icon formats are intentionally narrower than arbitrary browser-supported images. In
+    /// particular, SVG is not cached because the bytes are served from Pandan's own origin.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe provider error when policy, redirect, media type, or size validation fails.
+    pub async fn fetch_favicon(
+        &self,
+        source: &str,
+        max_bytes: usize,
+    ) -> Result<(String, Vec<u8>), String> {
+        const MAX_FAVICON_REDIRECTS: usize = 3;
+        let mut current = source.to_owned();
+        for redirect_count in 0..=MAX_FAVICON_REDIRECTS {
+            let (client, url) = self
+                .client_for(&current, NetworkAccessScope::Images)
+                .await?;
+            let response = client
+                .get(url.clone())
+                .header(
+                    header::ACCEPT,
+                    "image/avif,image/webp,image/png,image/*;q=0.8,*/*;q=0.2",
+                )
+                .send()
+                .await
+                .map_err(request_error)?;
+            if response.status().is_redirection() {
+                if redirect_count == MAX_FAVICON_REDIRECTS {
+                    return Err("favicon redirected too many times".to_owned());
+                }
+                let location = response
+                    .headers()
+                    .get(header::LOCATION)
+                    .and_then(|value| value.to_str().ok())
+                    .ok_or_else(|| "favicon redirect was missing a destination".to_owned())?;
+                current = url
+                    .join(location)
+                    .map_err(|_| "favicon redirect destination was invalid".to_owned())?
+                    .to_string();
+                continue;
+            }
+            let content_type = response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(';').next())
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| supported_favicon_content_type(value.as_str()))
+                .ok_or_else(|| "provider favicon type is unsupported".to_owned())?;
+            let bytes = response_bytes_with_limit(response, max_bytes).await?;
+            if bytes.is_empty() {
+                return Err("provider favicon was empty".to_owned());
+            }
+            return Ok((content_type, bytes));
+        }
+        Err("favicon request failed".to_owned())
+    }
+
     async fn fetch_validated_image(
         &self,
         client: &Client,
@@ -1042,7 +1102,6 @@ impl WidgetIntegrationService {
             .transpose()?;
         let value = match widget.kind.as_str() {
             "youtube" => self.fetch_youtube(&widget.config).await?,
-            "rss" => self.fetch_rss(&widget.config).await?,
             "reddit" => self.fetch_reddit(&widget.config, secret.as_deref()).await?,
             "stocks" => self.fetch_stocks(&widget.config).await?,
             "releases" => {
@@ -1115,49 +1174,6 @@ impl WidgetIntegrationService {
         items.sort_by_key(|item| Reverse(value_string(item, "published_at")));
         items.truncate(limit);
         Ok(json!({ "items": items, "partial": failures > 0 }))
-    }
-
-    async fn fetch_rss(&self, config: &Value) -> Result<Value, String> {
-        let urls = config_strings(config, "urls", 8);
-        if urls.is_empty() {
-            return Err("add at least one RSS or Atom feed URL".to_owned());
-        }
-        let requests = urls.into_iter().map(|source| {
-            let service = self.clone();
-            async move {
-                let (client, url) = service.client_for(&source, NetworkAccessScope::Rss).await?;
-                let response = client.get(url).send().await.map_err(request_error)?;
-                let bytes = response_bytes(response).await?;
-                let feed = feed_rs::parser::parse(&bytes[..])
-                    .map_err(|error| format!("feed could not be parsed: {error}"))?;
-                let source_title = feed
-                    .title
-                    .as_ref()
-                    .map_or_else(|| "Feed".to_owned(), |value| value.content.clone());
-                Ok::<_, String>(
-                    feed.entries
-                        .into_iter()
-                        .map(|entry| rss_entry(&source_title, entry))
-                        .collect::<Vec<_>>(),
-                )
-            }
-        });
-        let mut items = Vec::new();
-        let mut seen = HashSet::new();
-        for mut entries in join_all(requests).await.into_iter().flatten() {
-            entries.retain(|entry| {
-                entry["url"]
-                    .as_str()
-                    .is_some_and(|url| seen.insert(url.to_owned()))
-            });
-            items.append(&mut entries);
-        }
-        items.sort_by_key(|item| Reverse(value_string(item, "published_at")));
-        items.truncate(config_limit(config, 20));
-        if items.is_empty() {
-            return Err("the configured feeds returned no readable items".to_owned());
-        }
-        Ok(json!({ "items": items }))
     }
 
     async fn fetch_reddit(&self, config: &Value, secret: Option<&str>) -> Result<Value, String> {
@@ -1464,6 +1480,18 @@ impl WidgetIntegrationService {
             .collect::<Vec<_>>();
         Ok(json!({ "items": items }))
     }
+}
+
+fn supported_favicon_content_type(value: &str) -> bool {
+    matches!(
+        value,
+        "image/avif"
+            | "image/jpeg"
+            | "image/png"
+            | "image/webp"
+            | "image/x-icon"
+            | "image/vnd.microsoft.icon"
+    )
 }
 
 fn parse_rss_feed_snapshot(bytes: &[u8]) -> Result<RssFeedSnapshot, String> {
@@ -2185,22 +2213,6 @@ fn parse_youtube_feed(xml: &str) -> Result<Vec<Value>, String> {
             })
         })
         .collect())
-}
-
-fn rss_entry(source: &str, entry: Entry) -> Value {
-    let url = entry.links.first().map_or("", |link| link.href.as_str());
-    let published = entry
-        .published
-        .or(entry.updated)
-        .map(|date| date.to_rfc3339())
-        .unwrap_or_default();
-    json!({
-        "title": entry.title.map_or_else(|| "Untitled".to_owned(), |title| title.content),
-        "url": url,
-        "source": source,
-        "summary": entry.summary.map(|summary| summary.content),
-        "published_at": published
-    })
 }
 
 async fn fetch_github_owned_repositories(

@@ -1773,6 +1773,120 @@ body
   line-height: 1.5;
 }
 
+.rss-widget-status {
+  min-height: 34px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 16px;
+  margin: 0 0 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  background: color-mix(
+    in oklch,
+    var(--page-surface, var(--surface)) 72%,
+    transparent
+  );
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.02em;
+}
+
+.rss-widget-list {
+  display: grid;
+}
+
+.rss-widget-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.rss-widget-row:last-child {
+  border-bottom: 0;
+}
+
+.rss-widget-copy {
+  min-width: 0;
+  min-height: 58px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  padding: 9px 2px;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.rss-widget-copy strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 560;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rss-widget-copy small,
+.rss-widget-copy > span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.rss-widget-copy > span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.rss-widget-list.is-comfortable .rss-widget-copy {
+  min-height: 76px;
+  gap: 5px;
+}
+
+.rss-widget-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.rss-widget-action {
+  width: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  color: var(--muted);
+}
+
+.rss-widget-action:hover:not(:disabled),
+.rss-widget-action:focus-visible,
+.rss-widget-action.is-active {
+  border-color: var(--border);
+  background: var(--fg-soft);
+  color: var(--fg);
+}
+
+.rss-widget-action:focus-visible,
+.rss-widget-copy:focus-visible {
+  outline: 3px solid color-mix(in oklch, var(--accent) 55%, var(--surface));
+  outline-offset: 2px;
+}
+
+.rss-widget-empty {
+  min-height: 96px;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  text-align: center;
+}
+
 .integration-loading,
 .integration-error {
   width: 100%;
@@ -2186,6 +2300,111 @@ body
 
 .integration-form-fields {
   align-content: start;
+}
+
+.rss-widget-source-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.rss-widget-source-heading > div {
+  min-width: 0;
+}
+
+.rss-widget-source-label {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.rss-widget-source-heading .field-note {
+  margin: 5px 0 12px;
+}
+
+.rss-widget-source-state {
+  min-height: 76px;
+  display: grid;
+  place-items: center;
+  margin: 0 0 16px;
+  padding: 14px;
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.rss-widget-source-picker {
+  max-height: 280px;
+  display: grid;
+  gap: 1px;
+  margin-bottom: 18px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  background: var(--border);
+  scrollbar-gutter: stable;
+}
+
+.rss-widget-source-option {
+  width: 100%;
+  min-height: 56px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 11px;
+  padding: 8px 11px;
+  background: var(--page-surface, var(--surface));
+  text-align: left;
+}
+
+.rss-widget-source-option > span:last-child {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.rss-widget-source-option strong,
+.rss-widget-source-option small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rss-widget-source-option strong {
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.rss-widget-source-option small {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.rss-widget-display-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.rss-widget-display-settings label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.integration-form .rss-widget-display-settings input,
+.integration-form .rss-widget-display-settings select {
+  margin-bottom: 0;
+}
+
+@media (max-width: 560px) {
+  .rss-widget-display-settings {
+    grid-template-columns: 1fr;
+  }
 }
 
 .integration-form input:not([type="checkbox"]),
@@ -2891,6 +3110,166 @@ body
 
 .widget-library-dialog {
   width: min(720px, calc(100% - 32px));
+}
+
+.bookmark-dialog {
+  width: min(620px, calc(100% - 32px));
+}
+
+.bookmark-dialog-body {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  align-content: start;
+  gap: 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 22px 24px 24px;
+}
+
+.bookmark-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.bookmark-field {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.bookmark-field label,
+.bookmark-manager-head h3 {
+  font-size: 11px;
+  font-weight: 590;
+  letter-spacing: 0.02em;
+}
+
+.bookmark-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  outline: 0;
+  background: color-mix(in oklch, var(--bg) 76%, transparent);
+  color: var(--fg);
+}
+
+.bookmark-input:hover {
+  border-color: color-mix(in oklch, var(--fg) 48%, var(--border));
+}
+
+.bookmark-input:focus-visible {
+  border-color: var(--fg);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--fg) 28%, transparent);
+}
+
+.bookmark-input::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.bookmark-form-note {
+  grid-column: 1 / -1;
+  max-width: 62ch;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.bookmark-error,
+.bookmark-save {
+  grid-column: 1 / -1;
+}
+
+.bookmark-save {
+  justify-self: start;
+}
+
+.bookmark-manager {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.bookmark-manager-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.bookmark-manager-head span {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.bookmark-manager-list {
+  display: grid;
+  border-top: 1px solid var(--border);
+}
+
+.bookmark-manager-row {
+  min-width: 0;
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+
+.bookmark-manager-row > a {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.bookmark-manager-row > a:hover {
+  color: var(--fg);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.bookmark-manager-row > a:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 3px;
+}
+
+.bookmark-manager-row > a strong,
+.bookmark-manager-row > a small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bookmark-manager-row > a strong {
+  font-size: 12px;
+  font-weight: 590;
+}
+
+.bookmark-manager-row > a small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.bookmark-delete-confirm {
+  min-width: 88px;
+}
+
+.bookmark-manager-empty {
+  padding: 22px 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
 }
 
 .appearance-dialog {
@@ -5671,7 +6050,7 @@ body
 
 .dashboard-utility-rail {
   display: grid;
-  grid-template-rows: repeat(4, minmax(132px, auto));
+  grid-auto-rows: minmax(132px, auto);
   gap: 12px;
 }
 
@@ -5689,6 +6068,115 @@ body
   font-size: 11px;
   font-weight: 620;
   letter-spacing: 0.02em;
+}
+
+.utility-bookmarks {
+  min-height: 196px;
+  gap: 12px;
+  justify-content: flex-start;
+}
+
+.utility-bookmarks-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.utility-bookmarks-head > p {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 620;
+  letter-spacing: 0.02em;
+}
+
+.utility-bookmarks-head .ui-button {
+  flex: 0 0 auto;
+  margin: -10px -10px -10px 0;
+}
+
+.utility-bookmark-list {
+  min-height: 0;
+  max-height: 228px;
+  overflow-y: auto;
+}
+
+.utility-bookmark-row {
+  min-width: 0;
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 14px;
+  gap: 9px;
+  align-items: center;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  text-decoration: none;
+  transition: background 120ms var(--ease-out);
+}
+
+.utility-bookmark-row:last-child {
+  border-bottom: 0;
+}
+
+.utility-bookmark-row:hover {
+  background: var(--fg-soft);
+  color: var(--fg);
+}
+
+.utility-bookmark-row:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: -2px;
+}
+
+.bookmark-favicon {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: color-mix(in oklch, var(--bg) 76%, transparent);
+  color: var(--muted);
+}
+
+.bookmark-favicon img {
+  position: absolute;
+  inset: 3px;
+  width: calc(100% - 6px);
+  height: calc(100% - 6px);
+  object-fit: contain;
+}
+
+.utility-bookmark-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.utility-bookmark-copy strong,
+.utility-bookmark-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.utility-bookmark-copy strong {
+  font-size: 11px;
+  font-weight: 590;
+}
+
+.utility-bookmark-copy small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.utility-bookmark-empty {
+  margin: auto 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
 }
 
 .utility-box > strong {
@@ -5900,7 +6388,7 @@ body
   min-width: 0;
   display: grid;
   gap: 18px;
-  overflow: hidden;
+  overflow: visible;
   padding: 0;
   background: transparent;
 }
@@ -5983,10 +6471,6 @@ body
 
 .task-page-intro {
   max-width: none;
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 24px;
 }
 
 .task-page-intro > div {
@@ -6000,10 +6484,13 @@ body
 }
 
 .task-page-actions {
-  flex: 0 0 auto;
+  position: relative;
+  z-index: 4;
+  width: 100%;
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 10px;
+  padding: 10px 0 14px;
 }
 
 .task-label-filter {
@@ -6063,7 +6550,7 @@ body
   padding-inline: 12px;
 }
 
-.task-view-menu-button > span {
+.task-view-count {
   min-width: 22px;
   padding: 2px 5px;
   border: 1px solid currentColor;
@@ -6139,10 +6626,21 @@ body
 }
 
 .task-row-actions {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: flex-start;
   gap: 8px;
   padding: 0 12px;
+}
+
+.task-row-actions.has-open-menu {
+  z-index: 12;
+}
+
+.animated-list-item:has(.task-row-actions.has-open-menu) {
+  position: relative;
+  z-index: 13;
 }
 
 .task-row-action {
@@ -6153,9 +6651,13 @@ body
   justify-content: center;
   gap: 6px;
   padding: 0 12px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--muted);
+  border: 1px solid var(--border);
+  background: color-mix(
+    in oklch,
+    var(--page-surface, var(--surface)) 72%,
+    transparent
+  );
+  color: var(--fg);
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 620;
@@ -6164,9 +6666,69 @@ body
 }
 
 .task-row-action:hover:not(:disabled) {
+  border-color: var(--fg);
+  background: var(--fg-soft);
+  color: var(--fg);
+}
+
+.task-row-menu-trigger {
+  flex: 0 0 auto;
+}
+
+.task-row-menu-trigger[aria-expanded="true"] {
+  border-color: var(--fg);
+  background: var(--fg-soft);
+  box-shadow: inset 0 -2px 0 var(--fg);
+  color: var(--fg);
+}
+
+.task-row-menu {
+  position: absolute;
+  z-index: 14;
+  top: calc(100% + 5px);
+  right: 12px;
+  width: 190px;
+  display: grid;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  background: var(--page-surface, var(--surface));
+  box-shadow: var(--shadow);
+}
+
+.task-row-menu button {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 620;
+  letter-spacing: 0.02em;
+  text-align: left;
+}
+
+.task-row-menu button:hover:not(:disabled),
+.task-row-menu button:focus-visible {
   border-color: var(--border);
   background: var(--fg-soft);
   color: var(--fg);
+}
+
+.task-row-menu .task-row-delete-action {
+  color: var(--danger);
+}
+
+.task-row-menu .task-row-delete-action:hover:not(:disabled),
+.task-row-menu .task-row-delete-action:focus-visible {
+  border-color: var(--danger);
+  background: color-mix(in oklch, var(--danger) 12%, transparent);
+  color: var(--danger);
 }
 
 .task-row-delete-action.task-row-delete-action.is-armed {
@@ -8844,6 +9406,62 @@ body
   color: var(--accent);
 }
 
+@media (max-width: 980px) {
+  .tasks-focus-panel {
+    order: -1;
+    height: auto;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "heading heading"
+      "label timer"
+      "subject timer"
+      "track track"
+      "durations actions"
+      "stats stats";
+    align-items: end;
+    column-gap: 14px;
+    row-gap: 8px;
+    overflow: visible;
+    padding: 14px 16px;
+  }
+
+  .tasks-focus-panel .focus-timer-heading {
+    grid-area: heading;
+  }
+
+  .tasks-focus-panel > label {
+    grid-area: label;
+  }
+
+  .tasks-focus-panel .focus-subject-input {
+    grid-area: subject;
+  }
+
+  .tasks-focus-panel .focus-timer-readout {
+    grid-area: timer;
+    align-self: center;
+    font-size: 34px;
+  }
+
+  .tasks-focus-panel .focus-timer-track {
+    grid-area: track;
+  }
+
+  .tasks-focus-panel .focus-duration-options {
+    grid-area: durations;
+    flex-wrap: wrap;
+  }
+
+  .tasks-focus-panel .focus-timer-actions {
+    grid-area: actions;
+  }
+
+  .tasks-focus-panel dl {
+    grid-area: stats;
+  }
+}
+
 @media (max-width: 720px) {
   .dashboard-app {
     grid-template-columns: 1fr;
@@ -8874,18 +9492,35 @@ body
   }
 
   .task-page-intro {
-    align-items: stretch;
-    flex-direction: column;
+    width: 100%;
   }
 
   .task-page-actions {
-    align-items: flex-start;
-    justify-content: flex-start;
-    flex-direction: column;
+    position: sticky;
+    top: 0;
+    z-index: 18;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    padding: 8px;
+    border: 1px solid var(--border);
+    background: color-mix(
+      in oklch,
+      var(--page-surface, var(--surface)) 92%,
+      transparent
+    );
+    backdrop-filter: blur(14px);
   }
 
   .task-view-menu {
-    max-width: 100%;
+    width: 100%;
+    max-width: none;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .task-view-menu-button {
+    width: 100%;
   }
 
   .task-label-filter {
@@ -8898,7 +9533,7 @@ body
   }
 
   .task-create-button {
-    align-self: flex-start;
+    width: 100%;
   }
 
   .task-row-main {
@@ -8912,18 +9547,42 @@ body
   }
 
   .task-row-action {
-    min-width: 44px;
+    min-width: 82px;
+    width: auto;
+    padding: 0 12px;
+  }
+
+  .task-row-menu-trigger {
     width: 44px;
+    min-width: 44px;
     padding: 0;
   }
 
-  .task-row-action span {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
+  .task-row-menu {
+    right: 12px;
+  }
+
+  .tasks-focus-panel {
+    grid-template-areas:
+      "heading heading"
+      "label timer"
+      "subject timer"
+      "track track"
+      "durations durations"
+      "actions actions";
+  }
+
+  .tasks-focus-panel .focus-timer-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .tasks-focus-panel .focus-timer-actions button:first-child {
+    width: 100%;
+  }
+
+  .tasks-focus-panel dl {
+    display: none;
   }
 
   .task-row-details {
@@ -11404,9 +12063,7 @@ body
    phones and standalone iOS windows. Keep shell chrome, fixed feedback, and
    modal actions out of the system status and home-indicator regions. */
 .dashboard-app {
-  --dashboard-header-height: calc(
-    76px + env(safe-area-inset-top, 0px)
-  );
+  --dashboard-header-height: calc(76px + env(safe-area-inset-top, 0px));
 }
 
 .dashboard-sidebar {
@@ -11465,9 +12122,7 @@ body
 
 @media (max-width: 720px) {
   .dashboard-app {
-    --dashboard-header-height: calc(
-      68px + env(safe-area-inset-top, 0px)
-    );
+    --dashboard-header-height: calc(68px + env(safe-area-inset-top, 0px));
   }
 
   .dashboard-header {
@@ -11557,6 +12212,7 @@ body
   .destructive-content,
   .admin-directory,
   .settings-form-scroll,
+  .bookmark-dialog-body,
   .widget-library-grid,
   .appearance-editor,
   .embedded-pages-dialog-body,
@@ -11576,6 +12232,7 @@ body
   .focus-settings-panel,
   .task-editor-scroll,
   .integration-widget.is-rail .stream-grid,
+  .rss-widget-source-picker,
   .ui-dialog,
   .kanban-card-dialog {
     overflow-y: scroll;

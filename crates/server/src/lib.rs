@@ -10,7 +10,7 @@ use argon2::{
 };
 use chrono::{Datelike, Duration as ChronoDuration, Utc};
 use db::entities::{
-    AuthenticationSettings, CalendarEvent, CalendarSubscription, CodingProject, Contact,
+    AuthenticationSettings, Bookmark, CalendarEvent, CalendarSubscription, CodingProject, Contact,
     DashboardWidget, FeedItem, JournalNode, LoginAppearance, ManagedUser, PaymentSubscription,
     RssItem, RssItemDraft, RssRefreshTarget, RssSubscription, RssSubscriptionDraft, SessionAccount,
     Task, TaskDraft, TaskSubtaskDraft, User, UserAppearance, UserSettings,
@@ -26,6 +26,7 @@ use tokio::time::{Duration as TokioDuration, sleep};
 use tracing::{info, warn};
 
 mod bible;
+mod bookmarks;
 pub mod calendar;
 mod contacts;
 pub mod document;
@@ -120,8 +121,10 @@ pub struct DashboardResponse {
     pub settings: UserSettings,
     pub appearance: UserAppearance,
     pub tasks: Vec<Task>,
+    pub archived_task_count: i64,
     pub feeds: Vec<FeedItem>,
     pub widgets: Vec<DashboardWidget>,
+    pub bookmarks: Vec<Bookmark>,
     pub embedded_pages: EmbeddedPagesResponse,
 }
 
@@ -930,10 +933,12 @@ async fn dashboard(
 ) -> Result<web::Json<DashboardResponse>, ApiError> {
     let account = authenticated_account(&state, &request).await?;
     let user_id = account.id.clone();
-    let (tasks, feeds, widgets, appearance, embedded_pages) = tokio::try_join!(
+    let (tasks, archived_task_count, feeds, widgets, bookmarks, appearance, embedded_pages) = tokio::try_join!(
         db::queries::list_tasks(&state.pool, &user_id),
+        db::queries::count_archived_tasks(&state.pool, &user_id),
         db::queries::list_feed_items(&state.pool),
         db::queries::list_dashboard_widgets(&state.pool, &user_id),
+        db::queries::list_bookmarks(&state.pool, &user_id),
         db::queries::find_user_appearance(&state.pool, &user_id),
         embedded_pages::load_visible_pages(&state.pool, &user_id),
     )?;
@@ -944,8 +949,10 @@ async fn dashboard(
         settings: auth.settings,
         appearance,
         tasks,
+        archived_task_count,
         feeds,
         widgets,
+        bookmarks,
         embedded_pages,
     }))
 }
@@ -1110,6 +1117,11 @@ async fn widget_data(
     let widget = db::queries::get_dashboard_widget(&state.pool, &account.id, &widget_id)
         .await?
         .ok_or(ApiError::NotFound("widget not found"))?;
+    if widget.kind == "rss" {
+        return rss_widget_data(&state, &account.id, &widget)
+            .await
+            .map(web::Json);
+    }
     if query.refresh {
         state.widget_integrations.clear_cache(&widget_id).await;
     }
@@ -1121,6 +1133,70 @@ async fn widget_data(
         .await
         .map(web::Json)
         .map_err(ApiError::Integration)
+}
+
+async fn rss_widget_data(
+    state: &AppState,
+    user_id: &str,
+    widget: &DashboardWidget,
+) -> Result<Value, ApiError> {
+    let subscriptions = db::queries::list_rss_subscriptions(&state.pool, user_id).await?;
+    let configured_ids = rss_widget_config_strings(&widget.config, "subscription_ids", 32);
+    let legacy_urls = rss_widget_config_strings(&widget.config, "urls", 32);
+    let selected = subscriptions
+        .into_iter()
+        .filter(|subscription| {
+            configured_ids.contains(&subscription.id)
+                || (configured_ids.is_empty() && legacy_urls.contains(&subscription.url))
+        })
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return Err(ApiError::Integration(
+            "Choose at least one subscribed RSS source for this widget".to_owned(),
+        ));
+    }
+    let selected_ids = selected
+        .iter()
+        .map(|subscription| subscription.id.clone())
+        .collect::<Vec<_>>();
+    let limit = widget.config["limit"]
+        .as_u64()
+        .map_or(24, |value| value.clamp(1, 40) as usize);
+    let items =
+        db::queries::list_current_rss_items(&state.pool, user_id, &selected_ids, limit).await?;
+    let refreshed_at = selected
+        .iter()
+        .filter_map(|subscription| subscription.last_fetched_at.as_ref())
+        .max()
+        .cloned();
+    let stale_source_count = selected
+        .iter()
+        .filter(|subscription| subscription.last_error.is_some())
+        .count();
+    let pending_source_count = selected
+        .iter()
+        .filter(|subscription| subscription.refresh_generation == 0)
+        .count();
+    Ok(serde_json::json!({
+        "items": items,
+        "refreshed_at": refreshed_at,
+        "source_count": selected.len(),
+        "stale_source_count": stale_source_count,
+        "pending_source_count": pending_source_count,
+    }))
+}
+
+fn rss_widget_config_strings(config: &Value, key: &str, max: usize) -> Vec<String> {
+    config[key]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .take(max)
+        .map(str::to_owned)
+        .collect()
 }
 
 async fn delete_widget(
@@ -3118,6 +3194,7 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
                 web::get().to(get_login_wallpaper),
             )
             .route("/dashboard", web::get().to(dashboard))
+            .configure(bookmarks::configure)
             .configure(embedded_pages::configure)
             .configure(network_policy::configure)
             .route("/widgets", web::post().to(create_widget))
@@ -4480,6 +4557,7 @@ mod tests {
         )
         .await;
         assert!(dashboard.tasks.iter().all(|task| task.id != created.id));
+        assert_eq!(dashboard.archived_task_count, 1);
 
         let archived: Vec<Task> = test::call_and_read_body_json(
             &app,
@@ -4527,6 +4605,7 @@ mod tests {
                 .iter()
                 .any(|task| task.id == created.id)
         );
+        assert_eq!(restored_dashboard.archived_task_count, 0);
 
         let denied = test::call_service(
             &app,
@@ -4637,6 +4716,7 @@ mod tests {
         )
         .await;
         assert_eq!(second_dashboard.user.role, "member");
+        assert_eq!(second_dashboard.archived_task_count, 0);
         let second_archived: Vec<Task> = test::call_and_read_body_json(
             &app,
             test::TestRequest::get()

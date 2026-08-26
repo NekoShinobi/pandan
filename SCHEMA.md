@@ -465,7 +465,9 @@ origin is stored separately to make base-URL filtering predictable.
 
 The background refresh worker schedules on `last_attempted_at`, which is stamped when a refresh is
 claimed and by every manual refresh, so a failing source backs off for a full window instead of
-being retried on every sweep. `last_fetched_at` still records the last successful fetch.
+being retried on every sweep. `last_fetched_at` still records the last successful fetch. Every
+successful refresh advances `refresh_generation`; failures leave it unchanged so Current views keep
+showing the last known-good snapshot.
 
 | Column             | Type    | Constraints                            |
 | ------------------ | ------- | -------------------------------------- |
@@ -480,6 +482,7 @@ being retried on every sweep. `last_fetched_at` still records the last successfu
 | `last_fetched_at`  | TEXT    | Optional RFC 3339 timestamp            |
 | `last_attempted_at`| TEXT    | Optional RFC 3339 refresh attempt      |
 | `last_error`       | TEXT    | Optional safe provider error           |
+| `refresh_generation` | INTEGER | Latest successful snapshot, initially 0 |
 | `created_at`       | TEXT    | Required, RFC 3339 timestamp           |
 | `updated_at`       | TEXT    | Required, RFC 3339 timestamp           |
 
@@ -489,7 +492,9 @@ Fetched reader entries owned through their subscription. Refresh upserts by the 
 identifier and preserves `read_at`. Automatic retention runs when the reader loads or a source
 refreshes; manual pruning can remove old read-only or all entries across one user's subscriptions.
 Entries may retain separate article and discussion destinations. Entries saved in `rss_read_later`
-are excluded from both automatic retention and manual pruning.
+are excluded from both automatic retention and manual pruning. Entries stamped with the
+subscription's latest successful generation form its Current projection and are also protected from
+retention while the source still exposes them.
 
 | Column            | Type | Constraints                                         |
 | ----------------- | ---- | --------------------------------------------------- |
@@ -503,6 +508,7 @@ are excluded from both automatic retention and manual pruning.
 | `published_at`    | TEXT | RFC 3339; fetch time is used when the feed omits it |
 | `fetched_at`      | TEXT | Required, RFC 3339 timestamp                        |
 | `read_at`         | TEXT | Optional RFC 3339 timestamp                         |
+| `last_seen_generation` | INTEGER | Successful refresh that last exposed the item |
 
 ## `rss_read_later`
 
@@ -1023,6 +1029,25 @@ query and the latest-pipeline query for that user's subscribed GitLab projects.
 | `host`       | TEXT | Composite primary key, normalized provider host               |
 | `ciphertext` | TEXT | XChaCha20-Poly1305 nonce and ciphertext, base64 encoded       |
 | `updated_at` | TEXT | Required, RFC 3339 timestamp                                  |
+
+## `bookmarks`
+
+Private quick links shown in the dashboard utility rail. Each account may store at most 32 rows.
+The destination remains a browser link; only the derived origin `/favicon.ico` is fetched by the
+server. Supported favicon bytes are cached in the same row and are returned only after the request
+resolves through that row's `user_id`.
+
+| Column                 | Type | Constraints                                                                                         |
+| ---------------------- | ---- | --------------------------------------------------------------------------------------------------- |
+| `id`                   | TEXT | Primary key                                                                                         |
+| `user_id`              | TEXT | Required, references `users` with cascade delete                                                    |
+| `title`                | TEXT | Required, trimmed length 1–120                                                                      |
+| `url`                  | TEXT | Required credential-free HTTP or HTTPS URL, up to 2,048 bytes; unique per account                  |
+| `favicon_content_type` | TEXT | Nullable; AVIF, JPEG, PNG, WebP, ICO, or Microsoft icon media type                                  |
+| `favicon_data`         | BLOB | Nullable cached icon bytes, 1 byte through 256 KiB                                                  |
+| `favicon_fetched_at`   | TEXT | Nullable RFC 3339 timestamp; present exactly when cached favicon media type and bytes are present   |
+| `created_at`           | TEXT | Required, RFC 3339 timestamp                                                                        |
+| `updated_at`           | TEXT | Required, RFC 3339 timestamp                                                                        |
 
 ## `dashboard_widgets`
 

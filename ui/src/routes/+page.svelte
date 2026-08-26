@@ -3,6 +3,7 @@
   import "gridstack/dist/gridstack.min.css";
   import ArrowRight from "lucide-svelte/icons/arrow-right";
   import ArchiveIcon from "lucide-svelte/icons/archive";
+  import BookmarkIcon from "lucide-svelte/icons/bookmark";
   import BookOpen from "lucide-svelte/icons/book-open";
   import CalendarDays from "lucide-svelte/icons/calendar-days";
   import ChartCandlestick from "lucide-svelte/icons/chart-candlestick";
@@ -81,11 +82,14 @@
   } from "$lib/podcastPlayer.svelte";
   import {
     archiveTask,
+    bookmarkFaviconUrl,
     clearCompletedTasks,
     createAdministrator,
+    createBookmark,
     createDashboardWidget,
     createTask,
     deleteAvatar,
+    deleteBookmark,
     deleteDashboardWidget,
     deleteManagedUser,
     deleteTask,
@@ -113,6 +117,7 @@
     updateWallpaper,
     uploadTaskAttachment,
     type AuthenticationConfig,
+    type Bookmark,
     type DashboardWidget,
     type EmbeddedPage as EmbeddedPageRecord,
     type EmbeddedPagesResponse,
@@ -565,6 +570,7 @@
   let setupRequired = $derived(data.setup.required);
   let tasks = $derived<Task[]>(dashboard?.tasks ?? []);
   let archivedTasks = $state.raw<Task[]>([]);
+  let archivedTaskCount = $derived(dashboard?.archived_task_count ?? 0);
   let taskView = $state<TaskView>("active");
   let taskViewTarget = $state<TaskView>("active");
   const taskViewSwap = createViewSwap();
@@ -575,6 +581,7 @@
   let feeds = $derived<FeedItem[]>(dashboard?.feeds ?? []);
   let widgets = $derived<DashboardWidget[]>(dashboard?.widgets ?? []);
   let streamTrackerWidget = $derived(widgets.find(isUtilityStreamTracker));
+  let bookmarks = $derived<Bookmark[]>(dashboard?.bookmarks ?? []);
   let savingLayout = $state(false);
   let layoutEditing = $state(false);
   let addingWidgetKind = $state<WidgetKind | "">("");
@@ -655,6 +662,8 @@
   let destructiveDialog = $state<HTMLDialogElement>();
   let adminDialog = $state<HTMLDialogElement>();
   let widgetLibraryDialog = $state<HTMLDialogElement>();
+  let bookmarkDialog = $state<HTMLDialogElement>();
+  let bookmarkTitleInput = $state<HTMLInputElement>();
   let appearanceDialog = $state<HTMLDialogElement>();
   let pendingContentDeletion = $state<UserContentScope | null>(null);
   let deletingContentScope = $state<UserContentScope | null>(null);
@@ -695,8 +704,15 @@
   let taskEditorError = $state("");
   let savingTask = $state(false);
   let taskActionId = $state("");
+  let taskMenuId = $state("");
   let subtaskActionId = $state("");
   let pendingTaskDeleteId = $state("");
+  let bookmarkTitle = $state("");
+  let bookmarkUrl = $state("");
+  let bookmarkError = $state("");
+  let savingBookmark = $state(false);
+  let deletingBookmarkId = $state("");
+  let pendingBookmarkDeleteId = $state("");
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
   let toastCleanupTimer: ReturnType<typeof setTimeout> | undefined;
   let clockTimer: ReturnType<typeof setInterval> | undefined;
@@ -1553,6 +1569,7 @@
     if (page !== "calendar") calendarDetailDate = null;
     if (page !== "notifications") ntfyFocusedNotificationId = "";
     sidebarOpen = false;
+    taskMenuId = "";
     pendingTaskDeleteId = "";
     localStorage.setItem("pandan-active-section", `builtin:${page}`);
   }
@@ -1567,6 +1584,7 @@
     contactDetailId = null;
     calendarDetailDate = null;
     sidebarOpen = false;
+    taskMenuId = "";
     pendingTaskDeleteId = "";
     localStorage.setItem("pandan-active-section", `embedded:${pageId}`);
   }
@@ -1775,6 +1793,20 @@
     };
   }
 
+  function captureBookmarkDialog(node: HTMLDialogElement) {
+    bookmarkDialog = node;
+    return () => {
+      bookmarkDialog = undefined;
+    };
+  }
+
+  function captureBookmarkTitleInput(node: HTMLInputElement) {
+    bookmarkTitleInput = node;
+    return () => {
+      bookmarkTitleInput = undefined;
+    };
+  }
+
   function captureAppearanceDialog(node: HTMLDialogElement) {
     appearanceDialog = node;
     return () => {
@@ -1808,6 +1840,7 @@
 
   function openTaskEditor(task?: Task) {
     resetTaskEditor();
+    taskMenuId = "";
     pendingTaskDeleteId = "";
     if (task) {
       editingTaskId = task.id;
@@ -1921,7 +1954,85 @@
     archivedTasksLoaded = false;
     loadingArchivedTasks = false;
     archivedTasksError = "";
+    taskMenuId = "";
     pendingTaskDeleteId = "";
+  }
+
+  function setArchivedTaskCount(count: number) {
+    if (!dashboard) return;
+    dashboard = {
+      ...dashboard,
+      tasks,
+      archived_task_count: Math.max(0, count),
+    };
+  }
+
+  function closeTaskMenu({ restoreFocus = false } = {}) {
+    const closingTaskId = taskMenuId;
+    taskMenuId = "";
+    pendingTaskDeleteId = "";
+    if (restoreFocus && closingTaskId) {
+      void tick().then(() => {
+        document
+          .getElementById(`task-actions-trigger-${closingTaskId}`)
+          ?.focus();
+      });
+    }
+  }
+
+  async function toggleTaskMenu(taskId: string) {
+    if (taskMenuId === taskId) {
+      closeTaskMenu();
+      return;
+    }
+
+    pendingTaskDeleteId = "";
+    taskMenuId = taskId;
+    await tick();
+    document
+      .querySelector<HTMLButtonElement>(
+        `#task-actions-menu-${CSS.escape(taskId)} button:not(:disabled)`,
+      )
+      ?.focus();
+  }
+
+  function handleTaskMenuKeydown(event: KeyboardEvent) {
+    const menu = event.currentTarget as HTMLElement;
+    const items = Array.from(
+      menu.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'),
+    );
+    if (!items.length) return;
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeTaskMenu({ restoreFocus: true });
+      return;
+    }
+
+    const currentIndex = items.indexOf(
+      document.activeElement as HTMLButtonElement,
+    );
+    let nextIndex = currentIndex;
+    if (event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % items.length;
+    } else if (event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + items.length) % items.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = items.length - 1;
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    items[nextIndex]?.focus();
+  }
+
+  function handleWindowClick(event: MouseEvent) {
+    if (!taskMenuId || !(event.target instanceof Element)) return;
+    if (event.target.closest("[data-task-action-menu]")) return;
+    closeTaskMenu();
   }
 
   async function loadArchivedTasks() {
@@ -1930,6 +2041,7 @@
     archivedTasksError = "";
     try {
       archivedTasks = await fetchArchivedTasks();
+      setArchivedTaskCount(archivedTasks.length);
       archivedTasksLoaded = true;
     } catch (reason: unknown) {
       archivedTasksError =
@@ -1953,6 +2065,7 @@
       commit: () => {
         taskView = view;
         taskLabelFilter = "";
+        taskMenuId = "";
         pendingTaskDeleteId = "";
       },
     });
@@ -1961,9 +2074,12 @@
   async function archiveTaskFromList(task: Task) {
     if (taskActionId) return;
     const previousTasks = tasks;
+    const previousArchivedTaskCount = archivedTaskCount;
     taskActionId = task.id;
+    taskMenuId = "";
     pendingTaskDeleteId = "";
     tasks = tasks.filter((item) => item.id !== task.id);
+    setArchivedTaskCount(archivedTaskCount + 1);
     try {
       await archiveTask(task.id);
       expandedTaskIds.delete(task.id);
@@ -1976,6 +2092,7 @@
       showToast(`Archived ${task.title}`);
     } catch (reason: unknown) {
       tasks = previousTasks;
+      setArchivedTaskCount(previousArchivedTaskCount);
       showToast(
         reason instanceof Error ? reason.message : "Unable to archive task",
       );
@@ -1987,9 +2104,12 @@
   async function restoreTaskFromArchive(task: Task) {
     if (taskActionId) return;
     const previousArchivedTasks = archivedTasks;
+    const previousArchivedTaskCount = archivedTaskCount;
     taskActionId = task.id;
+    taskMenuId = "";
     pendingTaskDeleteId = "";
     archivedTasks = archivedTasks.filter((item) => item.id !== task.id);
+    setArchivedTaskCount(archivedTaskCount - 1);
     try {
       await restoreTask(task.id);
       tasks = [...tasks.filter((item) => item.id !== task.id), task];
@@ -1997,6 +2117,7 @@
       showToast(`Restored ${task.title}`);
     } catch (reason: unknown) {
       archivedTasks = previousArchivedTasks;
+      setArchivedTaskCount(previousArchivedTaskCount);
       showToast(
         reason instanceof Error ? reason.message : "Unable to restore task",
       );
@@ -2009,19 +2130,23 @@
     if (taskActionId) return;
     if (pendingTaskDeleteId !== task.id) {
       pendingTaskDeleteId = task.id;
-      showToast(`Select delete again to remove ${task.title}`);
+      showToast(`Select Confirm delete to remove ${task.title}`);
       return;
     }
 
     const previousArchivedTasks = archivedTasks;
+    const previousArchivedTaskCount = archivedTaskCount;
     taskActionId = task.id;
+    taskMenuId = "";
     archivedTasks = archivedTasks.filter((item) => item.id !== task.id);
+    setArchivedTaskCount(archivedTaskCount - 1);
     try {
       await deleteTask(task.id);
       expandedTaskIds.delete(task.id);
       showToast(`Deleted ${task.title}`);
     } catch (reason: unknown) {
       archivedTasks = previousArchivedTasks;
+      setArchivedTaskCount(previousArchivedTaskCount);
       showToast(
         reason instanceof Error ? reason.message : "Unable to delete task",
       );
@@ -2035,12 +2160,13 @@
     if (taskActionId) return;
     if (pendingTaskDeleteId !== task.id) {
       pendingTaskDeleteId = task.id;
-      showToast(`Select delete again to remove ${task.title}`);
+      showToast(`Select Confirm delete to remove ${task.title}`);
       return;
     }
 
     const previousTasks = tasks;
     taskActionId = task.id;
+    taskMenuId = "";
     tasks = tasks.filter((item) => item.id !== task.id);
     try {
       await deleteTask(task.id);
@@ -2092,6 +2218,85 @@
 
   function openWidgetLibrary() {
     widgetLibraryDialog?.showModal();
+  }
+
+  async function openBookmarkManager() {
+    bookmarkError = "";
+    pendingBookmarkDeleteId = "";
+    bookmarkDialog?.showModal();
+    await tick();
+    bookmarkTitleInput?.focus();
+  }
+
+  function resetBookmarkManager() {
+    bookmarkTitle = "";
+    bookmarkUrl = "";
+    bookmarkError = "";
+    pendingBookmarkDeleteId = "";
+  }
+
+  async function saveBookmark(event: SubmitEvent) {
+    event.preventDefault();
+    if (savingBookmark || bookmarks.length >= 32) return;
+    savingBookmark = true;
+    bookmarkError = "";
+    try {
+      const created = await createBookmark({
+        title: bookmarkTitle,
+        url: bookmarkUrl,
+      });
+      bookmarks = [...bookmarks, created].sort(
+        (left, right) =>
+          left.title.localeCompare(right.title, undefined, {
+            sensitivity: "base",
+          }) || left.created_at.localeCompare(right.created_at),
+      );
+      bookmarkTitle = "";
+      bookmarkUrl = "";
+      await tick();
+      bookmarkTitleInput?.focus();
+      showToast(`Saved ${created.title}`);
+    } catch (reason: unknown) {
+      bookmarkError =
+        reason instanceof Error ? reason.message : "Unable to save bookmark";
+    } finally {
+      savingBookmark = false;
+    }
+  }
+
+  async function removeBookmark(bookmark: Bookmark) {
+    if (deletingBookmarkId) return;
+    if (pendingBookmarkDeleteId !== bookmark.id) {
+      pendingBookmarkDeleteId = bookmark.id;
+      return;
+    }
+    deletingBookmarkId = bookmark.id;
+    bookmarkError = "";
+    try {
+      await deleteBookmark(bookmark.id);
+      bookmarks = bookmarks.filter((item) => item.id !== bookmark.id);
+      pendingBookmarkDeleteId = "";
+      showToast(`Removed ${bookmark.title}`);
+    } catch (reason: unknown) {
+      bookmarkError =
+        reason instanceof Error
+          ? reason.message
+          : "Unable to remove bookmark";
+    } finally {
+      deletingBookmarkId = "";
+    }
+  }
+
+  function bookmarkHost(value: string) {
+    try {
+      return new URL(value).hostname.replace(/^www\./, "");
+    } catch {
+      return value;
+    }
+  }
+
+  function hideBrokenBookmarkFavicon(event: Event) {
+    (event.currentTarget as HTMLImageElement).hidden = true;
   }
 
   async function toggleLayoutEditing() {
@@ -2757,7 +2962,7 @@
     try {
       const result = await deleteUserContent(action.scope);
       if (action.scope === "tasks" && dashboard) {
-        dashboard = { ...dashboard, tasks: [] };
+        dashboard = { ...dashboard, tasks: [], archived_task_count: 0 };
         resetTaskArchiveView();
       }
       if (activeSection === action.scope) {
@@ -3185,7 +3390,7 @@
   crawlers see them without running the application. Setting them here as well
   would append a second `<title>` to the head, and the browser honours the first.
 -->
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} onclick={handleWindowClick} />
 
 {#if loadingOverlayVisible}
   <div
@@ -4032,6 +4237,66 @@
                       {/each}
                     </div>
                   </section>
+                  <section
+                    class="utility-box utility-bookmarks"
+                    data-od-id="dashboard-bookmarks"
+                  >
+                    <div class="utility-bookmarks-head">
+                      <p>[ BOOKMARKS ]</p>
+                      <button
+                        class="ui-button ui-button--ghost ui-button--icon"
+                        type="button"
+                        aria-label="Manage bookmarks"
+                        onclick={openBookmarkManager}
+                        data-od-id="manage-dashboard-bookmarks"
+                      >
+                        <Plus size={16} strokeWidth={1.8} aria-hidden="true" />
+                      </button>
+                    </div>
+                    {#if bookmarks.length > 0}
+                      <div
+                        class="utility-bookmark-list overlay-scroll-region"
+                        aria-label="Saved bookmarks"
+                      >
+                        {#each bookmarks as bookmark (bookmark.id)}
+                          <a
+                            class="utility-bookmark-row"
+                            href={bookmark.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            data-od-id={`dashboard-bookmark-${bookmark.id}`}
+                          >
+                            <span class="bookmark-favicon" aria-hidden="true">
+                              <BookmarkIcon
+                                size={15}
+                                strokeWidth={1.8}
+                              />
+                              {#if bookmark.has_favicon}
+                                <img
+                                  src={bookmarkFaviconUrl(bookmark.id)}
+                                  alt=""
+                                  onerror={hideBrokenBookmarkFavicon}
+                                />
+                              {/if}
+                            </span>
+                            <span class="utility-bookmark-copy">
+                              <strong>{bookmark.title}</strong>
+                              <small>{bookmarkHost(bookmark.url)}</small>
+                            </span>
+                            <ArrowRight
+                              size={14}
+                              strokeWidth={1.8}
+                              aria-hidden="true"
+                            />
+                          </a>
+                        {/each}
+                      </div>
+                    {:else}
+                      <p class="utility-bookmark-empty">
+                        No saved links yet. Use the add control to keep one close.
+                      </p>
+                    {/if}
+                  </section>
                   {#if streamTrackerWidget}
                     <section
                       class="utility-box utility-stream-tracker"
@@ -4071,7 +4336,57 @@
                     </p>
                   {/key}
                 </div>
-                <div class="task-page-actions">
+              </div>
+              <div
+                class="task-page-actions"
+                role="group"
+                aria-label="Task controls"
+                data-od-id="task-toolbar"
+              >
+                <button
+                  class="ui-button ui-button--primary primary-btn task-create-button"
+                  type="button"
+                  onclick={() => openTaskEditor()}
+                  data-od-id="create-task"
+                >
+                  <Plus size={17} strokeWidth={1.8} aria-hidden="true" />
+                  New task
+                </button>
+                <nav class="task-view-menu" aria-label="Task views">
+                  <button
+                    class={[
+                      "ui-button",
+                      "ui-button--secondary",
+                      "task-view-menu-button",
+                      taskViewTarget === "active" && "is-active",
+                    ]}
+                    type="button"
+                    aria-label={`Active tasks, ${tasks.length}`}
+                    aria-pressed={taskViewTarget === "active"}
+                    onclick={() => selectTaskView("active")}
+                    data-od-id="view-active-tasks"
+                  >
+                    Active
+                    <span class="task-view-count">{tasks.length}</span>
+                  </button>
+                  <button
+                    class={[
+                      "ui-button",
+                      "ui-button--secondary",
+                      "task-view-menu-button",
+                      taskViewTarget === "archived" && "is-active",
+                    ]}
+                    type="button"
+                    aria-label={`Archived tasks, ${archivedTaskCount}`}
+                    aria-pressed={taskViewTarget === "archived"}
+                    onclick={() => selectTaskView("archived")}
+                    data-od-id="view-archived-tasks"
+                  >
+                    Archived
+                    <span class="task-view-count">{archivedTaskCount}</span>
+                  </button>
+                </nav>
+                {#if taskLabelOptions.length}
                   <label class="task-label-filter">
                     <span>
                       <Tag size={14} strokeWidth={1.8} aria-hidden="true" />
@@ -4079,7 +4394,6 @@
                     </span>
                     <select
                       bind:value={taskLabelFilter}
-                      disabled={!taskLabelOptions.length}
                       aria-label="Filter tasks by label"
                       data-od-id="filter-tasks-by-label"
                     >
@@ -4089,52 +4403,7 @@
                       {/each}
                     </select>
                   </label>
-                  <nav class="task-view-menu" aria-label="Task views">
-                    <button
-                      class={[
-                        "ui-button",
-                        "ui-button--secondary",
-                        "task-view-menu-button",
-                        taskViewTarget === "active" && "is-active",
-                      ]}
-                      type="button"
-                      aria-pressed={taskViewTarget === "active"}
-                      onclick={() => selectTaskView("active")}
-                      data-od-id="view-active-tasks"
-                    >
-                      Active
-                      <span>{tasks.length}</span>
-                    </button>
-                    <button
-                      class={[
-                        "ui-button",
-                        "ui-button--secondary",
-                        "task-view-menu-button",
-                        taskViewTarget === "archived" && "is-active",
-                      ]}
-                      type="button"
-                      aria-pressed={taskViewTarget === "archived"}
-                      onclick={() => selectTaskView("archived")}
-                      data-od-id="view-archived-tasks"
-                    >
-                      Archived
-                      <span
-                        >{archivedTasksLoaded
-                          ? archivedTasks.length
-                          : "—"}</span
-                      >
-                    </button>
-                  </nav>
-                  <button
-                    class="ui-button ui-button--primary primary-btn task-create-button"
-                    type="button"
-                    onclick={() => openTaskEditor()}
-                    data-od-id="create-task"
-                  >
-                    <Plus size={17} strokeWidth={1.8} aria-hidden="true" />
-                    New task
-                  </button>
-                </div>
+                {/if}
               </div>
               <div class="tasks-page-layout">
                 <section
@@ -4253,13 +4522,17 @@
                           {/if}
                         </button>
                         <div
-                          class="task-row-actions"
+                          class={[
+                            "task-row-actions",
+                            taskMenuId === task.id && "has-open-menu",
+                          ]}
                           role="group"
                           aria-label={`Actions for ${task.title}`}
+                          data-task-action-menu
                         >
                           {#if archived}
                             <button
-                              class="ui-button ui-button--secondary task-row-action task-row-restore-action"
+                              class="ui-button ui-button--secondary task-row-action task-row-primary-action task-row-restore-action"
                               type="button"
                               disabled={taskActionId === task.id}
                               aria-label={`Restore ${task.title}`}
@@ -4276,7 +4549,7 @@
                             </button>
                           {:else}
                             <button
-                              class="ui-button ui-button--secondary task-row-action task-row-edit-action"
+                              class="ui-button ui-button--secondary task-row-action task-row-primary-action task-row-edit-action"
                               type="button"
                               disabled={taskActionId === task.id}
                               aria-label={`Edit ${task.title}`}
@@ -4291,56 +4564,84 @@
                               />
                               <span>Edit</span>
                             </button>
+                          {/if}
+                          <button
+                            class="ui-button ui-button--secondary ui-button--icon task-row-menu-trigger"
+                            id={`task-actions-trigger-${task.id}`}
+                            type="button"
+                            disabled={taskActionId === task.id}
+                            aria-label={`More actions for ${task.title}`}
+                            aria-haspopup="menu"
+                            aria-expanded={taskMenuId === task.id}
+                            aria-controls={`task-actions-menu-${task.id}`}
+                            title="More task actions"
+                            data-od-id={`task-actions-${task.id}`}
+                            onclick={() => toggleTaskMenu(task.id)}
+                          >
+                            <Ellipsis
+                              size={17}
+                              strokeWidth={1.8}
+                              aria-hidden="true"
+                            />
+                          </button>
+                          <div
+                            class="task-row-menu"
+                            id={`task-actions-menu-${task.id}`}
+                            role="menu"
+                            aria-label={`More actions for ${task.title}`}
+                            aria-hidden={taskMenuId !== task.id}
+                            inert={taskMenuId !== task.id}
+                            onkeydown={handleTaskMenuKeydown}
+                            {@attach motionPopover(taskMenuId === task.id, {
+                              closedY: -6,
+                            })}
+                          >
+                            {#if !archived}
+                              <button
+                                type="button"
+                                role="menuitem"
+                                disabled={taskActionId === task.id}
+                                aria-label={`Move ${task.title} to archive`}
+                                data-od-id={`archive-task-${task.id}`}
+                                onclick={() => archiveTaskFromList(task)}
+                              >
+                                <ArchiveIcon
+                                  size={15}
+                                  strokeWidth={1.8}
+                                  aria-hidden="true"
+                                />
+                                <span>Archive task</span>
+                              </button>
+                            {/if}
                             <button
-                              class="ui-button ui-button--danger task-row-action task-row-archive-action"
+                              class={[
+                                "task-row-delete-action",
+                                pendingTaskDeleteId === task.id && "is-armed",
+                              ]}
                               type="button"
+                              role="menuitem"
                               disabled={taskActionId === task.id}
-                              aria-label={`Archive ${task.title}`}
-                              title="Archive task"
-                              data-od-id={`archive-task-${task.id}`}
-                              onclick={() => archiveTaskFromList(task)}
+                              aria-label={pendingTaskDeleteId === task.id
+                                ? `Confirm deletion of ${task.title}`
+                                : `Delete ${task.title}`}
+                              data-od-id={`delete-task-${task.id}`}
+                              onclick={() =>
+                                archived
+                                  ? deleteArchivedTaskFromList(task)
+                                  : deleteTaskFromList(task)}
                             >
-                              <ArchiveIcon
+                              <Trash2
                                 size={15}
                                 strokeWidth={1.8}
                                 aria-hidden="true"
                               />
-                              <span>Archive</span>
+                              <span>
+                                {pendingTaskDeleteId === task.id
+                                  ? "Confirm delete"
+                                  : "Delete task"}
+                              </span>
                             </button>
-                          {/if}
-                          <button
-                            class={[
-                              "ui-button",
-                              "ui-button--danger",
-                              "task-row-action",
-                              "task-row-delete-action",
-                              pendingTaskDeleteId === task.id && "is-armed",
-                            ]}
-                            type="button"
-                            disabled={taskActionId === task.id}
-                            aria-label={pendingTaskDeleteId === task.id
-                              ? `Confirm deletion of ${task.title}`
-                              : `Delete ${task.title}`}
-                            title={pendingTaskDeleteId === task.id
-                              ? "Select again to confirm deletion"
-                              : "Delete task"}
-                            data-od-id={`delete-task-${task.id}`}
-                            onclick={() =>
-                              archived
-                                ? deleteArchivedTaskFromList(task)
-                                : deleteTaskFromList(task)}
-                          >
-                            <Trash2
-                              size={15}
-                              strokeWidth={1.8}
-                              aria-hidden="true"
-                            />
-                            <span
-                              >{pendingTaskDeleteId === task.id
-                                ? "Confirm"
-                                : "Delete"}</span
-                            >
-                          </button>
+                          </div>
                         </div>
                       </div>
 
@@ -5604,6 +5905,147 @@
           </span>
         </button>
       {/each}
+    </div>
+  </dialog>
+
+  <dialog
+    class="settings-dialog bookmark-dialog"
+    {@attach captureBookmarkDialog}
+    onclose={resetBookmarkManager}
+    onclick={(event) =>
+      event.target === bookmarkDialog && bookmarkDialog.close()}
+    data-od-id="bookmark-manager-dialog"
+  >
+    <div class="settings-heading">
+      <div>
+        <h2>Bookmarks</h2>
+        <p>Quick links for this account, with locally cached favicons.</p>
+      </div>
+      <button
+        class="ui-button ui-button--ghost ui-button--icon dialog-close"
+        type="button"
+        aria-label="Close bookmark manager"
+        onclick={() => bookmarkDialog?.close()}
+      >
+        <X size={18} strokeWidth={1.8} aria-hidden="true" />
+      </button>
+    </div>
+    <div class="bookmark-dialog-body">
+      <form
+        class="bookmark-form"
+        onsubmit={saveBookmark}
+        data-od-id="bookmark-form"
+      >
+        <div class="bookmark-field">
+          <label for="bookmark-title">Title</label>
+          <input
+            id="bookmark-title"
+            class="bookmark-input"
+            type="text"
+            maxlength="120"
+            autocomplete="off"
+            required
+            bind:value={bookmarkTitle}
+            {@attach captureBookmarkTitleInput}
+            data-od-id="bookmark-title"
+          />
+        </div>
+        <div class="bookmark-field">
+          <label for="bookmark-url">URL</label>
+          <input
+            id="bookmark-url"
+            class="bookmark-input"
+            type="url"
+            maxlength="2048"
+            inputmode="url"
+            placeholder="https://example.com"
+            autocomplete="url"
+            required
+            bind:value={bookmarkUrl}
+            data-od-id="bookmark-url"
+          />
+        </div>
+        <p class="bookmark-form-note">
+          Favicons are fetched once through the server network policy. The link
+          is still saved when a site has no compatible icon.
+        </p>
+        {#if bookmarkError}
+          <p class="form-error bookmark-error" role="alert">
+            {bookmarkError}
+          </p>
+        {/if}
+        <button
+          class="ui-button ui-button--primary bookmark-save"
+          type="submit"
+          disabled={savingBookmark || bookmarks.length >= 32}
+          data-od-id="save-bookmark"
+        >
+          {savingBookmark
+            ? "Saving…"
+            : bookmarks.length >= 32
+              ? "Bookmark limit reached"
+              : "Save bookmark"}
+        </button>
+      </form>
+
+      <section
+        class="bookmark-manager"
+        aria-labelledby="bookmark-manager-heading"
+      >
+        <div class="bookmark-manager-head">
+          <h3 id="bookmark-manager-heading">Saved links</h3>
+          <span>{bookmarks.length} / 32</span>
+        </div>
+        {#if bookmarks.length > 0}
+          <div class="bookmark-manager-list">
+            {#each bookmarks as bookmark (bookmark.id)}
+              <article
+                class="bookmark-manager-row"
+                data-od-id={`managed-bookmark-${bookmark.id}`}
+              >
+                <span class="bookmark-favicon" aria-hidden="true">
+                  <BookmarkIcon size={15} strokeWidth={1.8} />
+                  {#if bookmark.has_favicon}
+                    <img
+                      src={bookmarkFaviconUrl(bookmark.id)}
+                      alt=""
+                      onerror={hideBrokenBookmarkFavicon}
+                    />
+                  {/if}
+                </span>
+                <a href={bookmark.url} target="_blank" rel="noreferrer">
+                  <strong>{bookmark.title}</strong>
+                  <small>{bookmarkHost(bookmark.url)}</small>
+                </a>
+                <button
+                  class={pendingBookmarkDeleteId === bookmark.id
+                    ? "ui-button ui-button--danger bookmark-delete-confirm"
+                    : "ui-button ui-button--ghost ui-button--icon"}
+                  type="button"
+                  disabled={deletingBookmarkId !== ""}
+                  aria-label={pendingBookmarkDeleteId === bookmark.id
+                    ? `Confirm removal of ${bookmark.title}`
+                    : `Remove ${bookmark.title}`}
+                  onclick={() => removeBookmark(bookmark)}
+                  data-od-id={`delete-bookmark-${bookmark.id}`}
+                >
+                  {#if pendingBookmarkDeleteId === bookmark.id}
+                    {deletingBookmarkId === bookmark.id
+                      ? "Removing…"
+                      : "Confirm"}
+                  {:else}
+                    <Trash2 size={16} strokeWidth={1.8} aria-hidden="true" />
+                  {/if}
+                </button>
+              </article>
+            {/each}
+          </div>
+        {:else}
+          <p class="bookmark-manager-empty">
+            Your first saved link will appear here and in the dashboard rail.
+          </p>
+        {/if}
+      </section>
     </div>
   </dialog>
 
