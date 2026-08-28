@@ -23,7 +23,8 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - `ui/src/routes/+page.svelte` — application shell, authentication, settings, dashboard, Tasks, and product navigation.
 - `ui/src/lib/KanbanPage.svelte` — Kanban boards, card collaboration, workspace membership, and permission settings.
 - `ui/src/lib/PodcastsPage.svelte` — podcast catalogue, requests, listening views, and the administrator review queue.
-- `ui/src/lib/podcastPlayer.svelte.ts` — module-scoped playback state. The shell owns the single `<audio>` element so playback survives section changes; never move it into a page component.
+- `ui/src/lib/MusicPage.svelte` — per-account Jellyfin music libraries, collections, search, and queues.
+- `ui/src/lib/podcastPlayer.svelte.ts` — module-scoped podcast and Jellyfin playback state. The shell owns the single `<audio>` element so playback survives section changes; never move it into a page component.
 - `ui/src/lib/WallsPage.svelte` — shared wallpaper collection, submission composer, and the administrator review queue.
 - `ui/src/lib/` — feature pages and reusable widgets.
 - `ui/src/app.css` — shared visual system and component styling.
@@ -57,11 +58,18 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
   it through the `images` network policy with redirect and size guards, stores supported icon bytes
   in SQLite, and serves them only to the owning authenticated account. A favicon failure must never
   prevent the bookmark itself from being saved.
+- The dashboard right rail's Local.Time list shows every saved Sidebar Monitor timezone in the same
+  order. Sidebar Monitor settings use the runtime's standardized IANA timezone list and keep one to
+  five selections.
+- Calendar month grids default to Sunday-first and share the account's adjustable week-start
+  preference. The dashboard right-rail calendar supports month navigation and marks dated tasks,
+  contact birthdays, and subscribed calendar events with their source colors.
 - All private records and assets must be scoped to the authenticated account in both handlers and queries.
 - Administrator checks are enforced by the server, never only by the interface.
 - The final administrator cannot be demoted or deleted.
 - The initial administrator setup is one-time and claimed atomically.
-- Sidebar navigation starts with Dashboard, Tasks, Kanban, Contacts, Calendar, RSS, Journal, Lines, Walls, YouTube, Podcasts, Coding, Subscriptions, and Trading. Kanban expands to Boards, Workspaces, and Invitations. Administrator-defined global embedded pages follow every built-in page, then the authenticated account's personal embedded pages. Custom entries rely on their `Global custom` / `Personal custom` group labels and retain `G` / `U` markers in collapsed mode; do not repeat the scope as a right-side badge. Their sidebar hover cards contain only the configured page title and description, without a global/personal static prefix. Each embedded page keeps a responsive width and a persisted iframe height from 320–2,400 pixels, defaulting to 720; settings offer 480, 720, and 1,080 pixel presets plus a custom option.
+- Sidebar navigation starts with Dashboard, Tasks, Kanban, Contacts, Calendar, RSS, Journal, Lines, Walls, YouTube, Podcasts, Music, Coding, Subscriptions, and Trading. Kanban expands to Boards, Workspaces, and Invitations. Administrator-defined global embedded pages follow every built-in page, then the authenticated account's personal embedded pages. Custom entries rely on their `Global custom` / `Personal custom` group labels and retain `G` / `U` markers in collapsed mode; do not repeat the scope as a right-side badge. Their sidebar hover cards contain only the configured page title and description, without a global/personal static prefix. Each embedded page keeps a responsive width and a persisted iframe height from 320–2,400 pixels, defaulting to 720; settings offer 480, 720, and 1,080 pixel presets plus a custom option.
+- Settings is a full product page reached from the existing sidebar control, never an account modal. Its second rail groups General (Preferences and Custom Pages), Security (User Settings, Sessions, and Data Management), and administrator-only Administration (Instance, Network, and User Management). Main background belongs only in Preferences; Login background belongs only in Instance Settings. Keep the page title, selected-category heading, and category rail anchored while only the selected category body scrolls. Custom Pages and Data Management stay in the page body, while destructive actions still require an explicit second confirmation.
 - Tasks Active and Archived views share the same page structure: keep New task and Focus Mode visible, and do not collapse the worklist grid when switching views.
 - The command palette is a global surface, not a dashboard feature. Keep its entry points page-independent: `Ctrl`/`Cmd` + `K`, the `/` key, and the header search control. Do not add palette triggers inside dashboard widgets or dashboard-only panels, and do not reintroduce the removed `search` web search widget; web search belongs in the palette's fallthrough row.
 - Coding provider data is cached in memory per account for one hour. Opening the page uses that cache, the page's Refresh control bypasses it, and project or credential mutations invalidate it. Preserve the generation check so an in-flight request cannot restore stale data after invalidation.
@@ -79,6 +87,9 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - Kanban invitations are in-app only and may target existing Pandan users; do not add email delivery or arbitrary addresses.
 - Deleting a Kanban column is refused by the server while it still holds active cards, and that message is what the board shows. Keep the check on the server rather than hiding the control, and keep the delete behind `list:delete`.
 - The podcast catalogue is one administrator-curated set shared by the whole instance. Members request a feed; only an administrator publishes one. Never let a member route create a `podcasts` row.
+- Jellyfin uses one administrator-selected server plus one encrypted Jellyfin identity per Pandan account. The browser must never receive a Jellyfin token, Quick Connect secret, authorization header, password, or complete upstream URL.
+- Jellyfin playback is music-only. Discover allowed roots from the linked user's current `CollectionFolder` views with `CollectionType=music`; every item detail, image, audio stream, playlist track, and playback report must independently require the selected root in the item's current ancestor chain. Audio additionally requires both `Type=Audio` and `MediaType=Audio`. Return `404` for anything outside that scope.
+- Jellyfin artwork and audio are live authenticated proxies and must never be cached by the service worker. The shell-owned player keeps podcast behavior intact, hides speed controls for music, and reports Jellyfin start/progress/stop best effort without interrupting playback.
 - A feed already in the catalogue never becomes a request. Compare on the normalized URL and answer with a subscription instead.
 - Podcast requests keep their decision history. Rejections retain the administrator's reason for the requester, and only `pending` requests may be decided or withdrawn.
 - Every podcast episode read — metadata, audio bytes, progress, queue, saved state — resolves through an active `podcast_subscriptions` row. An unsubscribed caller, administrator included, gets `404` rather than `403`, so responses do not leak which episodes exist.
@@ -103,9 +114,9 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 
 - Wallpaper slots are:
   - `dashboard` — legacy private slot retained for existing data and API compatibility; do not expose it as a separate selector.
-  - `welcome` — private, per user, exposed to every account in Appearance as Main background, used by the authenticated `Welcome:{user}` loading transition and as the persistent background behind authenticated pages.
+  - `welcome` — private, per user, exposed to every account under Settings → Preferences as Main background, used by the authenticated `Welcome:{user}` loading transition and as the persistent background behind authenticated pages.
   - `loading` — legacy private slot retained for existing data and API compatibility; do not expose it as a separate selector.
-  - `login` — global, administrator-managed, publicly readable before authentication.
+  - `login` — global, administrator-managed under Settings → Instance Settings, publicly readable before authentication.
 - Every wallpaper slot resolves in one order: an applied wall in `user_wallpaper_selections`, then the uploaded image in `user_wallpapers`, then the packaged default. Only a wall that is still `approved` resolves, so a wall rejected or deleted after it was applied falls back on its own with no cleanup pass. Uploading to a slot clears its selection and applying a wall clears its upload, so the two sources can never disagree.
 - The `login` slot stays a singleton across every administrator. Any writer — upload or apply — must clear both tables for that slot first, so the served image never depends on an `updated_at` tiebreak.
 - Main and Login background processing are separate appearance records with the same bounded blur,
@@ -133,7 +144,7 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 
 ### Remote content
 
-- Server-side remote destinations default to public HTTPS. Administrator-managed `network_access_rules` may allow or deny an exact scheme, host, and port for all integrations or one of `rss`, `calendar`, `contacts`, `podcasts`, `notifications`, `coding`, `images`, `youtube`, or `widgets`. A deny match always wins; only an explicit allow may authorize HTTP or a private/reserved destination. Keep rules administrator-only and capped at 128.
+- Server-side remote destinations default to public HTTPS. Administrator-managed `network_access_rules` may allow or deny an exact scheme, host, and port for all integrations or one of `rss`, `calendar`, `contacts`, `podcasts`, `notifications`, `coding`, `images`, `youtube`, `widgets`, or `jellyfin`. A deny match always wins; only an explicit allow may authorize HTTP or a private/reserved destination. Keep rules administrator-only and capped at 128.
 - Embedded-page destinations must be absolute HTTPS URLs without credentials. The server stores configuration only and never fetches or proxies them. Their iframes default to the restricted `allow-forms allow-popups` sandbox and `no-referrer` policy. Persisted, independent opt-ins may add `allow-scripts` and/or `allow-same-origin`; both are disabled by default and may be enabled together when the user accepts the reduced isolation. Never add top-navigation, download, device, or location permissions.
 - Network access rules apply only to requests made by Pandan. Embedded pages and ordinary external links are browser destinations and must not consult the server-egress allow/deny table; their separate URL and sandbox rules still apply.
 - Preserve DNS/IP validation against loopback, private, link-local, multicast, reserved, IPv4-mapped IPv6, and NAT64-embedded private ranges. Pin each request client to the addresses that passed validation, and re-run policy plus resolution for every redirect so validation and connection cannot observe different DNS answers.

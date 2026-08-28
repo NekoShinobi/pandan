@@ -1,5 +1,4 @@
 <script lang="ts">
-  import CalendarDays from "lucide-svelte/icons/calendar-days";
   import ChevronLeft from "lucide-svelte/icons/chevron-left";
   import ChevronRight from "lucide-svelte/icons/chevron-right";
   import ExternalLink from "lucide-svelte/icons/external-link";
@@ -20,6 +19,7 @@
     type CalendarResponse,
     type CalendarSubscription,
     type Task,
+    type UserSettings,
   } from "$lib/api";
 
   interface CalendarDay {
@@ -28,6 +28,7 @@
     day: number;
     inMonth: boolean;
     today: boolean;
+    weekday: string | null;
   }
 
   interface CalendarItem {
@@ -53,12 +54,14 @@
     onOpenContact = () => {},
     initialDate = null,
     onInitialDateHandled = () => {},
+    weekStart = "sunday",
   }: {
     tasks?: Task[];
     onEditTask?: (task: Task) => void;
     onOpenContact?: (contactId: string) => void;
     initialDate?: string | null;
     onInitialDateHandled?: () => void;
+    weekStart?: UserSettings["calendar_week_start"];
   } = $props();
 
   const defaultColor: CalendarColor = "#2DD4BF";
@@ -72,7 +75,6 @@
     { value: "#A3E635", label: "Lime" },
     { value: "#94A3B8", label: "Slate" },
   ];
-  const weekdays = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
   const birthdaySubscriptionId = "contacts-birthdays";
   const taskSourceId = "tasks-due";
   const taskColor = "var(--accent)";
@@ -105,7 +107,7 @@
   let monthLabel = $derived(
     new Intl.DateTimeFormat("en", { month: "long", year: "numeric" }).format(cursor),
   );
-  let days = $derived.by(() => buildMonth(cursor));
+  let days = $derived.by(() => buildMonth(cursor, weekStart));
   let calendarItems = $derived.by((): CalendarItem[] => [
     ...tasks
       .filter((task) => task.due_date !== null)
@@ -398,11 +400,19 @@
     return `${year}-${month}-${day}`;
   }
 
-  function buildMonth(month: Date): CalendarDay[] {
+  function buildMonth(
+    month: Date,
+    firstWeekday: UserSettings["calendar_week_start"],
+  ): CalendarDay[] {
     const first = new Date(month.getFullYear(), month.getMonth(), 1);
-    const mondayOffset = (first.getDay() + 6) % 7;
-    const start = new Date(first.getFullYear(), first.getMonth(), 1 - mondayOffset);
+    const offset =
+      firstWeekday === "sunday" ? first.getDay() : (first.getDay() + 6) % 7;
+    const start = new Date(first.getFullYear(), first.getMonth(), 1 - offset);
     const today = dateKey(new Date());
+    const weekdayLabels =
+      firstWeekday === "sunday"
+        ? ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
+        : ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
     return Array.from({ length: 42 }, (_, index) => {
       const date = new Date(start.getFullYear(), start.getMonth(), start.getDate() + index);
       const key = dateKey(date);
@@ -412,6 +422,7 @@
         day: date.getDate(),
         inMonth: date.getMonth() === month.getMonth(),
         today: key === today,
+        weekday: index < 7 ? weekdayLabels[index] : null,
       };
     });
   }
@@ -441,19 +452,14 @@
     <section class="month-panel" aria-label="Calendar month">
       <header class="month-toolbar">
         <div class="month-heading" data-od-id="calendar-month-heading">
-          <span>MONTH VIEW</span>
           <h3>{monthLabel}</h3>
         </div>
         <div class="month-navigation" role="group" aria-label="Navigate calendar months" data-od-id="calendar-month-navigation">
-          <button class="ui-button ui-button--ghost month-shift" type="button" aria-label="Previous month" onclick={() => changeMonth(-1)} data-od-id="calendar-previous-month"><ChevronLeft size={16} strokeWidth={1.8} aria-hidden="true" /><span>Previous</span></button>
-          <button class="ui-button ui-button--secondary today-button" type="button" onclick={goToday} data-od-id="calendar-today"><CalendarDays size={15} strokeWidth={1.8} aria-hidden="true" /><span>Today</span></button>
-          <button class="ui-button ui-button--ghost month-shift" type="button" aria-label="Next month" onclick={() => changeMonth(1)} data-od-id="calendar-next-month"><span>Next</span><ChevronRight size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+          <button class="ui-button ui-button--secondary today-button" type="button" onclick={goToday} data-od-id="calendar-today">Today</button>
+          <button class="ui-button ui-button--ghost ui-button--icon month-shift" type="button" aria-label="Previous month" onclick={() => changeMonth(-1)} data-od-id="calendar-previous-month"><ChevronLeft size={17} strokeWidth={1.8} aria-hidden="true" /></button>
+          <button class="ui-button ui-button--ghost ui-button--icon month-shift" type="button" aria-label="Next month" onclick={() => changeMonth(1)} data-od-id="calendar-next-month"><ChevronRight size={17} strokeWidth={1.8} aria-hidden="true" /></button>
         </div>
       </header>
-
-      <div class="weekday-row" aria-hidden="true">
-        {#each weekdays as weekday (weekday)}<span>{weekday}</span>{/each}
-      </div>
       <div class="month-grid">
         {#each days as day (day.key)}
           {@const dayEvents = eventsOn(day.key)}
@@ -466,6 +472,7 @@
             aria-label={`${day.date.toDateString()}, ${dayEvents.length} calendar items`}
           >
             <span class="day-number">{day.day}</span>
+            {#if day.weekday}<span class="day-weekday" aria-hidden="true">{day.weekday}</span>{/if}
             <span class="day-events">
               {#each dayEvents.slice(0, 3) as event (event.id)}
                 <span class="event-pill" class:completed={event.completed} style:--calendar-color={event.color}>{event.title}</span>
@@ -618,24 +625,19 @@
   .month-panel, .calendar-sidebar section { border: 1px solid var(--border); background: color-mix(in oklch, var(--page-surface, var(--surface)) 92%, transparent); }
   .month-toolbar { display: flex; min-height: 74px; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
   .month-heading { min-width: 0; }
-  .month-heading > span { display: block; color: var(--muted); font-family: var(--font-mono); font-size: 9px; letter-spacing: .1em; }
-  .month-heading h3 { margin: 5px 0 0; font-family: var(--font-mono); font-size: 17px; font-weight: 550; letter-spacing: -.01em; }
-  .month-navigation { display: inline-grid; grid-template-columns: auto auto auto; border: 1px solid var(--border); background: color-mix(in oklch, var(--bg) 64%, transparent); }
-  .month-navigation button { display: inline-flex; min-width: 44px; height: 44px; align-items: center; justify-content: center; gap: 7px; border: 0; border-right: 1px solid var(--border); background: transparent; color: var(--fg); padding: 0 13px; font-family: var(--font-mono); font-size: 10px; letter-spacing: .04em; }
-  .month-navigation button:last-child { border-right: 0; }
-  .month-navigation button:hover { background: color-mix(in oklch, var(--fg) 9%, transparent); color: var(--fg); }
-  .month-navigation button:active { background: color-mix(in oklch, var(--fg) 14%, transparent); color: var(--fg); }
-  .month-navigation .today-button { background: color-mix(in oklch, var(--fg) 6%, transparent); text-transform: uppercase; letter-spacing: .08em; }
-  .weekday-row, .month-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
-  .weekday-row { border-bottom: 1px solid var(--border); }
-  .weekday-row span { padding: 9px 8px; color: var(--muted); text-align: right; font-family: var(--font-mono); font-size: 9px; letter-spacing: .08em; }
+  .month-heading h3 { margin: 0; font-family: var(--font-mono); font-size: clamp(24px, 2vw, 32px); font-weight: 580; line-height: 1.1; letter-spacing: -.025em; text-transform: uppercase; text-wrap: balance; }
+  .month-navigation { display: inline-flex; align-items: center; gap: 8px; }
+  .month-navigation .today-button { text-transform: uppercase; letter-spacing: .08em; }
+  .month-navigation .month-shift { flex: 0 0 44px; padding: 0; }
+  .month-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
   .month-grid > button { position: relative; min-width: 0; min-height: 112px; overflow: hidden; border: 0; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); background: transparent; padding: 8px; text-align: left; }
   .month-grid > button:nth-child(7n) { border-right: 0; }
   .month-grid > button:hover, .month-grid > button.selected { background: color-mix(in oklch, var(--fg) 6%, transparent); }
   .month-grid > button.outside { color: color-mix(in oklch, var(--muted) 55%, transparent); }
-  .day-number { position: absolute; top: 8px; right: 8px; display: grid; width: 24px; height: 24px; place-items: center; font-family: var(--font-mono); font-size: 10px; }
-  .today .day-number { background: var(--fg); color: var(--bg); }
-  .day-events { display: grid; gap: 4px; margin-top: 28px; }
+  .day-number { position: absolute; top: 8px; left: 8px; display: grid; width: 24px; height: 24px; place-items: center; font-family: var(--font-mono); font-size: 10px; }
+  .day-weekday { position: absolute; top: 11px; right: 10px; color: var(--muted); font-family: var(--font-mono); font-size: 9px; font-weight: 620; letter-spacing: .08em; }
+  .today .day-number { background: var(--accent); color: var(--button-on-accent); font-weight: 700; }
+  .day-events { display: grid; gap: 4px; margin-top: 32px; }
   .event-pill { overflow: hidden; border-left: 2px solid var(--calendar-color); padding: 3px 5px; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); background: color-mix(in oklch, var(--calendar-color) 14%, transparent); font-family: var(--font-mono); font-size: 9px; }
   .event-pill.completed { text-decoration: line-through; }
   .day-events small { color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
@@ -705,5 +707,5 @@
   .calendar-dialog footer > button:not(.calendar-primary) { min-height: 44px; border: 1px solid var(--border); background: transparent; padding: 0 16px; }
   :focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
   @media (max-width: 1050px) { .calendar-layout { grid-template-columns: 1fr; } .calendar-sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-  @media (max-width: 720px) { .calendar-header { align-items: stretch; flex-direction: column; } .calendar-primary { justify-content: center; } .calendar-sidebar { grid-template-columns: 1fr; } .month-toolbar { align-items: stretch; flex-direction: column; gap: 12px; } .month-navigation { width: 100%; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); } .month-navigation button { padding-inline: 10px; } .month-grid > button { min-height: 72px; padding: 4px; } .event-pill { width: 6px; height: 6px; border: 0; border-radius: 50%; background: var(--calendar-color); padding: 0; font-size: 0; } .day-events { display: flex; } .day-events small { display: none; } .weekday-row span { text-align: center; } .color-picker-preview { grid-template-columns: auto minmax(0, 1fr); } .color-picker-preview > label { grid-column: 1; } .color-picker-preview input { grid-column: 2; } .color-presets { grid-template-columns: repeat(4, minmax(0, 1fr)); } .color-channels { grid-template-columns: 1fr; } }
+  @media (max-width: 720px) { .calendar-header { align-items: stretch; flex-direction: column; } .calendar-primary { justify-content: center; } .calendar-sidebar { grid-template-columns: 1fr; } .month-toolbar { align-items: stretch; flex-direction: column; gap: 12px; } .month-navigation { width: 100%; } .month-navigation .today-button { flex: 1; } .month-grid > button { min-height: 72px; padding: 4px; } .day-number { top: 6px; left: 5px; } .day-weekday { top: 9px; right: 6px; font-size: 8px; } .event-pill { width: 6px; height: 6px; border: 0; border-radius: 50%; background: var(--calendar-color); padding: 0; font-size: 0; } .day-events { display: flex; } .day-events small { display: none; } .color-picker-preview { grid-template-columns: auto minmax(0, 1fr); } .color-picker-preview > label { grid-column: 1; } .color-picker-preview input { grid-column: 2; } .color-presets { grid-template-columns: repeat(4, minmax(0, 1fr)); } .color-channels { grid-template-columns: 1fr; } }
 </style>

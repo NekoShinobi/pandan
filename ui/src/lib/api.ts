@@ -665,6 +665,7 @@ export interface CodingOwnedRepository {
   host: string;
   repository: string;
   url: string;
+  archived: boolean;
   open_pull_requests: number | null;
 }
 
@@ -877,6 +878,7 @@ export interface UserSettings {
   location: string;
   timezone: string;
   sidebar_timezones: string[];
+  calendar_week_start: "sunday" | "monday";
   temperature_unit: "celsius" | "fahrenheit";
   lines_default_visibility: LineVisibility;
   podcast_playback_rate: number;
@@ -965,7 +967,8 @@ export type NetworkAccessIntegration =
   | "coding"
   | "images"
   | "youtube"
-  | "widgets";
+  | "widgets"
+  | "jellyfin";
 
 export interface NetworkAccessRule {
   id: string;
@@ -977,6 +980,78 @@ export interface NetworkAccessRule {
   created_by_user_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface JellyfinStatus {
+  configured: boolean;
+  server_name: string | null;
+  connected: boolean;
+  jellyfin_username: string | null;
+  last_verified_at: string | null;
+  last_error: string | null;
+  secret_storage_enabled: boolean;
+}
+
+export interface JellyfinConfig {
+  configured: boolean;
+  base_url: string | null;
+  server_id: string | null;
+  server_name: string | null;
+  server_version: string | null;
+  secret_storage_enabled: boolean;
+}
+
+export interface JellyfinQuickConnect {
+  code: string;
+  expires_in_seconds: number;
+  approved: boolean;
+}
+
+export interface JellyfinMusicLibrary {
+  id: string;
+  name: string;
+}
+
+export interface JellyfinMusicItem {
+  id: string;
+  library_id: string;
+  kind: string;
+  name: string;
+  artist: string | null;
+  album: string | null;
+  album_id: string | null;
+  duration_seconds: number | null;
+  track_number: number | null;
+  disc_number: number | null;
+  production_year: number | null;
+  image_item_id: string | null;
+  image_tag: string | null;
+  is_favorite: boolean;
+  played: boolean;
+}
+
+export interface JellyfinMusicHome {
+  libraries: JellyfinMusicLibrary[];
+  recent: JellyfinMusicItem[];
+  albums: JellyfinMusicItem[];
+  artists: JellyfinMusicItem[];
+  playlists: JellyfinMusicItem[];
+}
+
+export interface JellyfinMusicItems {
+  items: JellyfinMusicItem[];
+  start: number;
+  total: number;
+}
+
+export type JellyfinMusicKind = "tracks" | "albums" | "artists" | "playlists";
+
+export interface JellyfinPlaybackUpdate {
+  library_id: string;
+  item_id: string;
+  position_seconds: number;
+  is_paused: boolean;
+  play_session_id?: string;
 }
 
 export interface SetupStatus {
@@ -1466,6 +1541,7 @@ export function updateUserSettings(input: {
   location: string;
   timezone: string;
   sidebar_timezones?: string[];
+  calendar_week_start?: UserSettings["calendar_week_start"];
   temperature_unit: UserSettings["temperature_unit"];
   lines_default_visibility: LineVisibility;
   podcast_playback_rate?: number;
@@ -1614,6 +1690,166 @@ export function updateAuthenticationSettings(input: {
 export function fetchNetworkAccessRules(): Promise<NetworkAccessRule[]> {
   return requestJson<NetworkAccessRule[]>("/api/admin/network-access", {
     credentials: "same-origin",
+  });
+}
+
+export function fetchJellyfinStatus(): Promise<JellyfinStatus> {
+  return requestJson<JellyfinStatus>("/api/jellyfin/status", {
+    credentials: "same-origin",
+  });
+}
+
+export function fetchJellyfinConfig(): Promise<JellyfinConfig> {
+  return requestJson<JellyfinConfig>("/api/jellyfin/config", {
+    credentials: "same-origin",
+  });
+}
+
+export function updateJellyfinConfig(baseUrl: string): Promise<JellyfinConfig> {
+  return requestJson<JellyfinConfig>("/api/jellyfin/config", {
+    method: "PUT",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ base_url: baseUrl }),
+  });
+}
+
+export function deleteJellyfinConfig(): Promise<void> {
+  return requestEmpty("/api/jellyfin/config", {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+
+export function initiateJellyfinQuickConnect(): Promise<JellyfinQuickConnect> {
+  return requestJson<JellyfinQuickConnect>("/api/jellyfin/link/quick-connect", {
+    method: "POST",
+    credentials: "same-origin",
+  });
+}
+
+export function pollJellyfinQuickConnect(): Promise<JellyfinQuickConnect> {
+  return requestJson<JellyfinQuickConnect>("/api/jellyfin/link/quick-connect", {
+    credentials: "same-origin",
+  });
+}
+
+export function linkJellyfinPassword(
+  username: string,
+  password: string,
+): Promise<void> {
+  return requestEmpty("/api/jellyfin/link/password", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export function verifyJellyfinLink(): Promise<void> {
+  return requestEmpty("/api/jellyfin/link/verify", {
+    method: "POST",
+    credentials: "same-origin",
+  });
+}
+
+export function unlinkJellyfin(): Promise<void> {
+  return requestEmpty("/api/jellyfin/link", {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+
+export function fetchJellyfinMusicHome(): Promise<JellyfinMusicHome> {
+  return requestJson<JellyfinMusicHome>("/api/jellyfin/music/home", {
+    credentials: "same-origin",
+  });
+}
+
+export function fetchJellyfinMusicItems(options: {
+  libraryId: string;
+  kind?: JellyfinMusicKind;
+  parentId?: string;
+  query?: string;
+  start?: number;
+  limit?: number;
+  sort?: "name" | "newest" | "year" | "track";
+}): Promise<JellyfinMusicItems> {
+  const params = new URLSearchParams({ library_id: options.libraryId });
+  if (options.kind) params.set("kind", options.kind);
+  if (options.parentId) params.set("parent_id", options.parentId);
+  if (options.query) params.set("query", options.query);
+  if (options.start !== undefined) params.set("start", String(options.start));
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.sort) params.set("sort", options.sort);
+  return requestJson<JellyfinMusicItems>(
+    `/api/jellyfin/music/items?${params.toString()}`,
+    { credentials: "same-origin" },
+  );
+}
+
+export function fetchJellyfinMusicItem(
+  itemId: string,
+  libraryId: string,
+): Promise<JellyfinMusicItem> {
+  const params = new URLSearchParams({ library_id: libraryId });
+  return requestJson<JellyfinMusicItem>(
+    `/api/jellyfin/music/items/${encodeURIComponent(itemId)}?${params.toString()}`,
+    { credentials: "same-origin" },
+  );
+}
+
+export function jellyfinMusicImageUrl(
+  itemId: string,
+  libraryId: string,
+  tag?: string | null,
+): string {
+  const params = new URLSearchParams({ library_id: libraryId });
+  if (tag) params.set("tag", tag);
+  return `/api/jellyfin/music/items/${encodeURIComponent(itemId)}/image?${params.toString()}`;
+}
+
+export function jellyfinMusicAudioUrl(
+  itemId: string,
+  libraryId: string,
+): string {
+  const params = new URLSearchParams({ library_id: libraryId });
+  return `/api/jellyfin/music/items/${encodeURIComponent(itemId)}/audio?${params.toString()}`;
+}
+
+export function startJellyfinPlayback(
+  update: JellyfinPlaybackUpdate,
+): Promise<{ play_session_id: string }> {
+  return requestJson<{ play_session_id: string }>(
+    "/api/jellyfin/music/playback/start",
+    {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(update),
+    },
+  );
+}
+
+export function updateJellyfinPlayback(
+  update: JellyfinPlaybackUpdate,
+): Promise<void> {
+  return requestEmpty("/api/jellyfin/music/playback/progress", {
+    method: "PUT",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+  });
+}
+
+export function stopJellyfinPlayback(
+  update: JellyfinPlaybackUpdate,
+): Promise<void> {
+  return requestEmpty("/api/jellyfin/music/playback/stop", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
   });
 }
 

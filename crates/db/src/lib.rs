@@ -1,5 +1,6 @@
 pub mod contact_queries;
 pub mod entities;
+pub mod jellyfin_queries;
 pub mod ntfy_queries;
 mod podcast_queries;
 pub mod queries;
@@ -199,6 +200,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "052_dashboard_bookmarks",
         include_str!("../migrations/052_dashboard_bookmarks.sql"),
     ),
+    (
+        "053_jellyfin_music",
+        include_str!("../migrations/053_jellyfin_music.sql"),
+    ),
+    (
+        "054_calendar_week_start",
+        include_str!("../migrations/054_calendar_week_start.sql"),
+    ),
 ];
 
 /// Maps migration names used by earlier development builds to their canonical names.
@@ -353,6 +362,118 @@ mod tests {
             usize::try_from(count).expect("migration count fits usize"),
             MIGRATIONS.len()
         );
+    }
+
+    #[tokio::test]
+    async fn calendar_week_start_defaults_to_sunday_and_rejects_invalid_values() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (user, settings) = queries::create_account(
+            &pool,
+            "calendar-week@example.com",
+            "$argon2id$calendar-week",
+            "Calendar Week",
+        )
+        .await
+        .expect("account creates");
+
+        assert_eq!(settings.calendar_week_start, "sunday");
+        let stored: String =
+            sqlx::query_scalar("SELECT calendar_week_start FROM user_settings WHERE user_id = ?")
+                .bind(&user.id)
+                .fetch_one(&pool)
+                .await
+                .expect("week start loads");
+        assert_eq!(stored, "sunday");
+
+        let invalid = sqlx::query(
+            "UPDATE user_settings SET calendar_week_start = 'saturday' WHERE user_id = ?",
+        )
+        .bind(&user.id)
+        .execute(&pool)
+        .await;
+        assert!(invalid.is_err());
+    }
+
+    #[tokio::test]
+    async fn jellyfin_connections_are_account_scoped_and_server_bound() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (owner, _) = queries::create_account(
+            &pool,
+            "jellyfin-owner@example.com",
+            "$argon2id$jellyfin-owner",
+            "Jellyfin Owner",
+        )
+        .await
+        .expect("owner creates");
+        let (other, _) = queries::create_account(
+            &pool,
+            "jellyfin-other@example.com",
+            "$argon2id$jellyfin-other",
+            "Jellyfin Other",
+        )
+        .await
+        .expect("other creates");
+
+        jellyfin_queries::replace_jellyfin_server_settings(
+            &pool,
+            "https://media.example/jellyfin/",
+            "server-one",
+            "Living room",
+            "10.11.11",
+            &owner.id,
+        )
+        .await
+        .expect("server saves");
+        let connection = jellyfin_queries::upsert_jellyfin_user_connection(
+            &pool,
+            &owner.id,
+            "jellyfin-user",
+            "listener",
+            "encrypted-token",
+            "pandan-device",
+        )
+        .await
+        .expect("connection saves");
+        assert_eq!(connection.user_id, owner.id);
+        assert!(
+            jellyfin_queries::get_jellyfin_user_connection(&pool, &other.id)
+                .await
+                .expect("other lookup completes")
+                .is_none()
+        );
+
+        jellyfin_queries::replace_jellyfin_server_settings(
+            &pool,
+            "https://new-media.example/",
+            "server-two",
+            "Studio",
+            "10.11.11",
+            &owner.id,
+        )
+        .await
+        .expect("replacement server saves");
+        assert!(
+            jellyfin_queries::get_jellyfin_user_connection(&pool, &owner.id)
+                .await
+                .expect("old connection lookup completes")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn network_policy_schema_accepts_jellyfin_scope() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        sqlx::query(
+            "INSERT INTO network_access_rules (
+                 id, action, scheme, host, port, integration, created_at, updated_at
+             ) VALUES (?, 'allow', 'https', 'media.example', 443, 'jellyfin', ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("Jellyfin network scope inserts");
     }
 
     #[tokio::test]

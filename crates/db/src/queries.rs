@@ -86,6 +86,7 @@ struct UserSettingsRecord {
     location: String,
     timezone: String,
     sidebar_timezones_json: String,
+    calendar_week_start: String,
     temperature_unit: String,
     lines_default_visibility: String,
     podcast_playback_rate: f64,
@@ -105,6 +106,7 @@ impl UserSettingsRecord {
             location: self.location,
             timezone: self.timezone,
             sidebar_timezones,
+            calendar_week_start: self.calendar_week_start,
             temperature_unit: self.temperature_unit,
             lines_default_visibility: self.lines_default_visibility,
             podcast_playback_rate: self.podcast_playback_rate,
@@ -3675,6 +3677,7 @@ pub async fn create_account(
             location: "London".to_owned(),
             timezone: "UTC".to_owned(),
             sidebar_timezones: vec!["UTC".to_owned()],
+            calendar_week_start: "sunday".to_owned(),
             temperature_unit: "celsius".to_owned(),
             lines_default_visibility: "private".to_owned(),
             podcast_playback_rate: 1.0,
@@ -3744,7 +3747,8 @@ pub async fn find_session_account(
     sqlx::query_as::<_, SessionAccount>(
         "SELECT users.id, users.email, users.role, users.created_at, \
                 user_settings.display_name, user_settings.location, user_settings.timezone, \
-                user_settings.sidebar_timezones_json, user_settings.temperature_unit, \
+                user_settings.sidebar_timezones_json, user_settings.calendar_week_start, \
+                user_settings.temperature_unit, \
                 user_settings.lines_default_visibility, \
                 user_settings.podcast_playback_rate, \
                 user_settings.updated_at AS settings_updated_at \
@@ -3784,6 +3788,7 @@ pub async fn update_user_settings(
     location: &str,
     timezone: &str,
     sidebar_timezones_json: &str,
+    calendar_week_start: &str,
     temperature_unit: &str,
     lines_default_visibility: &str,
     podcast_playback_rate: f64,
@@ -3791,13 +3796,15 @@ pub async fn update_user_settings(
     let updated_at = chrono::Utc::now().to_rfc3339();
     sqlx::query(
         "UPDATE user_settings SET display_name = ?, location = ?, timezone = ?, \
-         sidebar_timezones_json = ?, temperature_unit = ?, lines_default_visibility = ?, \
+         sidebar_timezones_json = ?, calendar_week_start = ?, temperature_unit = ?, \
+         lines_default_visibility = ?, \
          podcast_playback_rate = ?, updated_at = ? WHERE user_id = ?",
     )
     .bind(display_name)
     .bind(location)
     .bind(timezone)
     .bind(sidebar_timezones_json)
+    .bind(calendar_week_start)
     .bind(temperature_unit)
     .bind(lines_default_visibility)
     .bind(podcast_playback_rate)
@@ -3808,7 +3815,8 @@ pub async fn update_user_settings(
 
     sqlx::query_as::<_, UserSettingsRecord>(
         "SELECT user_id, display_name, location, timezone, sidebar_timezones_json, \
-                temperature_unit, lines_default_visibility, podcast_playback_rate, updated_at \
+                calendar_week_start, temperature_unit, lines_default_visibility, \
+                podcast_playback_rate, updated_at \
          FROM user_settings WHERE user_id = ?",
     )
     .bind(user_id)
@@ -4886,6 +4894,7 @@ async fn insert_initial_administrator(
             location: "London".to_owned(),
             timezone: "UTC".to_owned(),
             sidebar_timezones: vec!["UTC".to_owned()],
+            calendar_week_start: "sunday".to_owned(),
             temperature_unit: "celsius".to_owned(),
             lines_default_visibility: "private".to_owned(),
             podcast_playback_rate: 1.0,

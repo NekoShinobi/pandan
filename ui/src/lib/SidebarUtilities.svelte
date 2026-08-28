@@ -4,6 +4,8 @@
   import CloudLightning from "lucide-svelte/icons/cloud-lightning";
   import CloudRain from "lucide-svelte/icons/cloud-rain";
   import CloudSun from "lucide-svelte/icons/cloud-sun";
+  import ChevronDown from "lucide-svelte/icons/chevron-down";
+  import ChevronUp from "lucide-svelte/icons/chevron-up";
   import MapPin from "lucide-svelte/icons/map-pin";
   import Settings2 from "lucide-svelte/icons/settings-2";
   import Snowflake from "lucide-svelte/icons/snowflake";
@@ -24,6 +26,11 @@
     unit: TemperatureUnit;
   }
 
+  interface TimezoneGroup {
+    label: string;
+    timezones: string[];
+  }
+
   let {
     settings,
     onToast,
@@ -40,7 +47,9 @@
   let weatherError = $state("");
   let weatherLoading = $state(false);
   let now = $state(new Date());
-  let draftZones = $state("");
+  let availableTimezones = $state<string[]>(["UTC"]);
+  let draftTimezones = $state<string[]>([]);
+  let draftTimezoneChoice = $state("");
   let draftUnit = $state<TemperatureUnit>("celsius");
   let formError = $state("");
   let saving = $state(false);
@@ -53,7 +62,9 @@
   let SidebarWeatherIcon = $derived(
     weatherIcon(weather?.current.weatherCode ?? 0),
   );
+  let timezoneGroups = $derived(groupTimezones(availableTimezones));
   onMount(() => {
+    availableTimezones = supportedTimezoneNames();
     const hasLegacyPreferences = localStorage.getItem(storageKey()) !== null;
     const saved = readPreferences();
     timezones = saved.timezones;
@@ -108,7 +119,8 @@
   }
 
   function openSettings() {
-    draftZones = timezones.join("\n");
+    draftTimezones = [...timezones];
+    draftTimezoneChoice = "";
     draftUnit = unit;
     formError = "";
     utilityDialog?.showModal();
@@ -142,14 +154,7 @@
   async function saveSettings(event: SubmitEvent) {
     event.preventDefault();
     if (saving) return;
-    const nextZones = [
-      ...new Set(
-        draftZones
-          .split(/[\n,]/)
-          .map((value) => value.trim())
-          .filter(Boolean),
-      ),
-    ];
+    const nextZones = [...new Set(draftTimezones)];
     if (nextZones.length === 0) {
       formError = "Add at least one IANA timezone.";
       return;
@@ -233,6 +238,66 @@
     } catch {
       return false;
     }
+  }
+
+  function supportedTimezoneNames() {
+    const timezoneIntl = Intl as typeof Intl & {
+      supportedValuesOf?: (key: "timeZone") => string[];
+    };
+    const supported = timezoneIntl.supportedValuesOf?.("timeZone") ?? [];
+    return [...new Set(["UTC", ...supported])].sort((left, right) =>
+      left.localeCompare(right),
+    );
+  }
+
+  function groupTimezones(values: string[]): TimezoneGroup[] {
+    const groups: Record<string, string[]> = {};
+    for (const timezone of values) {
+      const label = timezone.includes("/")
+        ? (timezone.split("/")[0] ?? "Other")
+        : "Universal";
+      groups[label] = [...(groups[label] ?? []), timezone];
+    }
+    return Object.entries(groups)
+      .sort(([left], [right]) => {
+        if (left === "Universal") return -1;
+        if (right === "Universal") return 1;
+        return left.localeCompare(right);
+      })
+      .map(([label, timezones]) => ({ label, timezones }));
+  }
+
+  function addDraftTimezone(event: Event) {
+    const select = event.currentTarget as HTMLSelectElement;
+    const timezone = select.value;
+    if (!timezone) return;
+    if (draftTimezones.includes(timezone)) {
+      formError = `${timezone} is already selected.`;
+    } else if (draftTimezones.length >= 5) {
+      formError = "The sidebar clock supports up to five timezones.";
+    } else {
+      draftTimezones = [...draftTimezones, timezone];
+      formError = "";
+    }
+    draftTimezoneChoice = "";
+  }
+
+  function removeDraftTimezone(timezone: string) {
+    if (draftTimezones.length === 1) return;
+    draftTimezones = draftTimezones.filter((value) => value !== timezone);
+    formError = "";
+  }
+
+  function moveDraftTimezone(index: number, offset: -1 | 1) {
+    const target = index + offset;
+    if (target < 0 || target >= draftTimezones.length) return;
+    const reordered = [...draftTimezones];
+    [reordered[index], reordered[target]] = [
+      reordered[target],
+      reordered[index],
+    ];
+    draftTimezones = reordered;
+    formError = "";
   }
 
   function formatTime(timezone: string) {
@@ -355,15 +420,74 @@
     </button>
   </div>
   <form class="settings-form sidebar-utility-form" onsubmit={saveSettings}>
-    <label for="sidebar-timezones">IANA timezones</label>
-    <textarea
-      id="sidebar-timezones"
-      class="text-input"
-      bind:value={draftZones}
-      rows="5"
-      placeholder="America/New_York&#10;Europe/London"></textarea>
-    <p class="field-note">
-      One per line, up to five. Examples: Asia/Tokyo, Europe/Paris.
+    <label for="sidebar-timezone-select">Add timezone</label>
+    <select
+      id="sidebar-timezone-select"
+      class="select-input"
+      bind:value={draftTimezoneChoice}
+      onchange={addDraftTimezone}
+      disabled={draftTimezones.length >= 5}
+      aria-describedby="sidebar-timezone-note"
+      data-od-id="sidebar-timezone-select"
+    >
+      <option value="">Choose a standardized timezone…</option>
+      {#each timezoneGroups as group (group.label)}
+        <optgroup label={group.label}>
+          {#each group.timezones as timezone (timezone)}
+            <option
+              value={timezone}
+              disabled={draftTimezones.includes(timezone)}>{timezone}</option
+            >
+          {/each}
+        </optgroup>
+      {/each}
+    </select>
+    <div class="timezone-selection-list" aria-label="Selected timezones">
+      {#each draftTimezones as timezone, index (timezone)}
+        <div class="timezone-selection-row">
+          <span>
+            <strong>{timezone}</strong>
+            <small
+              >{index === 0
+                ? "Dashboard Local.Time · first sidebar clock"
+                : `Sidebar clock ${index + 1}`}</small
+            >
+          </span>
+          <div class="timezone-selection-actions">
+            <button
+              class="ui-button ui-button--ghost ui-button--icon"
+              type="button"
+              aria-label={`Move ${timezone} up`}
+              disabled={index === 0}
+              onclick={() => moveDraftTimezone(index, -1)}
+            >
+              <ChevronUp size={16} strokeWidth={1.8} aria-hidden="true" />
+            </button>
+            <button
+              class="ui-button ui-button--ghost ui-button--icon"
+              type="button"
+              aria-label={`Move ${timezone} down`}
+              disabled={index === draftTimezones.length - 1}
+              onclick={() => moveDraftTimezone(index, 1)}
+            >
+              <ChevronDown size={16} strokeWidth={1.8} aria-hidden="true" />
+            </button>
+            <button
+              class="ui-button ui-button--ghost ui-button--icon"
+              type="button"
+              aria-label={`Remove ${timezone}`}
+              disabled={draftTimezones.length === 1}
+              onclick={() => removeDraftTimezone(timezone)}
+            >
+              <X size={16} strokeWidth={1.8} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      {/each}
+    </div>
+    <p id="sidebar-timezone-note" class="field-note">
+      Choose up to five IANA timezones. The first timezone also drives the
+      Dashboard Local.Time clock.
     </p>
     <p class="field-note">
       Weather uses <strong>{settings.location}</strong>. Change this in User
@@ -512,6 +636,53 @@
     gap: 10px;
     overflow-y: auto;
     padding: 22px 24px 24px;
+  }
+
+  .timezone-selection-list {
+    display: grid;
+    gap: 6px;
+  }
+
+  .timezone-selection-row {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    min-height: 58px;
+    padding: 6px 8px 6px 12px;
+    border: 1px solid var(--border);
+    background: color-mix(in oklch, var(--surface) 86%, transparent);
+  }
+
+  .timezone-selection-row > span {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+
+  .timezone-selection-row strong,
+  .timezone-selection-row small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .timezone-selection-row strong {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 550;
+  }
+
+  .timezone-selection-row small {
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.01em;
+  }
+
+  .timezone-selection-actions {
+    display: flex;
+    gap: 2px;
   }
 
   .sidebar-utility-actions {

@@ -23,6 +23,7 @@
     { value: "images", label: "Remote profile images" },
     { value: "youtube", label: "YouTube and Invidious" },
     { value: "widgets", label: "Other remote widgets" },
+    { value: "jellyfin", label: "Jellyfin music" },
   ];
 
   let rules = $state.raw<NetworkAccessRule[]>([]);

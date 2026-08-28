@@ -59,13 +59,50 @@ consult this table.
 | `scheme`             | TEXT    | Required, `http` or `https`                                        |
 | `host`               | TEXT    | Required normalized hostname or IP, 1–253 characters               |
 | `port`               | INTEGER | Required, 1–65,535                                                 |
-| `integration`        | TEXT    | `all`, `rss`, `calendar`, `contacts`, `podcasts`, `notifications`, `coding`, `images`, `youtube`, or `widgets` |
+| `integration`        | TEXT    | `all`, `rss`, `calendar`, `contacts`, `podcasts`, `notifications`, `coding`, `images`, `youtube`, `widgets`, or `jellyfin` |
 | `created_by_user_id` | TEXT    | Optional administrator audit reference, set null on account delete |
 | `created_at`         | TEXT    | Required, RFC 3339 timestamp                                       |
 | `updated_at`         | TEXT    | Required, RFC 3339 timestamp                                       |
 
 The action, scheme, host, port, and integration tuple is unique. Instances are limited to 128 rows
 by the API.
+
+## `jellyfin_server_settings`
+
+Administrator-selected singleton Jellyfin server. Saving a different server deletes the old
+singleton first, so the foreign key on every account connection invalidates old tokens atomically.
+The base URL is non-secret but is returned only by administrator APIs.
+
+| Column                  | Type    | Constraints                                              |
+| ----------------------- | ------- | -------------------------------------------------------- |
+| `id`                    | INTEGER | Primary key; singleton value `1`                         |
+| `base_url`              | TEXT    | Required normalized HTTP(S) base URL, 8–2,000 characters |
+| `server_id`             | TEXT    | Required Jellyfin server identity, 1–128 characters      |
+| `server_name`           | TEXT    | Required display name, 1–120 characters                  |
+| `server_version`        | TEXT    | Required upstream version, 1–64 characters               |
+| `configured_by_user_id` | TEXT    | Optional administrator reference, set null on delete     |
+| `created_at`            | TEXT    | Required, RFC 3339 timestamp                             |
+| `updated_at`            | TEXT    | Required, RFC 3339 timestamp                             |
+
+## `jellyfin_user_connections`
+
+Private one-to-one mapping from a Pandan account to its own Jellyfin identity. The access token is
+encrypted with the same XChaCha20-Poly1305 credential cipher as other provider secrets and is never
+returned through the browser API. Deleting an account or replacing/removing the singleton server
+cascades the row.
+
+| Column                | Type    | Constraints                                               |
+| --------------------- | ------- | --------------------------------------------------------- |
+| `user_id`             | TEXT    | Primary key, references `users` with cascade delete       |
+| `server_setting_id`   | INTEGER | Required singleton value `1`, cascades on server delete   |
+| `jellyfin_user_id`    | TEXT    | Required upstream user identity, 1–128 characters         |
+| `jellyfin_username`   | TEXT    | Required upstream display name, 1–120 characters          |
+| `token_ciphertext`    | TEXT    | Required encrypted token, 1–8,192 characters              |
+| `device_id`           | TEXT    | Required stable Pandan device identity, 1–128 characters  |
+| `last_verified_at`    | TEXT    | Optional RFC 3339 timestamp                               |
+| `last_error`          | TEXT    | Optional bounded user-safe error, at most 500 characters  |
+| `created_at`          | TEXT    | Required, RFC 3339 timestamp                              |
+| `updated_at`          | TEXT    | Required, RFC 3339 timestamp                              |
 
 ## `users`
 
@@ -106,6 +143,7 @@ One preference record per user.
 | `location`                | TEXT | Required, trimmed length 1–80                       |
 | `timezone`                | TEXT | Required, trimmed length 1–80                       |
 | `sidebar_timezones_json`  | TEXT | Valid JSON array containing 1–5 timezone names      |
+| `calendar_week_start`     | TEXT | `sunday` or `monday`; defaults to `sunday`          |
 | `temperature_unit`        | TEXT | `celsius` or `fahrenheit`                           |
 | `lines_default_visibility`| TEXT | `private` or `public`; defaults to `private`        |
 | `podcast_playback_rate`   | REAL | 0.5–3.0; defaults to 1.0                            |

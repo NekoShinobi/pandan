@@ -1,6 +1,12 @@
 import {
+  jellyfinMusicAudioUrl,
+  jellyfinMusicImageUrl,
   podcastAudioUrl,
   savePodcastProgress,
+  startJellyfinPlayback,
+  stopJellyfinPlayback,
+  updateJellyfinPlayback,
+  type JellyfinMusicItem,
   type PodcastEpisode,
 } from "$lib/api";
 
@@ -39,6 +45,7 @@ export const MAX_PLAYBACK_VOLUME = MAX_VOLUME;
 
 class PodcastPlayer {
   episode = $state<PodcastEpisode | null>(null);
+  track = $state<JellyfinMusicItem | null>(null);
   playing = $state(false);
   currentTime = $state(0);
   duration = $state(0);
@@ -51,6 +58,10 @@ class PodcastPlayer {
   upNext = $state<PodcastEpisode[]>([]);
   /** Episodes already stepped past in this run, oldest first, so playback can go back. */
   played = $state<PodcastEpisode[]>([]);
+  /** Jellyfin tracks queued behind the current track. */
+  musicUpNext = $state<JellyfinMusicItem[]>([]);
+  /** Jellyfin tracks already heard in this run, oldest first. */
+  musicPlayed = $state<JellyfinMusicItem[]>([]);
 
   #element: HTMLAudioElement | null = null;
   #lastWrittenAt = 0;
@@ -68,6 +79,8 @@ class PodcastPlayer {
    * and has to adopt the reloaded record that finally carries a duration.
    */
   #loadedEpisodeId = "";
+  #loadedMusicKey = "";
+  #musicPlaySessionId = "";
   /**
    * The boost graph, built only once a level above 100% is asked for.
    *
@@ -93,20 +106,49 @@ class PodcastPlayer {
   }
 
   get isReady(): boolean {
-    return this.episode?.download_status === "ready";
+    return this.track !== null || this.episode?.download_status === "ready";
   }
 
   /** True when the element's source matches the current episode, so `toggle()` resumes it. */
   get isLoaded(): boolean {
+    if (this.track) return this.#loadedMusicKey === musicKey(this.track);
     return this.episode !== null && this.#loadedEpisodeId === this.episode.id;
   }
 
   get hasNext(): boolean {
-    return this.upNext.length > 0;
+    return this.track ? this.musicUpNext.length > 0 : this.upNext.length > 0;
   }
 
   get hasPrevious(): boolean {
-    return this.played.length > 0;
+    return this.track ? this.musicPlayed.length > 0 : this.played.length > 0;
+  }
+
+  get source(): "podcast" | "jellyfin" | null {
+    if (this.track) return "jellyfin";
+    if (this.episode) return "podcast";
+    return null;
+  }
+
+  get title(): string {
+    return this.track?.name ?? this.episode?.title ?? "";
+  }
+
+  get subtitle(): string {
+    if (this.track) {
+      return [this.track.artist, this.track.album].filter(Boolean).join(" · ");
+    }
+    return this.episode?.podcast_title ?? "";
+  }
+
+  get artworkUrl(): string {
+    if (this.track?.image_item_id) {
+      return jellyfinMusicImageUrl(
+        this.track.image_item_id,
+        this.track.library_id,
+        this.track.image_tag,
+      );
+    }
+    return this.episode ? `/api/podcasts/${this.episode.podcast_id}/artwork` : "";
   }
 
   /** The level the listener actually hears, for the slider and the volume icon. */
@@ -131,13 +173,20 @@ class PodcastPlayer {
     this.upNext = upNext.filter((item) => item.id !== episode.id);
     this.played = played.filter((item) => item.id !== episode.id);
 
-    const switching = this.episode?.id !== episode.id;
-    if (switching) await this.#flush();
+    const switching = this.episode?.id !== episode.id || this.track !== null;
+    if (switching) {
+      await this.#flush(true);
+      await this.#stopMusic();
+    }
 
     // Adopt the caller's record even for the episode already on screen: a row re-read
     // after its download finished carries the real duration and a `ready` status that the
     // copy captured before the transfer does not.
     this.episode = episode;
+    this.track = null;
+    this.musicUpNext = [];
+    this.musicPlayed = [];
+    this.#loadedMusicKey = "";
 
     if (switching || this.#loadedEpisodeId !== episode.id) {
       // Reloading the episode already on screen keeps whatever is known live. An error
@@ -166,6 +215,7 @@ class PodcastPlayer {
       // gets its audio graph.
       this.#applyVolume();
       await element.play();
+      this.#setMediaSession();
     } catch {
       this.error = "This episode could not be played.";
       this.playing = false;
@@ -174,23 +224,141 @@ class PodcastPlayer {
     }
   }
 
+  /** Starts a Jellyfin audio item through Pandan's authenticated live proxy. */
+  async playMusic(
+    track: JellyfinMusicItem,
+    upNext: JellyfinMusicItem[] = [],
+    played: JellyfinMusicItem[] = [],
+  ) {
+    const element = this.#element;
+    if (!element) return;
+    const key = musicKey(track);
+    const switching = this.#loadedMusicKey !== key || this.episode !== null;
+    this.error = "";
+    this.musicUpNext = upNext.filter((item) => musicKey(item) !== key);
+    this.musicPlayed = played.filter((item) => musicKey(item) !== key);
+
+    if (switching) {
+      await this.#flush(true);
+      await this.#stopMusic();
+    }
+
+    this.track = track;
+    this.episode = null;
+    this.upNext = [];
+    this.played = [];
+    this.playbackRate = 1;
+    element.playbackRate = 1;
+
+    if (switching) {
+      this.currentTime = 0;
+      this.duration = track.duration_seconds ?? 0;
+      this.#lastWrittenPosition = -1;
+      this.#resumeTo = 0;
+      this.#restoring = false;
+      this.#loadedEpisodeId = "";
+      this.#loadedMusicKey = key;
+      this.#musicPlaySessionId = "";
+      element.src = jellyfinMusicAudioUrl(track.id, track.library_id);
+      element.load();
+    }
+
+    try {
+      this.buffering = true;
+      this.#applyVolume();
+      await element.play();
+      this.#setMediaSession();
+      if (!this.#musicPlaySessionId) void this.#startMusicReport(track, key);
+    } catch {
+      this.error = "This track could not be played.";
+      this.playing = false;
+    } finally {
+      this.buffering = false;
+    }
+  }
+
+  isMusicQueued(track: JellyfinMusicItem): boolean {
+    const key = musicKey(track);
+    return this.musicUpNext.some((item) => musicKey(item) === key);
+  }
+
+  queueMusic(track: JellyfinMusicItem): boolean {
+    if (this.isMusicQueued(track)) return false;
+    this.musicUpNext = [...this.musicUpNext, track];
+    return true;
+  }
+
+  removeQueuedMusic(track: JellyfinMusicItem): boolean {
+    const key = musicKey(track);
+    const next = this.musicUpNext.filter((item) => musicKey(item) !== key);
+    if (next.length === this.musicUpNext.length) return false;
+    this.musicUpNext = next;
+    return true;
+  }
+
+  moveQueuedMusic(track: JellyfinMusicItem, offset: -1 | 1): boolean {
+    const index = this.musicUpNext.findIndex(
+      (item) => musicKey(item) === musicKey(track),
+    );
+    const target = index + offset;
+    if (index < 0 || target < 0 || target >= this.musicUpNext.length) {
+      return false;
+    }
+    const next = [...this.musicUpNext];
+    [next[index], next[target]] = [next[target], next[index]];
+    this.musicUpNext = next;
+    return true;
+  }
+
+  clearMusicQueue() {
+    this.musicUpNext = [];
+  }
+
+  async playQueuedMusic(track: JellyfinMusicItem) {
+    const index = this.musicUpNext.findIndex(
+      (item) => musicKey(item) === musicKey(track),
+    );
+    if (index < 0) return;
+    const next = this.musicUpNext[index];
+    if (!next) return;
+    const remaining = this.musicUpNext.filter(
+      (_, itemIndex) => itemIndex !== index,
+    );
+    const current = this.track;
+    await this.playMusic(
+      next,
+      remaining,
+      current ? [...this.musicPlayed, current] : this.musicPlayed,
+    );
+  }
+
   async toggle() {
     const element = this.#element;
-    if (!element || !this.episode) return;
+    if (!element || (!this.episode && !this.track)) return;
     if (element.paused) {
       try {
         await element.play();
+        if (this.track) void this.#writeMusic("progress", true);
       } catch {
-        this.error = "This episode could not be played.";
+        this.error = this.track
+          ? "This track could not be played."
+          : "This episode could not be played.";
       }
     } else {
       element.pause();
-      await this.#flush();
+      await this.#flush(true);
     }
   }
 
   /** Advances to the next queued episode, keeping the current one reachable by going back. */
   async playNext() {
+    if (this.track) {
+      const [next, ...rest] = this.musicUpNext;
+      if (!next) return;
+      const current = this.track;
+      await this.playMusic(next, rest, [...this.musicPlayed, current]);
+      return;
+    }
     const [next, ...rest] = this.upNext;
     if (!next) return;
     const current = this.episode;
@@ -212,6 +380,17 @@ class PodcastPlayer {
       this.seek(0);
       return;
     }
+    if (this.track) {
+      const played = [...this.musicPlayed];
+      const prior = played.pop();
+      if (!prior) {
+        this.seek(0);
+        return;
+      }
+      const current = this.track;
+      await this.playMusic(prior, [current, ...this.musicUpNext], played);
+      return;
+    }
     const played = [...this.played];
     const prior = played.pop();
     if (!prior) {
@@ -228,11 +407,11 @@ class PodcastPlayer {
 
   seek(seconds: number) {
     const element = this.#element;
-    if (!element || !this.episode) return;
+    if (!element || (!this.episode && !this.track)) return;
     const bounded = Math.min(Math.max(seconds, 0), this.duration || seconds);
     element.currentTime = bounded;
     this.currentTime = bounded;
-    void this.#flush();
+    void this.#flush(true);
   }
 
   skip(seconds: number) {
@@ -263,19 +442,25 @@ class PodcastPlayer {
   /** Stops playback and releases the element without writing a completion. */
   async close() {
     const element = this.#element;
-    await this.#flush();
+    await this.#flush(true);
+    await this.#stopMusic();
     if (element) {
       element.pause();
       element.removeAttribute("src");
       element.load();
     }
     this.episode = null;
+    this.track = null;
     this.playing = false;
     this.currentTime = 0;
     this.duration = 0;
     this.upNext = [];
     this.played = [];
+    this.musicUpNext = [];
+    this.musicPlayed = [];
     this.#loadedEpisodeId = "";
+    this.#loadedMusicKey = "";
+    if ("mediaSession" in navigator) navigator.mediaSession.metadata = null;
   }
 
   // --- element event handlers, wired up by the shell -------------------------
@@ -283,10 +468,12 @@ class PodcastPlayer {
   handlePlay() {
     this.playing = true;
     this.error = "";
+    if (this.track) void this.#writeMusic("progress", true);
   }
 
   handlePause() {
     this.playing = false;
+    if (this.track) void this.#writeMusic("progress", true);
   }
 
   handleLoadedMetadata() {
@@ -340,13 +527,24 @@ class PodcastPlayer {
     this.playing = false;
     this.buffering = false;
     // The source is unusable, so a retry has to reload rather than resume it.
-    this.#loadedEpisodeId = "";
-    this.error =
-      "This episode is not available on this instance yet. Download it first.";
+    if (this.track) {
+      this.#loadedMusicKey = "";
+      this.error = "This track could not be streamed from Jellyfin.";
+    } else {
+      this.#loadedEpisodeId = "";
+      this.error =
+        "This episode is not available on this instance yet. Download it first.";
+    }
   }
 
   /** Marks the episode finished and advances to whatever is queued behind it. */
   async handleEnded() {
+    if (this.track) {
+      this.playing = false;
+      await this.#stopMusic();
+      await this.playNext();
+      return;
+    }
     const finished = this.episode;
     this.playing = false;
     if (finished) {
@@ -366,7 +564,7 @@ class PodcastPlayer {
    * than the interval's worth of progress.
    */
   async flushNow() {
-    await this.#flush();
+    await this.#flush(true);
   }
 
   #applyVolume(allowGraph = true) {
@@ -406,7 +604,11 @@ class PodcastPlayer {
     }
   }
 
-  async #flush() {
+  async #flush(force = false) {
+    if (this.track) {
+      await this.#writeMusic("progress", force);
+      return;
+    }
     const episode = this.episode;
     if (!episode) return;
     const position = Math.round(this.currentTime);
@@ -426,6 +628,97 @@ class PodcastPlayer {
       // interval will carry the position forward.
     }
   }
+
+  async #startMusicReport(track: JellyfinMusicItem, key: string) {
+    try {
+      const response = await startJellyfinPlayback({
+        library_id: track.library_id,
+        item_id: track.id,
+        position_seconds: this.currentTime,
+        is_paused: false,
+      });
+      if (this.track && musicKey(this.track) === key) {
+        this.#musicPlaySessionId = response.play_session_id;
+        this.#lastWrittenAt = Date.now();
+        this.#lastWrittenPosition = Math.round(this.currentTime);
+      }
+    } catch {
+      // Reporting is best effort; it never interrupts audio.
+    }
+  }
+
+  async #writeMusic(mode: "progress" | "stop", force = false) {
+    const track = this.track;
+    const playSessionId = this.#musicPlaySessionId;
+    if (!track || !playSessionId) return;
+    const position = Math.round(this.currentTime);
+    if (!force && position === this.#lastWrittenPosition) return;
+    this.#lastWrittenAt = Date.now();
+    this.#lastWrittenPosition = position;
+    const update = {
+      library_id: track.library_id,
+      item_id: track.id,
+      position_seconds: this.currentTime,
+      is_paused: !this.playing,
+      play_session_id: playSessionId,
+    };
+    try {
+      if (mode === "stop") await stopJellyfinPlayback(update);
+      else await updateJellyfinPlayback(update);
+    } catch {
+      // Reporting is best effort; the next interval can recover.
+    }
+  }
+
+  async #stopMusic() {
+    if (!this.track || !this.#musicPlaySessionId) return;
+    await this.#writeMusic("stop", true);
+    this.#musicPlaySessionId = "";
+  }
+
+  #setMediaSession() {
+    if (!("mediaSession" in navigator) || typeof MediaMetadata !== "function") {
+      return;
+    }
+    const artwork = this.artworkUrl;
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: this.title,
+      artist: this.subtitle,
+      album: this.track?.album ?? this.episode?.podcast_title ?? "",
+      artwork: artwork ? [{ src: artwork }] : [],
+    });
+    const handlers: Array<[MediaSessionAction, MediaSessionActionHandler]> = [
+      ["play", () => void this.toggle()],
+      ["pause", () => void this.toggle()],
+      ["previoustrack", () => void this.playPrevious()],
+      ["nexttrack", () => void this.playNext()],
+      [
+        "seekbackward",
+        (details) => this.skip(-(details.seekOffset ?? SKIP_BACK_SECONDS)),
+      ],
+      [
+        "seekforward",
+        (details) => this.skip(details.seekOffset ?? SKIP_FORWARD_SECONDS),
+      ],
+      [
+        "seekto",
+        (details) => {
+          if (details.seekTime !== undefined) this.seek(details.seekTime);
+        },
+      ],
+    ];
+    for (const [action, handler] of handlers) {
+      try {
+        navigator.mediaSession.setActionHandler(action, handler);
+      } catch {
+        // Browsers expose different subsets of the Media Session actions.
+      }
+    }
+  }
+}
+
+function musicKey(track: JellyfinMusicItem): string {
+  return `${track.library_id}:${track.id}`;
 }
 
 function readStoredVolume(): number {

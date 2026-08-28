@@ -1,12 +1,10 @@
 <script lang="ts">
   import ArrowDown from "lucide-svelte/icons/arrow-down";
   import ArrowUp from "lucide-svelte/icons/arrow-up";
-  import ChevronLeft from "lucide-svelte/icons/chevron-left";
   import PanelTop from "lucide-svelte/icons/panel-top";
   import Pencil from "lucide-svelte/icons/pencil";
   import Plus from "lucide-svelte/icons/plus";
   import Trash2 from "lucide-svelte/icons/trash-2";
-  import X from "lucide-svelte/icons/x";
   import {
     createGlobalEmbeddedPage,
     createPersonalEmbeddedPage,
@@ -30,8 +28,6 @@
     isAdministrator: boolean;
     onPagesChange: (pages: EmbeddedPagesResponse) => void;
     onPageDeleted: (pageId: string) => void;
-    onClose: () => void;
-    onBack: () => void;
   };
 
   let {
@@ -39,12 +35,8 @@
     isAdministrator,
     onPagesChange,
     onPageDeleted,
-    onClose,
-    onBack,
   }: Props = $props();
 
-  let dialog = $state<HTMLDialogElement>();
-  let returningToSettings = false;
   let formOpen = $state(false);
   let formScope = $state<EmbeddedPageScope>("user");
   let editingId = $state("");
@@ -59,34 +51,6 @@
   let listError = $state("");
   let busyAction = $state("");
   let pendingDeleteId = $state("");
-
-  function captureDialog(node: HTMLDialogElement) {
-    dialog = node;
-    queueMicrotask(() => {
-      if (dialog === node && !node.open) node.showModal();
-    });
-    return () => {
-      if (dialog === node) dialog = undefined;
-    };
-  }
-
-  function handleClosed() {
-    if (returningToSettings) {
-      onBack();
-    } else {
-      onClose();
-    }
-  }
-
-  function closeDialog() {
-    returningToSettings = false;
-    dialog?.close();
-  }
-
-  function backToSettings() {
-    returningToSettings = true;
-    dialog?.close();
-  }
 
   function collectionKey(scope: EmbeddedPageScope): "global" | "personal" {
     return scope === "global" ? "global" : "personal";
@@ -392,39 +356,10 @@
   </section>
 {/snippet}
 
-<dialog
-  class="settings-dialog embedded-pages-dialog"
-  {@attach captureDialog}
-  onclose={handleClosed}
-  onclick={(event) => event.target === dialog && closeDialog()}
-  data-od-id="embedded-pages-settings-dialog"
+<div
+  class="embedded-pages-dialog-body embedded-pages-settings-body"
+  data-od-id="custom-pages-settings"
 >
-  <div class="settings-heading">
-    <button
-      class="nested-dialog-back"
-      type="button"
-      aria-label="Go back to account settings"
-      onclick={backToSettings}
-      data-od-id="back-to-settings-from-embedded-pages"
-    >
-      <ChevronLeft size={17} strokeWidth={1.8} aria-hidden="true" />
-      <span>Settings</span>
-    </button>
-    <div>
-      <h2>Embedded pages</h2>
-      <p>Global pages first, then your personal pages</p>
-    </div>
-    <button
-      class="ui-button ui-button--ghost ui-button--icon dialog-close"
-      type="button"
-      aria-label="Close embedded page settings"
-      onclick={closeDialog}
-    >
-      <X size={18} strokeWidth={1.8} aria-hidden="true" />
-    </button>
-  </div>
-
-  <div class="embedded-pages-dialog-body">
     {#if listError}
       <p class="form-error" role="alert">{listError}</p>
     {/if}
@@ -615,5 +550,4 @@
         </div>
       </form>
     {/if}
-  </div>
-</dialog>
+</div>

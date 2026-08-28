@@ -31,6 +31,8 @@ pub mod calendar;
 mod contacts;
 pub mod document;
 mod embedded_pages;
+pub mod jellyfin;
+mod jellyfin_client;
 mod kanban;
 mod lines;
 pub mod network_policy;
@@ -67,6 +69,7 @@ pub struct AppState {
     pub cookie_secure: bool,
     pub oidc: Option<oidc::OidcProvider>,
     pub widget_integrations: widget_integrations::WidgetIntegrationService,
+    pub jellyfin: jellyfin::JellyfinService,
     pub podcast_media: podcast_media::PodcastMedia,
     pub ntfy_events: ntfy::NtfyEventHub,
     pub site_origin: document::SiteOrigin,
@@ -147,6 +150,7 @@ pub struct UpdateSettingsRequest {
     pub location: String,
     pub timezone: String,
     pub sidebar_timezones: Option<Vec<String>>,
+    pub calendar_week_start: Option<String>,
     pub temperature_unit: String,
     pub lines_default_visibility: String,
     #[serde(default)]
@@ -1593,6 +1597,13 @@ async fn update_settings(
     };
     let sidebar_timezones_json = serde_json::to_string(&sidebar_timezones)
         .map_err(|_| ApiError::Internal("sidebar timezones could not be saved"))?;
+    let calendar_week_start = payload
+        .calendar_week_start
+        .as_deref()
+        .unwrap_or(&account.calendar_week_start);
+    if !matches!(calendar_week_start, "sunday" | "monday") {
+        return Err(ApiError::BadRequest("calendar week start is invalid"));
+    }
     if !matches!(payload.temperature_unit.as_str(), "celsius" | "fahrenheit") {
         return Err(ApiError::BadRequest("temperature unit is invalid"));
     }
@@ -1619,6 +1630,7 @@ async fn update_settings(
             location,
             timezone,
             &sidebar_timezones_json,
+            calendar_week_start,
             &payload.temperature_unit,
             &payload.lines_default_visibility,
             podcast_playback_rate,
@@ -3196,6 +3208,7 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
             .route("/dashboard", web::get().to(dashboard))
             .configure(bookmarks::configure)
             .configure(embedded_pages::configure)
+            .configure(jellyfin::configure)
             .configure(network_policy::configure)
             .route("/widgets", web::post().to(create_widget))
             .route("/widgets/capabilities", web::get().to(widget_capabilities))
@@ -3401,6 +3414,7 @@ fn auth_response(account: SessionAccount) -> AuthResponse {
             location: account.location,
             timezone: account.timezone,
             sidebar_timezones,
+            calendar_week_start: account.calendar_week_start,
             temperature_unit: account.temperature_unit,
             lines_default_visibility: account.lines_default_visibility,
             podcast_playback_rate: account.podcast_playback_rate,
@@ -3530,6 +3544,7 @@ mod tests {
                 pool.clone(),
             )
             .expect("test widget integrations initialize"),
+            jellyfin: jellyfin::JellyfinService::new(pool.clone()),
             podcast_media: podcast_media::PodcastMedia::with_root_and_pool(media_root, pool)
                 .expect("test podcast media initializes"),
             ntfy_events: ntfy::NtfyEventHub::default(),
@@ -4084,6 +4099,7 @@ mod tests {
                         "Europe/London".to_owned(),
                         "Asia/Tokyo".to_owned(),
                     ]),
+                    calendar_week_start: None,
                     temperature_unit: "fahrenheit".to_owned(),
                     lines_default_visibility: "public".to_owned(),
                     podcast_playback_rate: None,
@@ -4106,6 +4122,7 @@ mod tests {
                     location: "London".to_owned(),
                     timezone: "Europe/London".to_owned(),
                     sidebar_timezones: None,
+                    calendar_week_start: None,
                     temperature_unit: "fahrenheit".to_owned(),
                     lines_default_visibility: "public".to_owned(),
                     podcast_playback_rate: None,

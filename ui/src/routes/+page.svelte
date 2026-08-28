@@ -11,14 +11,15 @@
   import CheckSquare2 from "lucide-svelte/icons/square-check-big";
   import ChevronDown from "lucide-svelte/icons/chevron-down";
   import ChevronLeft from "lucide-svelte/icons/chevron-left";
+  import ChevronRight from "lucide-svelte/icons/chevron-right";
   import Code2 from "lucide-svelte/icons/code-xml";
   import Columns3 from "lucide-svelte/icons/columns-3";
   import ContactRound from "lucide-svelte/icons/contact-round";
   import Ellipsis from "lucide-svelte/icons/ellipsis";
   import Home from "lucide-svelte/icons/house";
-  import ImageIcon from "lucide-svelte/icons/image";
   import Menu from "lucide-svelte/icons/menu";
   import MessageSquareText from "lucide-svelte/icons/message-square-text";
+  import Music2 from "lucide-svelte/icons/music-2";
   import PanelTop from "lucide-svelte/icons/panel-top";
   import Paperclip from "lucide-svelte/icons/paperclip";
   import Pause from "lucide-svelte/icons/pause";
@@ -50,6 +51,7 @@
   import { motionDisclosure, motionPopover } from "$lib/motion.svelte";
   import { MediaQuery, SvelteMap, SvelteSet } from "svelte/reactivity";
   import AnimatedList from "$lib/components/AnimatedList.svelte";
+  import BackgroundSettings from "$lib/BackgroundSettings.svelte";
   import PrismaticBurst from "$lib/components/PrismaticBurst.svelte";
   import CalendarPage from "$lib/CalendarPage.svelte";
   import CodingPage from "$lib/CodingPage.svelte";
@@ -59,12 +61,14 @@
   import EmbeddedPagesSettings from "$lib/EmbeddedPagesSettings.svelte";
   import IntegrationWidget from "$lib/IntegrationWidget.svelte";
   import JournalPage from "$lib/JournalPage.svelte";
+  import JellyfinSettings from "$lib/JellyfinSettings.svelte";
   import KanbanPage from "$lib/KanbanPage.svelte";
   import LinesPage from "$lib/LinesPage.svelte";
   import NtfyPage from "$lib/NtfyPage.svelte";
   import NtfyPopover from "$lib/NtfyPopover.svelte";
   import NtfyPriority from "$lib/NtfyPriority.svelte";
   import NetworkAccessSettings from "$lib/NetworkAccessSettings.svelte";
+  import MusicPage from "$lib/MusicPage.svelte";
   import PodcastsPage from "$lib/PodcastsPage.svelte";
   import PwaInstallSettings from "$lib/PwaInstallSettings.svelte";
   import RssReaderPage from "$lib/RssReaderPage.svelte";
@@ -95,9 +99,9 @@
     deleteTask,
     deleteTaskAttachment,
     deleteUserContent,
-    deleteWallpaper,
     fetchAuthenticationSettings,
     fetchArchivedTasks,
+    fetchCalendar,
     fetchDashboard,
     fetchManagedUsers,
     loginAccount,
@@ -107,22 +111,22 @@
     setTaskCompleted,
     taskAttachmentUrl,
     updateTask,
-    updateAppearance,
     updateAuthenticationSettings,
     updateAvatar,
     updateDashboardWidgetLayout,
-    updateLoginAppearance,
     updateManagedUserRole,
     updateUserSettings,
-    updateWallpaper,
     uploadTaskAttachment,
     type AuthenticationConfig,
     type Bookmark,
+    type CalendarEvent,
+    type CalendarResponse,
     type DashboardWidget,
     type EmbeddedPage as EmbeddedPageRecord,
     type EmbeddedPagesResponse,
     type FeedItem,
     type ManagedUser,
+    type LoginAppearance,
     type KanbanSection,
     type NtfyNotification,
     type Task,
@@ -130,6 +134,7 @@
     type TaskInput,
     type UserSettings,
     type UserContentScope,
+    type UserAppearance,
     type WallpaperSlot,
     type WallSlot,
     type WidgetKind,
@@ -138,11 +143,6 @@
   import type { PageData } from "./$types";
 
   type AuthMode = "login" | "register";
-  type WallpaperDraft = {
-    file: File | null;
-    preview: string;
-    reset: boolean;
-  };
   type ProductPage =
     | "dashboard"
     | "tasks"
@@ -155,10 +155,12 @@
     | "walls"
     | "youtube"
     | "podcasts"
+    | "music"
     | "coding"
     | "subscriptions"
     | "trading"
-    | "notifications";
+    | "notifications"
+    | "settings";
   type ActivePage =
     { kind: "builtin"; id: ProductPage } | { kind: "embedded"; id: string };
   type CommandGroup = "PAGES" | "ACTIONS" | "WEB";
@@ -171,6 +173,24 @@
     run: () => void;
   };
   type TaskView = "active" | "archived";
+  type SettingsCategory =
+    | "preferences"
+    | "custom-pages"
+    | "user-settings"
+    | "sessions"
+    | "data-management"
+    | "instance-settings"
+    | "network-settings"
+    | "user-management";
+  type SettingsGroup = {
+    label: "General" | "Security" | "Administration";
+    administratorOnly: boolean;
+    items: Array<{
+      id: SettingsCategory;
+      label: string;
+      description: string;
+    }>;
+  };
   type TaskDueGroup = {
     id: "today" | "this-week" | "next-week" | "later" | "never";
     label: string;
@@ -183,36 +203,72 @@
     currentMonth: boolean;
     today: boolean;
   };
+  type DashboardCalendarEventSummary = {
+    count: number;
+    colors: string[];
+  };
 
-  const appearanceWallpaperOptions: Array<{
-    id: WallpaperSlot;
-    code: string;
-    title: string;
-    description: string;
-    adminOnly: boolean;
-  }> = [
+  const settingsGroups: SettingsGroup[] = [
     {
-      id: "welcome",
-      code: "MAIN",
-      title: "Main background",
-      description:
-        "Used by the Welcome loading screen and throughout authenticated pages.",
-      adminOnly: false,
+      label: "General",
+      administratorOnly: false,
+      items: [
+        {
+          id: "preferences",
+          label: "Preferences",
+          description:
+            "Regional defaults, reading behavior, and your Main background.",
+        },
+        {
+          id: "custom-pages",
+          label: "Custom Pages",
+          description: "Personal links and administrator-managed global pages.",
+        },
+      ],
     },
     {
-      id: "login",
-      code: "PUBLIC SURFACE",
-      title: "Login background",
-      description: "The global pre-authentication image for every visitor.",
-      adminOnly: true,
+      label: "Security",
+      administratorOnly: false,
+      items: [
+        {
+          id: "user-settings",
+          label: "User Settings",
+          description:
+            "Profile identity and the sign-in method for this account.",
+        },
+        {
+          id: "sessions",
+          label: "Sessions",
+          description: "Review and end the secure session in this browser.",
+        },
+        {
+          id: "data-management",
+          label: "Data Management",
+          description: "Permanently clear one account-owned content area.",
+        },
+      ],
     },
-  ];
-
-  const allWallpaperSlots: WallpaperSlot[] = [
-    "dashboard",
-    "welcome",
-    "loading",
-    "login",
+    {
+      label: "Administration",
+      administratorOnly: true,
+      items: [
+        {
+          id: "instance-settings",
+          label: "Instance Settings",
+          description: "Account access policy and the public Login background.",
+        },
+        {
+          id: "network-settings",
+          label: "Network Settings",
+          description: "Exact server destinations allowed for managed fetches.",
+        },
+        {
+          id: "user-management",
+          label: "User Management",
+          description: "Roles, account activity, and account removal.",
+        },
+      ],
+    },
   ];
 
   const destructiveContentActions: Array<{
@@ -382,7 +438,10 @@
   ];
 
   const clockMarks = Array.from({ length: 12 }, (_, index) => index);
-  const dashboardCalendarWeekdays = ["M", "T", "W", "T", "F", "S", "S"];
+  const dashboardCalendarWeekdayLabels = {
+    sunday: ["S", "M", "T", "W", "T", "F", "S"],
+    monday: ["M", "T", "W", "T", "F", "S", "S"],
+  } as const;
   const focusDurations = [15, 25, 45] as const;
   const kanbanSubmenuItems: Array<{
     id: KanbanSection;
@@ -500,24 +559,31 @@
       icon: Podcast,
     },
     {
+      id: "music",
+      label: "Music",
+      description: "Browse and play the music libraries linked from Jellyfin.",
+      code: "12",
+      icon: Music2,
+    },
+    {
       id: "coding",
       label: "Coding",
       description: "Track projects, repositories, and release activity.",
-      code: "12",
+      code: "13",
       icon: Code2,
     },
     {
       id: "subscriptions",
       label: "Subscriptions",
       description: "Monitor recurring services, costs, and renewal dates.",
-      code: "13",
+      code: "14",
       icon: ReceiptText,
     },
     {
       id: "trading",
       label: "Trading",
       description: "Plan watchlists, market notes, and trades.",
-      code: "14",
+      code: "15",
       icon: ChartCandlestick,
     },
   ] as const;
@@ -542,6 +608,7 @@
   let contactDetailId = $state<string | null>(null);
   let calendarDetailDate = $state<string | null>(null);
   let kanbanSection = $state<KanbanSection>("boards");
+  let settingsCategory = $state<SettingsCategory>("preferences");
   let kanbanMenuOpen = $state(false);
   let sidebarOpen = $state(false);
   let sidebarCollapsed = $state(false);
@@ -596,6 +663,12 @@
   let ntfyRevision = $state(0);
   let ntfyFocusedNotificationId = $state("");
   let currentTime = $state(new Date());
+  let dashboardCalendarMonthOffset = $state(0);
+  let dashboardCalendarData = $state.raw<CalendarResponse>({
+    subscriptions: [],
+    events: [],
+  });
+  let hasLoadedDashboardCalendar = false;
   let focusSubject = $state("");
   let focusDurationMinutes = $state(25);
   let focusRemainingSeconds = $state(25 * 60);
@@ -621,6 +694,8 @@
   let settingsDisplayName = $state("");
   let settingsLocation = $state("");
   let settingsTimezone = $state("");
+  let settingsCalendarWeekStart =
+    $state<UserSettings["calendar_week_start"]>("sunday");
   let settingsTemperatureUnit =
     $state<UserSettings["temperature_unit"]>("celsius");
   let settingsLinesDefaultVisibility =
@@ -644,6 +719,7 @@
   let savingSettings = $state(false);
   let managedUsers = $state.raw<ManagedUser[]>([]);
   let loadingUsers = $state(false);
+  let hasLoadedAdministration = false;
   let mutatingUserId = $state("");
   let pendingRemovalId = $state("");
   let adminError = $state("");
@@ -656,36 +732,14 @@
   let commandQuery = $state("");
   let commandIndex = $state(0);
   let searchEngine = $state<SearchEngineId>("duckduckgo");
-  let settingsDialog = $state<HTMLDialogElement>();
-  let embeddedPagesSettingsOpen = $state(false);
-  let settingsScrollContainer = $state<HTMLDivElement>();
-  let destructiveDialog = $state<HTMLDialogElement>();
-  let adminDialog = $state<HTMLDialogElement>();
   let widgetLibraryDialog = $state<HTMLDialogElement>();
   let bookmarkDialog = $state<HTMLDialogElement>();
   let bookmarkTitleInput = $state<HTMLInputElement>();
-  let appearanceDialog = $state<HTMLDialogElement>();
   let pendingContentDeletion = $state<UserContentScope | null>(null);
   let deletingContentScope = $state<UserContentScope | null>(null);
   let destructiveError = $state("");
   let taskEditorDialog = $state<HTMLDialogElement>();
   let focusDialog = $state<HTMLDialogElement>();
-  let wallpaperDrafts = $state<Record<WallpaperSlot, WallpaperDraft>>({
-    dashboard: { file: null, preview: "", reset: false },
-    welcome: { file: null, preview: "", reset: false },
-    loading: { file: null, preview: "", reset: false },
-    login: { file: null, preview: "", reset: false },
-  });
-  let backgroundBlur = $state(0);
-  let backgroundBrightness = $state(78);
-  let backgroundContrast = $state(108);
-  let backgroundSaturation = $state(72);
-  let loginBackgroundBlur = $state(0);
-  let loginBackgroundBrightness = $state(78);
-  let loginBackgroundContrast = $state(108);
-  let loginBackgroundSaturation = $state(72);
-  let appearanceError = $state("");
-  let savingAppearance = $state(false);
   let editingTaskId = $state<string | null>(null);
   let taskName = $state("");
   let taskDescription = $state("");
@@ -788,10 +842,24 @@
     authConfig.password_login_enabled ||
       authConfig.password_registration_enabled,
   );
+  let activeSettingsItem = $derived.by(
+    () =>
+      settingsGroups
+        .flatMap((group) => group.items)
+        .find((item) => item.id === settingsCategory) ??
+      settingsGroups[0].items[0],
+  );
+  let activeSettingsGroup = $derived(
+    settingsGroups.find((group) =>
+      group.items.some((item) => item.id === settingsCategory),
+    ) ?? settingsGroups[0],
+  );
   let activeSectionLabel = $derived(
     activeSection === "notifications"
       ? "Notifications"
-      : (activeEmbeddedPage?.title ??
+      : activeSection === "settings"
+        ? "Settings"
+        : (activeEmbeddedPage?.title ??
           productPages.find((item) => item.id === activeSection)?.label ??
           "Dashboard"),
   );
@@ -913,8 +981,9 @@
         group: "ACTIONS",
         label: "Account settings",
         hint: "+",
-        keywords: "settings account preferences profile",
-        run: openSettings,
+        keywords:
+          "settings account preferences profile sessions data administration network",
+        run: () => openSettings("preferences"),
       },
       {
         id: "action:sign-out",
@@ -973,14 +1042,38 @@
       }))
       .filter((entry) => entry.items.length > 0);
   });
-  let dashboardClock = $derived(
-    clockDisplay(currentTime, dashboard?.settings.timezone || "UTC"),
+  let dashboardMonitorTimezones = $derived.by(() => {
+    const configured = dashboard?.settings.sidebar_timezones ?? [];
+    const source =
+      configured.length > 0
+        ? configured
+        : [dashboard?.settings.timezone || "UTC"];
+    return [...new Set(source.map(normalizeTimezone))];
+  });
+  let dashboardClocks = $derived(
+    dashboardMonitorTimezones.map((timezone) => ({
+      timezone,
+      ...clockDisplay(currentTime, timezone),
+    })),
   );
   let dashboardTimezone = $derived(
     normalizeTimezone(dashboard?.settings.timezone || "UTC"),
   );
   let dashboardCalendarDate = $derived(
     dateInTimezone(currentTime, dashboardTimezone),
+  );
+  let dashboardCalendarWeekStart = $derived(
+    dashboard?.settings.calendar_week_start ?? "sunday",
+  );
+  let dashboardCalendarWeekdays = $derived(
+    dashboardCalendarWeekdayLabels[dashboardCalendarWeekStart],
+  );
+  let dashboardCalendarCursor = $derived(
+    new Date(
+      dashboardCalendarDate.getFullYear(),
+      dashboardCalendarDate.getMonth() + dashboardCalendarMonthOffset,
+      1,
+    ),
   );
   let dateLabel = $derived(
     new Intl.DateTimeFormat("en", {
@@ -1009,13 +1102,23 @@
   );
   let dashboardCalendarMonthLabel = $derived(
     new Intl.DateTimeFormat("en", {
-      timeZone: dashboardTimezone,
       month: "long",
       year: "numeric",
-    }).format(currentTime),
+    }).format(dashboardCalendarCursor),
   );
   let dashboardCalendarDays = $derived(
-    buildDashboardCalendarMonth(dashboardCalendarDate),
+    buildDashboardCalendarMonth(
+      dashboardCalendarCursor,
+      dashboardCalendarDate,
+      dashboardCalendarWeekStart,
+    ),
+  );
+  let dashboardCalendarEventsByDate = $derived(
+    summarizeDashboardCalendarEvents(
+      tasks,
+      dashboardCalendarData.events,
+      dashboardTimezone,
+    ),
   );
   let focusTimeLabel = $derived(formatFocusTime(focusRemainingSeconds));
   let focusProgress = $derived(
@@ -1049,7 +1152,9 @@
     const savedEmbedded = savedPage?.startsWith("embedded:")
       ? savedPage.slice("embedded:".length)
       : null;
-    if (productPages.some((item) => item.id === savedBuiltin)) {
+    if (savedBuiltin === "settings") {
+      openSettings("preferences");
+    } else if (productPages.some((item) => item.id === savedBuiltin)) {
       activePage = { kind: "builtin", id: savedBuiltin as ProductPage };
       kanbanMenuOpen = savedBuiltin === "kanban";
     } else if (
@@ -1095,7 +1200,7 @@
     }
     if (dashboard) {
       refreshPrivateWallpaperRevisions();
-      resetAppearanceDraft();
+      void loadDashboardCalendar();
       void showInitialLoadingScreen();
     } else {
       initialLoadingPending = false;
@@ -1104,7 +1209,6 @@
 
   onDestroy(() => {
     clearAvatarDraft();
-    clearWallpaperDrafts();
     clearTimeout(toastTimer);
     clearTimeout(toastCleanupTimer);
     clearTimeout(welcomeRemoveTimer);
@@ -1177,16 +1281,15 @@
   }
 
   function buildDashboardCalendarMonth(
-    reference: Date,
+    month: Date,
+    todayReference: Date,
+    firstWeekday: UserSettings["calendar_week_start"],
   ): DashboardCalendarDay[] {
-    const first = new Date(reference.getFullYear(), reference.getMonth(), 1);
-    const mondayOffset = (first.getDay() + 6) % 7;
-    const start = new Date(
-      reference.getFullYear(),
-      reference.getMonth(),
-      1 - mondayOffset,
-    );
-    const today = dashboardCalendarDateKey(reference);
+    const first = new Date(month.getFullYear(), month.getMonth(), 1);
+    const offset =
+      firstWeekday === "sunday" ? first.getDay() : (first.getDay() + 6) % 7;
+    const start = new Date(month.getFullYear(), month.getMonth(), 1 - offset);
+    const today = dashboardCalendarDateKey(todayReference);
 
     return Array.from({ length: 42 }, (_, index) => {
       const date = new Date(
@@ -1198,10 +1301,73 @@
       return {
         key,
         day: date.getDate(),
-        currentMonth: date.getMonth() === reference.getMonth(),
+        currentMonth:
+          date.getFullYear() === month.getFullYear() &&
+          date.getMonth() === month.getMonth(),
         today: key === today,
       };
     });
+  }
+
+  function dashboardCalendarEventDateKey(
+    event: CalendarEvent,
+    timezone: string,
+  ) {
+    if (event.all_day) return event.start_at.slice(0, 10);
+    const date = new Date(event.start_at);
+    return Number.isNaN(date.valueOf())
+      ? event.start_at.slice(0, 10)
+      : dashboardCalendarDateKey(dateInTimezone(date, timezone));
+  }
+
+  function summarizeDashboardCalendarEvents(
+    datedTasks: Task[],
+    calendarEvents: CalendarEvent[],
+    timezone: string,
+  ) {
+    const summaries: Record<string, DashboardCalendarEventSummary> = {};
+    const add = (key: string, color: string) => {
+      const summary = summaries[key] ?? { count: 0, colors: [] };
+      summary.count += 1;
+      if (!summary.colors.includes(color) && summary.colors.length < 3) {
+        summary.colors.push(color);
+      }
+      summaries[key] = summary;
+    };
+
+    for (const task of datedTasks) {
+      if (task.due_date) add(task.due_date, "var(--accent)");
+    }
+    for (const event of calendarEvents) {
+      add(dashboardCalendarEventDateKey(event, timezone), event.calendar_color);
+    }
+    return summaries;
+  }
+
+  function changeDashboardCalendarMonth(offset: number) {
+    dashboardCalendarMonthOffset += offset;
+  }
+
+  function showCurrentDashboardCalendarMonth() {
+    dashboardCalendarMonthOffset = 0;
+  }
+
+  function clearDashboardCalendarState() {
+    dashboardCalendarMonthOffset = 0;
+    dashboardCalendarData = { subscriptions: [], events: [] };
+    hasLoadedDashboardCalendar = false;
+  }
+
+  async function loadDashboardCalendar() {
+    if (!dashboard) return;
+    try {
+      dashboardCalendarData = await fetchCalendar();
+      hasLoadedDashboardCalendar = true;
+    } catch {
+      if (!hasLoadedDashboardCalendar) {
+        dashboardCalendarData = { subscriptions: [], events: [] };
+      }
+    }
   }
 
   function taskDayDistance(dueDate: string, reference: Date, timezone: string) {
@@ -1464,7 +1630,6 @@
   }
 
   function openWallsFromAppearance() {
-    appearanceDialog?.close();
     openProductPage("walls");
   }
 
@@ -1525,7 +1690,7 @@
 
   // Closing the player must not leave its popover orphaned on screen.
   $effect(() => {
-    if (!podcastPlayer.episode) podcastVolumeOpen = false;
+    if (!podcastPlayer.source) podcastVolumeOpen = false;
   });
 
   // A position is written on an interval while playing; this catches the tail end
@@ -1564,7 +1729,11 @@
     // Lines keeps its own screen stack, so choosing it in the sidebar has to ask the
     // page for the timeline even when it is already the active section.
     if (page === "lines") linesHomeToken += 1;
+    if (activeSection === "settings" && page !== "settings") {
+      clearUserSettingsDrafts();
+    }
     activePage = { kind: "builtin", id: page };
+    if (page === "dashboard") void loadDashboardCalendar();
     if (page !== "contacts") contactDetailId = null;
     if (page !== "calendar") calendarDetailDate = null;
     if (page !== "notifications") ntfyFocusedNotificationId = "";
@@ -1758,34 +1927,6 @@
     runCommand(commandResults[commandIndex] ?? commandResults[0]);
   }
 
-  function captureSettingsDialog(node: HTMLDialogElement) {
-    settingsDialog = node;
-    return () => {
-      settingsDialog = undefined;
-    };
-  }
-
-  function captureSettingsScrollContainer(node: HTMLDivElement) {
-    settingsScrollContainer = node;
-    return () => {
-      settingsScrollContainer = undefined;
-    };
-  }
-
-  function captureDestructiveDialog(node: HTMLDialogElement) {
-    destructiveDialog = node;
-    return () => {
-      destructiveDialog = undefined;
-    };
-  }
-
-  function captureAdminDialog(node: HTMLDialogElement) {
-    adminDialog = node;
-    return () => {
-      adminDialog = undefined;
-    };
-  }
-
   function captureWidgetLibraryDialog(node: HTMLDialogElement) {
     widgetLibraryDialog = node;
     return () => {
@@ -1804,13 +1945,6 @@
     bookmarkTitleInput = node;
     return () => {
       bookmarkTitleInput = undefined;
-    };
-  }
-
-  function captureAppearanceDialog(node: HTMLDialogElement) {
-    appearanceDialog = node;
-    return () => {
-      appearanceDialog = undefined;
     };
   }
 
@@ -1999,7 +2133,7 @@
   function handleTaskMenuKeydown(event: KeyboardEvent) {
     const menu = event.currentTarget as HTMLElement;
     const items = Array.from(
-      menu.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'),
+      menu.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"),
     );
     if (!items.length) return;
 
@@ -2279,9 +2413,7 @@
       showToast(`Removed ${bookmark.title}`);
     } catch (reason: unknown) {
       bookmarkError =
-        reason instanceof Error
-          ? reason.message
-          : "Unable to remove bookmark";
+        reason instanceof Error ? reason.message : "Unable to remove bookmark";
     } finally {
       deletingBookmarkId = "";
     }
@@ -2632,10 +2764,13 @@
         loadingScreen,
       ]);
       dashboard = nextDashboard;
+      clearDashboardCalendarState();
+      void loadDashboardCalendar();
       resetTaskArchiveView();
+      hasLoadedAdministration = false;
+      managedUsers = [];
       avatarRevision = Date.now();
       avatarAvailable = true;
-      resetAppearanceDraft();
       authPassword = "";
       activePage = { kind: "builtin", id: "dashboard" };
       localStorage.setItem("pandan-active-section", "builtin:dashboard");
@@ -2678,10 +2813,13 @@
         loadingScreen,
       ]);
       dashboard = nextDashboard;
+      clearDashboardCalendarState();
+      void loadDashboardCalendar();
       resetTaskArchiveView();
+      hasLoadedAdministration = false;
+      managedUsers = [];
       avatarRevision = Date.now();
       avatarAvailable = true;
-      resetAppearanceDraft();
       setupRequired = false;
       authPassword = "";
       activePage = { kind: "builtin", id: "dashboard" };
@@ -2697,38 +2835,90 @@
     }
   }
 
-  function openSettings() {
+  function openSettings(category: SettingsCategory = "preferences") {
     if (!dashboard) return;
     sidebarOpen = false;
     clearUserSettingsDrafts();
     settingsDisplayName = dashboard.settings.display_name;
     settingsLocation = dashboard.settings.location;
     settingsTimezone = dashboard.settings.timezone;
+    settingsCalendarWeekStart = dashboard.settings.calendar_week_start;
     settingsTemperatureUnit = dashboard.settings.temperature_unit;
     settingsLinesDefaultVisibility =
       dashboard.settings.lines_default_visibility;
     settingsError = "";
-    settingsDialog?.showModal();
-    if (settingsScrollContainer) settingsScrollContainer.scrollTop = 0;
+    destructiveError = "";
+    pendingContentDeletion = null;
+    settingsCategory = category;
+    openProductPage("settings");
+    if (
+      dashboard.user.role === "administrator" &&
+      (category === "instance-settings" ||
+        category === "network-settings" ||
+        category === "user-management")
+    ) {
+      void loadAdministration();
+    }
   }
 
-  function openEmbeddedPagesSettings() {
-    if (!dashboard) return;
-    settingsDialog?.close();
-    embeddedPagesSettingsOpen = true;
-  }
-
-  async function closeEmbeddedPagesSettings(reopenSettings = false) {
-    embeddedPagesSettingsOpen = false;
-    if (reopenSettings) {
-      await tick();
-      openSettings();
+  function selectSettingsCategory(category: SettingsCategory) {
+    if (
+      settingsGroups
+        .find((group) => group.administratorOnly)
+        ?.items.some((item) => item.id === category) &&
+      dashboard?.user.role !== "administrator"
+    ) {
+      return;
+    }
+    settingsCategory = category;
+    settingsError = "";
+    adminError = "";
+    destructiveError = "";
+    pendingContentDeletion = null;
+    if (
+      category === "instance-settings" ||
+      category === "network-settings" ||
+      category === "user-management"
+    ) {
+      void loadAdministration();
     }
   }
 
   function applyEmbeddedPages(pages: EmbeddedPagesResponse) {
     if (!dashboard) return;
     dashboard = { ...dashboard, embedded_pages: pages };
+  }
+
+  function applyMainAppearance(appearance: UserAppearance) {
+    if (!dashboard) return;
+    dashboard = { ...dashboard, appearance };
+  }
+
+  function applyLoginAppearance(appearance: LoginAppearance) {
+    authConfig = {
+      ...authConfig,
+      login_background_blur: appearance.background_blur,
+      login_background_brightness: appearance.background_brightness,
+      login_background_contrast: appearance.background_contrast,
+      login_background_saturation: appearance.background_saturation,
+    };
+  }
+
+  function refreshSettingsWallpaper(
+    slot: Extract<WallpaperSlot, "welcome" | "login">,
+    hasCustom: boolean,
+  ) {
+    wallpaperRevisions[slot] = Date.now();
+    if (!dashboard) return;
+    dashboard = {
+      ...dashboard,
+      appearance: {
+        ...dashboard.appearance,
+        ...(slot === "welcome"
+          ? { has_welcome_wallpaper: hasCustom }
+          : { has_login_wallpaper: hasCustom }),
+      },
+    };
   }
 
   function handleEmbeddedPageDeleted(pageId: string) {
@@ -2804,147 +2994,15 @@
   }
 
   function wallpaperSource(slot: WallpaperSlot) {
-    const draft = wallpaperDrafts[slot];
-    if (draft.reset) return "/wired-terminal-wallpaper.png";
-    return (
-      draft.preview ||
-      `${wallpaperEndpoint(slot)}?v=${wallpaperRevisions[slot]}`
-    );
+    return `${wallpaperEndpoint(slot)}?v=${wallpaperRevisions[slot]}`;
   }
 
   function wallpaperBackground(slot: WallpaperSlot) {
-    const source = wallpaperSource(slot);
-    if (source === "/wired-terminal-wallpaper.png") {
-      return 'url("/wired-terminal-wallpaper.png")';
-    }
-    return `url("${source}"), url("/wired-terminal-wallpaper.png")`;
-  }
-
-  function wallpaperHasCustom(slot: WallpaperSlot) {
-    const appearance = dashboard?.appearance;
-    if (!appearance) return false;
-    if (slot === "dashboard") return appearance.has_dashboard_wallpaper;
-    if (slot === "welcome") return appearance.has_welcome_wallpaper;
-    if (slot === "loading") return appearance.has_loading_wallpaper;
-    return appearance.has_login_wallpaper;
-  }
-
-  function wallpaperFileLabel(slot: WallpaperSlot) {
-    const draft = wallpaperDrafts[slot];
-    if (draft.file) return draft.file.name;
-    if (draft.reset) return "Wired terminal default";
-    return wallpaperHasCustom(slot) ? "Custom image" : "Wired terminal default";
-  }
-
-  function clearWallpaperDraft(slot: WallpaperSlot) {
-    const draft = wallpaperDrafts[slot];
-    if (draft.preview.startsWith("blob:")) {
-      URL.revokeObjectURL(draft.preview);
-    }
-    wallpaperDrafts[slot] = { file: null, preview: "", reset: false };
-  }
-
-  function clearWallpaperDrafts(slots: WallpaperSlot[] = allWallpaperSlots) {
-    for (const slot of slots) clearWallpaperDraft(slot);
+    return `url("${wallpaperSource(slot)}"), url("/wired-terminal-wallpaper.png")`;
   }
 
   function clearUserSettingsDrafts() {
     clearAvatarDraft();
-  }
-
-  function resetAppearanceDraft() {
-    clearWallpaperDrafts(appearanceWallpaperOptions.map((option) => option.id));
-    const appearance = dashboard?.appearance;
-    backgroundBlur = appearance?.background_blur ?? 0;
-    backgroundBrightness = appearance?.background_brightness ?? 78;
-    backgroundContrast = appearance?.background_contrast ?? 108;
-    backgroundSaturation = appearance?.background_saturation ?? 72;
-    loginBackgroundBlur = authConfig.login_background_blur;
-    loginBackgroundBrightness = authConfig.login_background_brightness;
-    loginBackgroundContrast = authConfig.login_background_contrast;
-    loginBackgroundSaturation = authConfig.login_background_saturation;
-    appearanceError = "";
-  }
-
-  function selectWallpaper(slot: WallpaperSlot, event: Event) {
-    const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) return;
-    if (
-      !["image/jpeg", "image/png", "image/webp", "image/avif"].includes(
-        file.type,
-      )
-    ) {
-      setWallpaperError(slot, "Choose a JPEG, PNG, WebP, or AVIF image.");
-      input.value = "";
-      return;
-    }
-    if (file.size > 30 * 1024 * 1024) {
-      setWallpaperError(slot, "Wallpaper images must be 30 MB or smaller.");
-      input.value = "";
-      return;
-    }
-    const draft = wallpaperDrafts[slot];
-    if (draft.preview.startsWith("blob:")) {
-      URL.revokeObjectURL(draft.preview);
-    }
-    wallpaperDrafts[slot] = {
-      file,
-      preview: URL.createObjectURL(file),
-      reset: false,
-    };
-    setWallpaperError(slot, "");
-  }
-
-  function resetWallpaper(slot: WallpaperSlot) {
-    const draft = wallpaperDrafts[slot];
-    if (draft.preview.startsWith("blob:")) {
-      URL.revokeObjectURL(draft.preview);
-    }
-    wallpaperDrafts[slot] = { file: null, preview: "", reset: true };
-    setWallpaperError(slot, "");
-  }
-
-  function setWallpaperError(_slot: WallpaperSlot, message: string) {
-    appearanceError = message;
-  }
-
-  function resetBackgroundFilters(surface: "main" | "login") {
-    if (surface === "main") {
-      backgroundBlur = 0;
-      backgroundBrightness = 78;
-      backgroundContrast = 108;
-      backgroundSaturation = 72;
-      return;
-    }
-    loginBackgroundBlur = 0;
-    loginBackgroundBrightness = 78;
-    loginBackgroundContrast = 108;
-    loginBackgroundSaturation = 72;
-  }
-
-  function openAppearance() {
-    if (!dashboard) return;
-    resetAppearanceDraft();
-    settingsDialog?.close();
-    appearanceDialog?.showModal();
-  }
-
-  function openDestructiveActions() {
-    destructiveError = "";
-    pendingContentDeletion = null;
-    settingsDialog?.close();
-    destructiveDialog?.showModal();
-  }
-
-  async function closeDestructiveActions(reopenSettings = false) {
-    destructiveError = "";
-    pendingContentDeletion = null;
-    destructiveDialog?.close();
-    if (reopenSettings) {
-      await tick();
-      openSettings();
-    }
   }
 
   async function removeContentArea(action: {
@@ -2984,72 +3042,32 @@
     }
   }
 
-  async function closeAppearance(reopenSettings = false) {
-    resetAppearanceDraft();
-    appearanceDialog?.close();
-    if (reopenSettings) {
-      await tick();
-      openSettings();
-    }
-  }
-
-  async function saveAppearance(event: SubmitEvent) {
+  async function savePreferences(event: SubmitEvent) {
     event.preventDefault();
-    if (!dashboard || savingAppearance) return;
-    savingAppearance = true;
-    appearanceError = "";
+    if (!dashboard || savingSettings) return;
+
+    savingSettings = true;
+    settingsError = "";
     try {
-      for (const option of appearanceWallpaperOptions) {
-        if (option.adminOnly && dashboard.user.role !== "administrator") {
-          continue;
-        }
-        const draft = wallpaperDrafts[option.id];
-        if (draft.file) {
-          await updateWallpaper(option.id, draft.file);
-        } else if (draft.reset) {
-          await deleteWallpaper(option.id);
-        }
-        wallpaperRevisions[option.id] = Date.now();
-      }
-      const appearance = await updateAppearance({
-        background_blur: backgroundBlur,
-        background_brightness: backgroundBrightness,
-        background_contrast: backgroundContrast,
-        background_saturation: backgroundSaturation,
+      const settings = await updateUserSettings({
+        display_name: dashboard.settings.display_name,
+        location: settingsLocation,
+        timezone: settingsTimezone,
+        calendar_week_start: settingsCalendarWeekStart,
+        temperature_unit: settingsTemperatureUnit,
+        lines_default_visibility: settingsLinesDefaultVisibility,
       });
-      if (dashboard.user.role === "administrator") {
-        const loginAppearance = await updateLoginAppearance({
-          background_blur: loginBackgroundBlur,
-          background_brightness: loginBackgroundBrightness,
-          background_contrast: loginBackgroundContrast,
-          background_saturation: loginBackgroundSaturation,
-        });
-        authConfig = {
-          ...authConfig,
-          login_background_blur: loginAppearance.background_blur,
-          login_background_brightness: loginAppearance.background_brightness,
-          login_background_contrast: loginAppearance.background_contrast,
-          login_background_saturation: loginAppearance.background_saturation,
-        };
-      }
-      dashboard = {
-        ...dashboard,
-        appearance,
-      };
-      clearWallpaperDrafts(
-        appearanceWallpaperOptions.map((option) => option.id),
-      );
-      await closeAppearance(true);
-      showToast("Appearance saved");
+      dashboard = { ...dashboard, settings };
+      showToast("Preferences saved");
     } catch (reason: unknown) {
-      appearanceError =
-        reason instanceof Error ? reason.message : "Unable to save appearance";
+      settingsError =
+        reason instanceof Error ? reason.message : "Unable to save preferences";
     } finally {
-      savingAppearance = false;
+      savingSettings = false;
     }
   }
 
-  async function saveSettings(event: SubmitEvent) {
+  async function saveUserSettings(event: SubmitEvent) {
     event.preventDefault();
     if (!dashboard || savingSettings) return;
 
@@ -3067,31 +3085,32 @@
       }
       const settings = await updateUserSettings({
         display_name: settingsDisplayName,
-        location: settingsLocation,
-        timezone: settingsTimezone,
-        temperature_unit: settingsTemperatureUnit,
-        lines_default_visibility: settingsLinesDefaultVisibility,
+        location: dashboard.settings.location,
+        timezone: dashboard.settings.timezone,
+        temperature_unit: dashboard.settings.temperature_unit,
+        lines_default_visibility: dashboard.settings.lines_default_visibility,
       });
       dashboard = { ...dashboard, settings };
       clearUserSettingsDrafts();
-      settingsDialog?.close();
-      showToast("Settings saved");
+      showToast("User settings saved");
     } catch (reason: unknown) {
       settingsError =
-        reason instanceof Error ? reason.message : "Unable to save settings";
+        reason instanceof Error
+          ? reason.message
+          : "Unable to save user settings";
     } finally {
       savingSettings = false;
     }
   }
 
-  async function openAdministration() {
+  async function loadAdministration() {
     if (dashboard?.user.role !== "administrator") return;
+    if (loadingUsers || hasLoadedAdministration) return;
     adminError = "";
     pendingRemovalId = "";
     passwordLoginEnabled = authConfig.password_login_enabled;
     passwordRegistrationEnabled = authConfig.password_registration_enabled;
     oidcRegistrationEnabled = authConfig.oidc_registration_enabled;
-    adminDialog?.showModal();
     loadingUsers = true;
     try {
       const [users, authentication] = await Promise.all([
@@ -3100,6 +3119,7 @@
       ]);
       managedUsers = users;
       applyAuthenticationConfig(authentication);
+      hasLoadedAdministration = true;
     } catch (reason: unknown) {
       adminError =
         reason instanceof Error ? reason.message : "Unable to load users";
@@ -3222,9 +3242,11 @@
   async function signOut() {
     try {
       await logoutAccount();
-      settingsDialog?.close();
       dashboard = null;
+      clearDashboardCalendarState();
       resetTaskArchiveView();
+      hasLoadedAdministration = false;
+      managedUsers = [];
       clearAvatarDraft();
       avatarAvailable = true;
       avatarRevision = Date.now();
@@ -3720,10 +3742,10 @@
       sidebarCollapsed && "sidebar-is-collapsed",
     ]}
     style:--dashboard-background={wallpaperBackground("welcome")}
-    style:--wallpaper-blur={`${backgroundBlur}px`}
-    style:--wallpaper-brightness={`${backgroundBrightness}%`}
-    style:--wallpaper-contrast={`${backgroundContrast}%`}
-    style:--wallpaper-saturation={`${backgroundSaturation}%`}
+    style:--wallpaper-blur={`${dashboard.appearance.background_blur}px`}
+    style:--wallpaper-brightness={`${dashboard.appearance.background_brightness}%`}
+    style:--wallpaper-contrast={`${dashboard.appearance.background_contrast}%`}
+    style:--wallpaper-saturation={`${dashboard.appearance.background_saturation}%`}
     data-od-id="dashboard-shell"
   >
     <aside
@@ -3908,7 +3930,8 @@
         <button
           class="sidebar-link"
           type="button"
-          onclick={openSettings}
+          aria-current={activeSection === "settings" ? "page" : undefined}
+          onclick={() => openSettings("preferences")}
           aria-describedby="sidebar-desc-settings"
           data-sidebar-title="Settings"
           data-sidebar-description="Manage your profile, appearance, authentication, and integrations."
@@ -3924,7 +3947,7 @@
         <button
           class="sidebar-profile"
           type="button"
-          onclick={openSettings}
+          onclick={() => openSettings("user-settings")}
           aria-label="Open account settings"
           aria-describedby="sidebar-desc-account"
           data-sidebar-title="Account"
@@ -4076,6 +4099,7 @@
           class={[
             "product-view",
             activeSection !== "youtube" && "is-translucent",
+            activeSection === "settings" && "is-settings",
           ]}
         >
           {#if activeSection === "dashboard"}
@@ -4165,7 +4189,7 @@
 
                 <aside
                   class="dashboard-utility-rail"
-                  aria-label="Dashboard shortcuts"
+                  aria-label="Dashboard utilities"
                 >
                   <section
                     class="utility-box utility-analog-clock"
@@ -4173,31 +4197,49 @@
                   >
                     <p>[ LOCAL.TIME ]</p>
                     <div
-                      class="analog-clock"
-                      role="img"
-                      aria-label={`${dashboardClock.label} in ${dashboardClock.zone}`}
+                      class="utility-clock-list"
+                      aria-label="Saved local times"
+                      data-od-id="dashboard-local-times"
                     >
-                      {#each clockMarks as mark (mark)}
-                        <i
-                          class="analog-clock-mark"
-                          style:--mark-angle={`${mark * 30}deg`}
-                        ></i>
+                      {#each dashboardClocks as clock, index (clock.timezone)}
+                        <div
+                          class="utility-clock-row"
+                          data-od-id={`dashboard-local-time-${index + 1}`}
+                        >
+                          <div
+                            class="analog-clock"
+                            role="img"
+                            aria-label={`${clock.label} in ${clock.timezone}`}
+                          >
+                            {#each clockMarks as mark (mark)}
+                              <i
+                                class="analog-clock-mark"
+                                style:--mark-angle={`${mark * 30}deg`}
+                              ></i>
+                            {/each}
+                            <i
+                              class="analog-clock-hand is-hour"
+                              style:--hand-angle={`${clock.hourAngle}deg`}
+                            ></i>
+                            <i
+                              class="analog-clock-hand is-minute"
+                              style:--hand-angle={`${clock.minuteAngle}deg`}
+                            ></i>
+                            <i
+                              class="analog-clock-hand is-second"
+                              style:--hand-angle={`${clock.secondAngle}deg`}
+                            ></i>
+                            <i class="analog-clock-pin"></i>
+                          </div>
+                          <span class="utility-clock-copy">
+                            <strong>{clock.label}</strong>
+                            <small title={clock.timezone}
+                              >{clock.timezone}</small
+                            >
+                          </span>
+                        </div>
                       {/each}
-                      <i
-                        class="analog-clock-hand is-hour"
-                        style:--hand-angle={`${dashboardClock.hourAngle}deg`}
-                      ></i>
-                      <i
-                        class="analog-clock-hand is-minute"
-                        style:--hand-angle={`${dashboardClock.minuteAngle}deg`}
-                      ></i>
-                      <i
-                        class="analog-clock-hand is-second"
-                        style:--hand-angle={`${dashboardClock.secondAngle}deg`}
-                      ></i>
-                      <i class="analog-clock-pin"></i>
                     </div>
-                    <span>{dashboardClock.label} / {dashboardClock.zone}</span>
                   </section>
                   <section
                     class="utility-box utility-calendar"
@@ -4205,8 +4247,56 @@
                   >
                     <p>[ CALENDAR ]</p>
                     <div class="utility-calendar-date">
-                      <strong>{dateLabel}</strong>
-                      <span>{dashboardCalendarMonthLabel}</span>
+                      <div class="utility-calendar-date-copy">
+                        <strong>{dashboardCalendarMonthLabel}</strong>
+                        <span>{dateLabel}</span>
+                      </div>
+                      <div
+                        class="utility-calendar-navigation"
+                        role="group"
+                        aria-label="Navigate dashboard calendar months"
+                        data-od-id="dashboard-calendar-navigation"
+                      >
+                        <button
+                          class="ui-button ui-button--ghost ui-button--icon"
+                          type="button"
+                          aria-label="Show current month"
+                          onclick={showCurrentDashboardCalendarMonth}
+                          data-od-id="dashboard-calendar-today"
+                        >
+                          <CalendarDays
+                            size={15}
+                            strokeWidth={1.8}
+                            aria-hidden="true"
+                          />
+                        </button>
+                        <button
+                          class="ui-button ui-button--ghost ui-button--icon"
+                          type="button"
+                          aria-label="Previous month"
+                          onclick={() => changeDashboardCalendarMonth(-1)}
+                          data-od-id="dashboard-calendar-previous"
+                        >
+                          <ChevronLeft
+                            size={15}
+                            strokeWidth={1.8}
+                            aria-hidden="true"
+                          />
+                        </button>
+                        <button
+                          class="ui-button ui-button--ghost ui-button--icon"
+                          type="button"
+                          aria-label="Next month"
+                          onclick={() => changeDashboardCalendarMonth(1)}
+                          data-od-id="dashboard-calendar-next"
+                        >
+                          <ChevronRight
+                            size={15}
+                            strokeWidth={1.8}
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </div>
                     </div>
                     <div
                       class="utility-calendar-grid"
@@ -4220,6 +4310,8 @@
                         >
                       {/each}
                       {#each dashboardCalendarDays as day (day.key)}
+                        {@const eventSummary =
+                          dashboardCalendarEventsByDate[day.key]}
                         <button
                           class={[
                             "utility-calendar-day",
@@ -4228,11 +4320,21 @@
                           ]}
                           type="button"
                           onclick={() => openDashboardCalendarDate(day.key)}
-                          aria-label={day.key}
+                          aria-label={`${day.key}, ${eventSummary?.count ?? 0} ${eventSummary?.count === 1 ? "calendar item" : "calendar items"}`}
                           aria-current={day.today ? "date" : undefined}
                           data-od-id={`dashboard-calendar-day-${day.key}`}
                         >
                           <time datetime={day.key}>{day.day}</time>
+                          {#if eventSummary}
+                            <span
+                              class="utility-calendar-event-dots"
+                              aria-hidden="true"
+                            >
+                              {#each eventSummary.colors as color (color)}
+                                <i style:--event-color={color}></i>
+                              {/each}
+                            </span>
+                          {/if}
                         </button>
                       {/each}
                     </div>
@@ -4267,10 +4369,7 @@
                             data-od-id={`dashboard-bookmark-${bookmark.id}`}
                           >
                             <span class="bookmark-favicon" aria-hidden="true">
-                              <BookmarkIcon
-                                size={15}
-                                strokeWidth={1.8}
-                              />
+                              <BookmarkIcon size={15} strokeWidth={1.8} />
                               {#if bookmark.has_favicon}
                                 <img
                                   src={bookmarkFaviconUrl(bookmark.id)}
@@ -4293,7 +4392,8 @@
                       </div>
                     {:else}
                       <p class="utility-bookmark-empty">
-                        No saved links yet. Use the add control to keep one close.
+                        No saved links yet. Use the add control to keep one
+                        close.
                       </p>
                     {/if}
                   </section>
@@ -4311,12 +4411,6 @@
                       />
                     </section>
                   {/if}
-                  <section class="utility-box utility-shortcuts">
-                    <p>[ COMMANDS ]</p>
-                    <button type="button" onclick={openWidgetLibrary}
-                      >&gt; add widget</button
-                    >
-                  </section>
                 </aside>
               </div>
             </section>
@@ -4972,6 +5066,7 @@
           {:else if activeSection === "calendar"}
             <CalendarPage
               {tasks}
+              weekStart={dashboard.settings.calendar_week_start}
               onEditTask={openCalendarTask}
               onOpenContact={openCalendarContact}
               initialDate={calendarDetailDate}
@@ -5004,10 +5099,884 @@
             <YoutubePage />
           {:else if activeSection === "podcasts"}
             <PodcastsPage viewerRole={dashboard.user.role} />
+          {:else if activeSection === "music"}
+            <MusicPage
+              onOpenAccountSettings={() => openSettings("user-settings")}
+              onOpenAdminSettings={() =>
+                openSettings(
+                  dashboard?.user.role === "administrator"
+                    ? "network-settings"
+                    : "user-settings",
+                )}
+            />
           {:else if activeSection === "coding"}
             <CodingPage />
           {:else if activeSection === "subscriptions"}
             <SubscriptionsPage />
+          {:else if activeSection === "settings"}
+            <section
+              class="settings-page product-page"
+              data-od-id="settings-page"
+            >
+              <div class="settings-page-intro page-header">
+                <TypedHeading
+                  text={`$ settings --${settingsCategory}`}
+                  odId="settings-heading"
+                />
+                <p>
+                  Manage personal preferences, account security, and
+                  {dashboard.user.role === "administrator"
+                    ? " instance administration"
+                    : " account-owned data"} from one workspace.
+                </p>
+              </div>
+
+              <div class="settings-page-layout">
+                <aside
+                  class="settings-category-rail"
+                  aria-label="Settings categories"
+                  data-od-id="settings-category-sidebar"
+                >
+                  <div class="settings-account-summary">
+                    <span class="settings-avatar" aria-hidden="true">
+                      {#if avatarAvailable}
+                        <img
+                          src={avatarUrl()}
+                          alt=""
+                          onerror={() => (avatarAvailable = false)}
+                        />
+                      {:else}
+                        {profileInitials}
+                      {/if}
+                    </span>
+                    <span>
+                      <strong>{dashboard.settings.display_name}</strong>
+                      <small>{dashboard.user.email}</small>
+                    </span>
+                  </div>
+
+                  {#each settingsGroups as group (group.label)}
+                    {#if !group.administratorOnly || dashboard.user.role === "administrator"}
+                      <section
+                        class="settings-category-group"
+                        aria-labelledby={`settings-group-${group.label.toLowerCase()}`}
+                        data-od-id={`settings-group-${group.label.toLowerCase()}`}
+                      >
+                        <h3 id={`settings-group-${group.label.toLowerCase()}`}>
+                          {group.label}
+                        </h3>
+                        <nav aria-label={`${group.label} settings`}>
+                          {#each group.items as item (item.id)}
+                            <button
+                              class={[
+                                "settings-category-button",
+                                settingsCategory === item.id && "is-active",
+                              ]}
+                              type="button"
+                              aria-current={settingsCategory === item.id
+                                ? "page"
+                                : undefined}
+                              onclick={() => selectSettingsCategory(item.id)}
+                              data-od-id={`settings-nav-${item.id}`}
+                            >
+                              <strong>{item.label}</strong>
+                              <small>{item.description}</small>
+                            </button>
+                          {/each}
+                        </nav>
+                      </section>
+                    {/if}
+                  {/each}
+                </aside>
+
+                <div
+                  class="settings-page-content"
+                  data-od-id={`settings-content-${settingsCategory}`}
+                >
+                  <header class="settings-section-heading">
+                    <p class="widget-kicker">
+                      [ {activeSettingsGroup.label.toUpperCase()} ]
+                    </p>
+                    <h3>{activeSettingsItem.label}</h3>
+                    <p>{activeSettingsItem.description}</p>
+                  </header>
+
+                  {#key settingsCategory}
+                    <div
+                      class="settings-section-body"
+                      role="region"
+                      aria-label={`${activeSettingsItem.label} settings`}
+                      data-od-id="settings-section-scroll"
+                    >
+                      {#if settingsCategory === "preferences"}
+                        <div class="settings-section-stack">
+                          <form
+                            class="settings-section-form settings-form"
+                            onsubmit={savePreferences}
+                            data-od-id="preferences-form"
+                          >
+                            <section
+                              class="settings-surface"
+                              aria-labelledby="regional-preferences-heading"
+                              data-od-id="regional-preferences"
+                            >
+                              <div class="settings-surface-heading">
+                                <div>
+                                  <p class="widget-kicker">
+                                    [ PERSONAL DEFAULTS ]
+                                  </p>
+                                  <h4 id="regional-preferences-heading">
+                                    Regional and content preferences
+                                  </h4>
+                                </div>
+                                <span>Account scoped</span>
+                              </div>
+
+                              <PwaInstallSettings />
+
+                              <div class="settings-field-grid">
+                                <label
+                                  class="settings-field"
+                                  for="settings-location"
+                                >
+                                  <span>Weather location</span>
+                                  <input
+                                    id="settings-location"
+                                    class="text-input"
+                                    bind:value={settingsLocation}
+                                    maxlength="80"
+                                    required
+                                  />
+                                </label>
+
+                                <label
+                                  class="settings-field"
+                                  for="settings-timezone"
+                                >
+                                  <span>Timezone</span>
+                                  <input
+                                    id="settings-timezone"
+                                    class="text-input"
+                                    bind:value={settingsTimezone}
+                                    maxlength="80"
+                                    placeholder="Europe/London"
+                                    required
+                                  />
+                                </label>
+
+                                <label
+                                  class="settings-field"
+                                  for="settings-temperature"
+                                >
+                                  <span>Temperature unit</span>
+                                  <select
+                                    id="settings-temperature"
+                                    class="select-input"
+                                    bind:value={settingsTemperatureUnit}
+                                  >
+                                    <option value="celsius">Celsius</option>
+                                    <option value="fahrenheit"
+                                      >Fahrenheit</option
+                                    >
+                                  </select>
+                                </label>
+
+                                <label
+                                  class="settings-field"
+                                  for="settings-calendar-week-start"
+                                >
+                                  <span>Calendar week starts on</span>
+                                  <select
+                                    id="settings-calendar-week-start"
+                                    class="select-input"
+                                    bind:value={settingsCalendarWeekStart}
+                                    data-od-id="settings-calendar-week-start"
+                                  >
+                                    <option value="sunday">Sunday</option>
+                                    <option value="monday">Monday</option>
+                                  </select>
+                                </label>
+
+                                <label
+                                  class="settings-field"
+                                  for="settings-lines-visibility"
+                                >
+                                  <span>Lines default visibility</span>
+                                  <select
+                                    id="settings-lines-visibility"
+                                    class="select-input"
+                                    bind:value={settingsLinesDefaultVisibility}
+                                    data-od-id="settings-lines-default-visibility"
+                                  >
+                                    <option value="private"
+                                      >Private — only me</option
+                                    >
+                                    <option value="public"
+                                      >Instance — all signed-in users</option
+                                    >
+                                  </select>
+                                </label>
+                              </div>
+
+                              {#if settingsError}
+                                <p class="form-error" role="alert">
+                                  {settingsError}
+                                </p>
+                              {/if}
+
+                              <div class="settings-surface-actions">
+                                <button
+                                  class="ui-button ui-button--primary"
+                                  type="submit"
+                                  disabled={savingSettings}
+                                  data-od-id="save-preferences"
+                                >
+                                  {savingSettings
+                                    ? "Saving…"
+                                    : "Save preferences"}
+                                </button>
+                              </div>
+                            </section>
+                          </form>
+
+                          <section
+                            class="settings-background-section"
+                            aria-labelledby="main-background-heading"
+                            data-od-id="preferences-main-background"
+                          >
+                            <div class="settings-subsection-heading">
+                              <p class="widget-kicker">
+                                [ APPEARANCE / PERSONAL ]
+                              </p>
+                              <h4 id="main-background-heading">
+                                Main background
+                              </h4>
+                              <p>
+                                Choose the image and processing used behind
+                                signed-in pages. This never changes the public
+                                Login screen.
+                              </p>
+                            </div>
+                            <BackgroundSettings
+                              slot="welcome"
+                              appearance={dashboard.appearance}
+                              {authConfig}
+                              revision={wallpaperRevisions.welcome}
+                              onMainSaved={applyMainAppearance}
+                              onLoginSaved={applyLoginAppearance}
+                              onRevision={refreshSettingsWallpaper}
+                              onOpenWalls={openWallsFromAppearance}
+                              onToast={showToast}
+                            />
+                          </section>
+                        </div>
+                      {:else if settingsCategory === "custom-pages"}
+                        <EmbeddedPagesSettings
+                          pages={dashboard.embedded_pages}
+                          isAdministrator={dashboard.user.role ===
+                            "administrator"}
+                          onPagesChange={applyEmbeddedPages}
+                          onPageDeleted={handleEmbeddedPageDeleted}
+                        />
+                      {:else if settingsCategory === "user-settings"}
+                        <div
+                          class="settings-section-stack"
+                          data-od-id="user-settings-stack"
+                        >
+                          <form
+                            class="settings-section-form settings-form"
+                            onsubmit={saveUserSettings}
+                            data-od-id="user-settings-form"
+                          >
+                          <section
+                            class="settings-surface"
+                            aria-labelledby="profile-identity-heading"
+                            data-od-id="profile-identity-settings"
+                          >
+                            <div class="settings-surface-heading">
+                              <div>
+                                <p class="widget-kicker">
+                                  [ ACCOUNT IDENTITY ]
+                                </p>
+                                <h4 id="profile-identity-heading">Profile</h4>
+                              </div>
+                              <span>
+                                {dashboard.user.role === "administrator"
+                                  ? "Administrator"
+                                  : "Member"}
+                              </span>
+                            </div>
+
+                            <div
+                              class="profile-avatar-editor"
+                              data-od-id="avatar-settings"
+                            >
+                              <span class="settings-avatar" aria-hidden="true">
+                                {#if avatarPreviewSource()}
+                                  <img
+                                    src={avatarPreviewSource()}
+                                    alt=""
+                                    onerror={() => (avatarAvailable = false)}
+                                  />
+                                {:else}
+                                  {profileInitials}
+                                {/if}
+                              </span>
+                              <div class="profile-avatar-copy">
+                                <strong>Profile image</strong>
+                                <span
+                                  >JPEG, PNG, WebP, or AVIF up to 10 MB.</span
+                                >
+                              </div>
+                              <div class="profile-avatar-actions">
+                                <label
+                                  class="ui-button ui-button--secondary secondary-btn avatar-upload"
+                                >
+                                  Choose image
+                                  <input
+                                    type="file"
+                                    accept="image/jpeg,image/png,image/webp,image/avif"
+                                    onchange={selectAvatar}
+                                    data-od-id="choose-user-avatar"
+                                  />
+                                </label>
+                                <button
+                                  class="ui-button ui-button--danger background-reset"
+                                  type="button"
+                                  onclick={resetAvatar}
+                                  data-od-id="remove-user-avatar">Remove</button
+                                >
+                              </div>
+                            </div>
+
+                            <div class="settings-field-grid">
+                              <label class="settings-field" for="settings-name">
+                                <span>Display name</span>
+                                <input
+                                  id="settings-name"
+                                  class="text-input"
+                                  bind:value={settingsDisplayName}
+                                  maxlength="60"
+                                  required
+                                />
+                              </label>
+                              <label
+                                class="settings-field"
+                                for="settings-email"
+                              >
+                                <span>Email address</span>
+                                <input
+                                  id="settings-email"
+                                  class="text-input"
+                                  type="email"
+                                  value={dashboard.user.email}
+                                  readonly
+                                  aria-describedby="settings-email-note"
+                                />
+                                <small id="settings-email-note">
+                                  This is the account identifier and cannot be
+                                  changed from Pandan.
+                                </small>
+                              </label>
+                            </div>
+
+                            <div
+                              class="settings-method-summary"
+                              data-od-id="account-sign-in-method"
+                            >
+                              <div>
+                                <p class="widget-kicker">[ SIGN-IN METHOD ]</p>
+                                <strong>
+                                  {#if !authConfig.password_login_enabled && authConfig.oidc_enabled}
+                                    {authConfig.oidc_provider_name ??
+                                      "Single sign-on"}
+                                  {:else if authConfig.oidc_enabled}
+                                    Password or {authConfig.oidc_provider_name ??
+                                      "single sign-on"}
+                                  {:else}
+                                    Email and password
+                                  {/if}
+                                </strong>
+                              </div>
+                              <p>
+                                {#if !authConfig.password_login_enabled && authConfig.oidc_enabled}
+                                  This instance uses OIDC. Password access is
+                                  disabled, so credentials are managed by the
+                                  identity provider.
+                                {:else if authConfig.oidc_enabled}
+                                  This instance accepts password access and
+                                  OIDC. Your email remains the shared account
+                                  identifier.
+                                {:else}
+                                  This instance uses password access.
+                                  Credentials are verified by the Pandan server.
+                                {/if}
+                              </p>
+                            </div>
+
+                            {#if settingsError}
+                              <p class="form-error" role="alert">
+                                {settingsError}
+                              </p>
+                            {/if}
+
+                            <div class="settings-surface-actions">
+                              <button
+                                class="ui-button ui-button--primary"
+                                type="submit"
+                                disabled={savingSettings}
+                                data-od-id="save-user-settings"
+                              >
+                                {savingSettings
+                                  ? "Saving…"
+                                  : "Save user settings"}
+                              </button>
+                            </div>
+                          </section>
+                          </form>
+                          <JellyfinSettings mode="account" />
+                        </div>
+                      {:else if settingsCategory === "sessions"}
+                        <section
+                          class="settings-surface session-settings"
+                          aria-labelledby="current-session-heading"
+                          data-od-id="sessions-settings"
+                        >
+                          <div class="settings-surface-heading">
+                            <div>
+                              <p class="widget-kicker">[ ACTIVE SESSION ]</p>
+                              <h4 id="current-session-heading">This browser</h4>
+                            </div>
+                            <span class="session-status">Active</span>
+                          </div>
+                          <dl class="session-details">
+                            <div>
+                              <dt>Account</dt>
+                              <dd>{dashboard.user.email}</dd>
+                            </div>
+                            <div>
+                              <dt>Protection</dt>
+                              <dd>HTTP-only · SameSite Strict</dd>
+                            </div>
+                            <div>
+                              <dt>Scope</dt>
+                              <dd>Current browser session</dd>
+                            </div>
+                          </dl>
+                          <p class="settings-supporting-copy">
+                            Pandan exposes only the session active in this
+                            browser. Signing out revokes its server-side token
+                            immediately.
+                          </p>
+                          <div class="settings-surface-actions">
+                            <button
+                              class="ui-button ui-button--danger"
+                              type="button"
+                              onclick={signOut}
+                              data-od-id="sign-out-current-session"
+                            >
+                              Sign out this session
+                            </button>
+                          </div>
+                        </section>
+                      {:else if settingsCategory === "data-management"}
+                        <section
+                          class="settings-surface data-management-settings"
+                          aria-labelledby="data-management-heading"
+                          data-od-id="data-management-settings"
+                        >
+                          <div class="settings-surface-heading">
+                            <div>
+                              <p class="widget-kicker">
+                                [ DESTRUCTIVE ACTIONS ]
+                              </p>
+                              <h4 id="data-management-heading">
+                                Delete account content
+                              </h4>
+                            </div>
+                            <span>Permanent</span>
+                          </div>
+                          <div class="destructive-notice">
+                            <Trash2
+                              size={17}
+                              strokeWidth={1.8}
+                              aria-hidden="true"
+                            />
+                            <p>
+                              Deletions cannot be undone. The first press arms
+                              one content area; a second press confirms it.
+                            </p>
+                          </div>
+                          {#if destructiveError}
+                            <p class="form-error" role="alert">
+                              {destructiveError}
+                            </p>
+                          {/if}
+                          <div class="destructive-list">
+                            {#each destructiveContentActions as action (action.scope)}
+                              <article
+                                data-od-id={`delete-${action.scope}-content`}
+                              >
+                                <div>
+                                  <strong>{action.title}</strong>
+                                  <small>{action.description}</small>
+                                </div>
+                                <button
+                                  class={[
+                                    "ui-button",
+                                    "ui-button--danger",
+                                    pendingContentDeletion === action.scope &&
+                                      "confirm",
+                                  ]}
+                                  type="button"
+                                  disabled={deletingContentScope !== null}
+                                  onclick={() => removeContentArea(action)}
+                                >
+                                  {deletingContentScope === action.scope
+                                    ? "Deleting…"
+                                    : pendingContentDeletion === action.scope
+                                      ? "Confirm delete"
+                                      : "Delete"}
+                                </button>
+                              </article>
+                            {/each}
+                          </div>
+                        </section>
+                      {:else if settingsCategory === "instance-settings" && dashboard.user.role === "administrator"}
+                        <div class="settings-section-stack">
+                          <section
+                            class="authentication-policy"
+                            aria-labelledby="authentication-policy-title"
+                            data-od-id="authentication-policy"
+                          >
+                            <div class="authentication-policy-heading">
+                              <div>
+                                <p class="widget-kicker">
+                                  [ AUTHENTICATION POLICY ]
+                                </p>
+                                <h4 id="authentication-policy-title">
+                                  Account access
+                                </h4>
+                              </div>
+                              <span>
+                                {authConfig.oidc_enabled
+                                  ? "OIDC ready"
+                                  : "OIDC unavailable"}
+                              </span>
+                            </div>
+
+                            <div class="authentication-policy-row">
+                              <span>
+                                <strong id="password-login-label">
+                                  Password login
+                                </strong>
+                                <small id="password-login-description">
+                                  Allow existing accounts to sign in with email
+                                  and password.
+                                </small>
+                              </span>
+                              <button
+                                class="ui-toggle-button authentication-policy-toggle"
+                                type="button"
+                                aria-pressed={passwordLoginEnabled}
+                                aria-labelledby="password-login-label"
+                                aria-describedby="password-login-description"
+                                disabled={loadingUsers ||
+                                  !authConfig.oidc_enabled ||
+                                  savingAuthenticationSettings}
+                                onclick={() =>
+                                  (passwordLoginEnabled =
+                                    !passwordLoginEnabled)}
+                                data-od-id="password-login-enabled"
+                              >
+                                <span
+                                  class="ui-toggle-indicator"
+                                  aria-hidden="true"
+                                ></span>
+                              </button>
+                            </div>
+                            <div class="authentication-policy-row">
+                              <span>
+                                <strong id="password-registration-label">
+                                  Password registration
+                                </strong>
+                                <small id="password-registration-description">
+                                  Allow visitors to create password-based
+                                  accounts.
+                                </small>
+                              </span>
+                              <button
+                                class="ui-toggle-button authentication-policy-toggle"
+                                type="button"
+                                aria-pressed={passwordRegistrationEnabled}
+                                aria-labelledby="password-registration-label"
+                                aria-describedby="password-registration-description"
+                                disabled={loadingUsers ||
+                                  savingAuthenticationSettings}
+                                onclick={() =>
+                                  (passwordRegistrationEnabled =
+                                    !passwordRegistrationEnabled)}
+                                data-od-id="password-registration-enabled"
+                              >
+                                <span
+                                  class="ui-toggle-indicator"
+                                  aria-hidden="true"
+                                ></span>
+                              </button>
+                            </div>
+                            <div class="authentication-policy-row">
+                              <span>
+                                <strong id="oidc-registration-label">
+                                  OIDC registration
+                                </strong>
+                                <small id="oidc-registration-description">
+                                  Allow verified OIDC identities to create new
+                                  accounts. Existing users can still sign in.
+                                </small>
+                              </span>
+                              <button
+                                class="ui-toggle-button authentication-policy-toggle"
+                                type="button"
+                                aria-pressed={oidcRegistrationEnabled}
+                                aria-labelledby="oidc-registration-label"
+                                aria-describedby="oidc-registration-description"
+                                disabled={loadingUsers ||
+                                  !authConfig.oidc_enabled ||
+                                  savingAuthenticationSettings}
+                                onclick={() =>
+                                  (oidcRegistrationEnabled =
+                                    !oidcRegistrationEnabled)}
+                                data-od-id="oidc-registration-enabled"
+                              >
+                                <span
+                                  class="ui-toggle-indicator"
+                                  aria-hidden="true"
+                                ></span>
+                              </button>
+                            </div>
+                            {#if !authConfig.oidc_enabled}
+                              <p class="authentication-policy-help">
+                                Configure OIDC before disabling password login
+                                or changing OIDC registration.
+                              </p>
+                            {/if}
+                            {#if adminError}
+                              <p
+                                class="form-error settings-inline-error"
+                                role="alert"
+                              >
+                                {adminError}
+                              </p>
+                            {/if}
+                            <div class="authentication-policy-actions">
+                              <button
+                                class="ui-button ui-button--primary"
+                                type="button"
+                                disabled={loadingUsers ||
+                                  savingAuthenticationSettings}
+                                onclick={() =>
+                                  void saveAuthenticationSettings()}
+                                data-od-id="save-authentication-settings"
+                              >
+                                {savingAuthenticationSettings
+                                  ? "Saving…"
+                                  : "Save access settings"}
+                              </button>
+                            </div>
+                          </section>
+
+                          <section
+                            class="settings-background-section"
+                            aria-labelledby="login-background-heading"
+                            data-od-id="instance-login-background"
+                          >
+                            <div class="settings-subsection-heading">
+                              <p class="widget-kicker">
+                                [ APPEARANCE / INSTANCE ]
+                              </p>
+                              <h4 id="login-background-heading">
+                                Login background
+                              </h4>
+                              <p>
+                                Manage the public background shown before
+                                authentication. This never changes a member's
+                                Main background.
+                              </p>
+                            </div>
+                            <BackgroundSettings
+                              slot="login"
+                              appearance={dashboard.appearance}
+                              {authConfig}
+                              revision={wallpaperRevisions.login}
+                              onMainSaved={applyMainAppearance}
+                              onLoginSaved={applyLoginAppearance}
+                              onRevision={refreshSettingsWallpaper}
+                              onOpenWalls={openWallsFromAppearance}
+                              onToast={showToast}
+                            />
+                          </section>
+                        </div>
+                      {:else if settingsCategory === "network-settings" && dashboard.user.role === "administrator"}
+                        <div class="settings-section-stack">
+                          <JellyfinSettings mode="admin" />
+                          <NetworkAccessSettings />
+                        </div>
+                      {:else if settingsCategory === "user-management" && dashboard.user.role === "administrator"}
+                        <section
+                          class="settings-surface user-management-settings"
+                          aria-labelledby="user-management-heading"
+                          data-od-id="user-management-settings"
+                        >
+                          <div class="settings-surface-heading">
+                            <div>
+                              <p class="widget-kicker">[ USER DIRECTORY ]</p>
+                              <h4 id="user-management-heading">
+                                {managedUsers.length} users · {administratorCount}
+                                administrators
+                              </h4>
+                            </div>
+                            <span>Instance scoped</span>
+                          </div>
+                          <div class="admin-directory-note">
+                            <p>
+                              Role changes apply immediately. Your own
+                              administrator account is locked here to protect
+                              access.
+                            </p>
+                          </div>
+
+                          {#if adminError}
+                            <p class="form-error" role="alert">{adminError}</p>
+                          {/if}
+
+                          {#if loadingUsers}
+                            <div class="admin-loading" role="status">
+                              <span class="sr-only"
+                                >Loading user directory…</span
+                              >
+                              {#each [1, 2, 3] as row (row)}
+                                <span
+                                  class="admin-loading-row"
+                                  aria-hidden="true"
+                                ></span>
+                              {/each}
+                            </div>
+                          {:else}
+                            <div class="admin-user-list">
+                              {#each managedUsers as user (user.id)}
+                                <article
+                                  class="admin-user-row"
+                                  data-od-id={`managed-user-${user.id}`}
+                                >
+                                  <div class="admin-avatar" aria-hidden="true">
+                                    {memberInitials(user)}
+                                  </div>
+                                  <div class="admin-user-copy">
+                                    <div class="admin-user-name">
+                                      <strong>{user.display_name}</strong>
+                                      {#if user.id === dashboard.user.id}
+                                        <span class="you-badge">You</span>
+                                      {/if}
+                                    </div>
+                                    <span>{user.email}</span>
+                                    <small
+                                      >Joined {memberSince(
+                                        user.created_at,
+                                      )}</small
+                                    >
+                                    <small
+                                      data-od-id={`user-last-login-${user.id}`}
+                                    >
+                                      Last login {lastLogin(user.last_login_at)}
+                                    </small>
+                                  </div>
+                                  <div class="admin-user-controls">
+                                    <label
+                                      class="sr-only"
+                                      for={`role-${user.id}`}
+                                    >
+                                      Role for {user.display_name}
+                                    </label>
+                                    <select
+                                      id={`role-${user.id}`}
+                                      class="select-input role-select"
+                                      value={user.role}
+                                      disabled={user.id === dashboard.user.id ||
+                                        mutatingUserId !== ""}
+                                      onchange={(event) =>
+                                        handleRoleChange(event, user)}
+                                      data-od-id={`user-role-${user.id}`}
+                                    >
+                                      <option value="member">Member</option>
+                                      <option value="administrator">
+                                        Administrator
+                                      </option>
+                                    </select>
+                                    <button
+                                      class="ui-button ui-button--danger remove-user-btn"
+                                      type="button"
+                                      disabled={user.id === dashboard.user.id ||
+                                        mutatingUserId !== ""}
+                                      aria-label={`Remove ${user.display_name}`}
+                                      onclick={() =>
+                                        (pendingRemovalId = user.id)}
+                                      data-od-id={`remove-user-${user.id}`}
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
+                                  {#if pendingRemovalId === user.id}
+                                    <div
+                                      class="remove-confirmation"
+                                      data-od-id={`remove-confirmation-${user.id}`}
+                                    >
+                                      <p>
+                                        <strong
+                                          >Remove {user.display_name}?</strong
+                                        >
+                                        <span>
+                                          Their dashboard, settings, and active
+                                          sessions will be deleted.
+                                        </span>
+                                      </p>
+                                      <div>
+                                        <button
+                                          class="ui-button ui-button--secondary secondary-btn"
+                                          type="button"
+                                          onclick={() =>
+                                            (pendingRemovalId = "")}
+                                        >
+                                          Keep account
+                                        </button>
+                                        <button
+                                          class="ui-button ui-button--danger remove-user-btn confirm-remove"
+                                          type="button"
+                                          disabled={mutatingUserId !== ""}
+                                          onclick={() =>
+                                            removeManagedUser(user)}
+                                        >
+                                          {mutatingUserId === user.id
+                                            ? "Removing…"
+                                            : "Confirm removal"}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  {/if}
+                                </article>
+                              {:else}
+                                <p class="empty-state roomy">
+                                  No user accounts found.
+                                </p>
+                              {/each}
+                            </div>
+                          {/if}
+                        </section>
+                      {/if}
+                    </div>
+                  {/key}
+                </div>
+              </div>
+            </section>
           {:else if activeSection === "notifications"}
             {#key ntfyFocusedNotificationId}
               <NtfyPage
@@ -5062,7 +6031,7 @@
 
   <!--
     The player lives in the shell, outside the `{#if activeSection}` chain above.
-    An audio element owned by PodcastsPage.svelte would be destroyed the moment
+    An audio element owned by a product page would be destroyed the moment
     someone navigated to another section, cutting playback off mid-sentence.
   -->
   <audio
@@ -5079,34 +6048,42 @@
     onended={() => podcastPlayer.handleEnded()}
   ></audio>
 
-  {#if podcastPlayer.episode}
-    <div class="podcast-player-bar" data-od-id="podcast-player">
+  {#if podcastPlayer.source}
+    <div class="podcast-player-bar" data-od-id="audio-player">
       <div class="podcast-player-transport">
         <button
           class="ui-button ui-button--ghost ui-button--icon"
           type="button"
-          data-tip="Previous episode"
+          data-tip={podcastPlayer.source === "jellyfin"
+            ? "Previous track"
+            : "Previous episode"}
           aria-label={podcastPlayer.hasPrevious
-            ? "Play the previous episode"
-            : "Restart this episode"}
+            ? podcastPlayer.source === "jellyfin"
+              ? "Play the previous track"
+              : "Play the previous episode"
+            : podcastPlayer.source === "jellyfin"
+              ? "Restart this track"
+              : "Restart this episode"}
           onclick={() => podcastPlayer.playPrevious()}
         >
           <SkipBack size={16} strokeWidth={1.9} />
         </button>
-        <button
-          class="ui-button ui-button--ghost ui-button--icon"
-          type="button"
-          data-tip={`Back ${SKIP_BACK_SECONDS}s`}
-          aria-label={`Skip back ${SKIP_BACK_SECONDS} seconds`}
-          onclick={() => podcastPlayer.skip(-SKIP_BACK_SECONDS)}
-        >
-          <RotateCcw size={16} strokeWidth={1.9} />
-        </button>
+        {#if podcastPlayer.source === "podcast"}
+          <button
+            class="ui-button ui-button--ghost ui-button--icon"
+            type="button"
+            data-tip={`Back ${SKIP_BACK_SECONDS}s`}
+            aria-label={`Skip back ${SKIP_BACK_SECONDS} seconds`}
+            onclick={() => podcastPlayer.skip(-SKIP_BACK_SECONDS)}
+          >
+            <RotateCcw size={16} strokeWidth={1.9} />
+          </button>
+        {/if}
         <button
           class="ui-button ui-button--primary ui-button--icon"
           type="button"
           data-tip={podcastPlayer.playing ? "Pause" : "Play"}
-          aria-label={podcastPlayer.playing ? "Pause episode" : "Play episode"}
+          aria-label={podcastPlayer.playing ? "Pause playback" : "Play"}
           onclick={() => podcastPlayer.toggle()}
         >
           {#if podcastPlayer.playing}
@@ -5115,20 +6092,26 @@
             <Play size={17} strokeWidth={2} />
           {/if}
         </button>
+        {#if podcastPlayer.source === "podcast"}
+          <button
+            class="ui-button ui-button--ghost ui-button--icon"
+            type="button"
+            data-tip={`Forward ${SKIP_FORWARD_SECONDS}s`}
+            aria-label={`Skip forward ${SKIP_FORWARD_SECONDS} seconds`}
+            onclick={() => podcastPlayer.skip(SKIP_FORWARD_SECONDS)}
+          >
+            <RotateCw size={16} strokeWidth={1.9} />
+          </button>
+        {/if}
         <button
           class="ui-button ui-button--ghost ui-button--icon"
           type="button"
-          data-tip={`Forward ${SKIP_FORWARD_SECONDS}s`}
-          aria-label={`Skip forward ${SKIP_FORWARD_SECONDS} seconds`}
-          onclick={() => podcastPlayer.skip(SKIP_FORWARD_SECONDS)}
-        >
-          <RotateCw size={16} strokeWidth={1.9} />
-        </button>
-        <button
-          class="ui-button ui-button--ghost ui-button--icon"
-          type="button"
-          data-tip="Next episode"
-          aria-label="Play the next queued episode"
+          data-tip={podcastPlayer.source === "jellyfin"
+            ? "Next track"
+            : "Next episode"}
+          aria-label={podcastPlayer.source === "jellyfin"
+            ? "Play the next queued track"
+            : "Play the next queued episode"}
           disabled={!podcastPlayer.hasNext}
           onclick={() => podcastPlayer.playNext()}
         >
@@ -5137,8 +6120,14 @@
       </div>
 
       <div class="podcast-player-meta">
-        <strong>{podcastPlayer.episode.title}</strong>
-        <small>{podcastPlayer.episode.podcast_title}</small>
+        <strong>{podcastPlayer.title}</strong>
+        {#if podcastPlayer.error}
+          <small class="podcast-player-error" role="alert"
+            >{podcastPlayer.error}</small
+          >
+        {:else}
+          <small>{podcastPlayer.subtitle}</small>
+        {/if}
       </div>
 
       <label class="podcast-player-scrub">
@@ -5151,7 +6140,9 @@
           max={Math.max(podcastPlayer.duration, 1)}
           step="1"
           value={podcastPlayer.currentTime}
-          aria-label="Seek within the episode"
+          aria-label={podcastPlayer.source === "jellyfin"
+            ? "Seek within the track"
+            : "Seek within the episode"}
           oninput={(event) =>
             podcastPlayer.seek(Number(event.currentTarget.value))}
         />
@@ -5222,18 +6213,20 @@
         </div>
       </div>
 
-      <label class="podcast-player-rate" data-tip="Playback speed">
-        <span class="visually-hidden-label">Playback speed</span>
-        <select
-          value={podcastPlayer.playbackRate}
-          onchange={(event) =>
-            savePlaybackRate(Number(event.currentTarget.value))}
-        >
-          {#each [0.75, 1, 1.25, 1.5, 1.75, 2] as rate (rate)}
-            <option value={rate}>{rate}&#215;</option>
-          {/each}
-        </select>
-      </label>
+      {#if podcastPlayer.source === "podcast"}
+        <label class="podcast-player-rate" data-tip="Playback speed">
+          <span class="visually-hidden-label">Playback speed</span>
+          <select
+            value={podcastPlayer.playbackRate}
+            onchange={(event) =>
+              savePlaybackRate(Number(event.currentTarget.value))}
+          >
+            {#each [0.75, 1, 1.25, 1.5, 1.75, 2] as rate (rate)}
+              <option value={rate}>{rate}&#215;</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
 
       <button
         class="ui-button ui-button--ghost ui-button--icon podcast-player-close"
@@ -6046,850 +7039,6 @@
           </p>
         {/if}
       </section>
-    </div>
-  </dialog>
-
-  <dialog
-    class="settings-dialog profile-settings-dialog"
-    {@attach captureSettingsDialog}
-    onclose={clearUserSettingsDrafts}
-    onclick={(event) =>
-      event.target === settingsDialog && settingsDialog.close()}
-    data-od-id="user-settings-dialog"
-  >
-    <div class="settings-heading">
-      <div>
-        <h2>Account settings</h2>
-        <p>
-          {dashboard.user.role === "administrator" ? "Administrator" : "Member"} /
-          {dashboard.user.email}
-        </p>
-      </div>
-      <button
-        class="ui-button ui-button--ghost ui-button--icon dialog-close"
-        aria-label="Close account settings"
-        onclick={() => settingsDialog?.close()}
-        ><X size={18} strokeWidth={1.8} aria-hidden="true" /></button
-      >
-    </div>
-
-    <form
-      class="settings-form"
-      onsubmit={saveSettings}
-      data-od-id="user-settings-form"
-    >
-      <div
-        class="settings-form-scroll"
-        {@attach captureSettingsScrollContainer}
-      >
-        <PwaInstallSettings />
-        <div class="profile-avatar-editor" data-od-id="avatar-settings">
-          <span class="settings-avatar" aria-hidden="true">
-            {#if avatarPreviewSource()}
-              <img
-                src={avatarPreviewSource()}
-                alt=""
-                onerror={() => (avatarAvailable = false)}
-              />
-            {:else}
-              {profileInitials}
-            {/if}
-          </span>
-          <div class="profile-avatar-copy">
-            <strong>Profile image</strong>
-            <span>JPEG, PNG, WebP, or AVIF up to 10 MB.</span>
-          </div>
-          <div class="profile-avatar-actions">
-            <label
-              class="ui-button ui-button--secondary secondary-btn avatar-upload"
-            >
-              Choose image
-              <input
-                type="file"
-                accept="image/jpeg,image/png,image/webp,image/avif"
-                onchange={selectAvatar}
-                data-od-id="choose-user-avatar"
-              />
-            </label>
-            <button
-              class="ui-button ui-button--danger background-reset"
-              type="button"
-              onclick={resetAvatar}
-              data-od-id="remove-user-avatar">Remove</button
-            >
-          </div>
-        </div>
-
-        <label for="settings-name">Display name</label>
-        <input
-          id="settings-name"
-          class="text-input"
-          bind:value={settingsDisplayName}
-          maxlength="60"
-          required
-        />
-
-        <label for="settings-location">Weather location</label>
-        <input
-          id="settings-location"
-          class="text-input"
-          bind:value={settingsLocation}
-          maxlength="80"
-          required
-        />
-
-        <label for="settings-timezone">Timezone</label>
-        <input
-          id="settings-timezone"
-          class="text-input"
-          bind:value={settingsTimezone}
-          maxlength="80"
-          placeholder="Europe/London"
-          required
-        />
-
-        <label for="settings-temperature">Temperature unit</label>
-        <select
-          id="settings-temperature"
-          class="select-input"
-          bind:value={settingsTemperatureUnit}
-        >
-          <option value="celsius">Celsius</option>
-          <option value="fahrenheit">Fahrenheit</option>
-        </select>
-
-        <label for="settings-lines-visibility">Lines default visibility</label>
-        <select
-          id="settings-lines-visibility"
-          class="select-input"
-          bind:value={settingsLinesDefaultVisibility}
-          data-od-id="settings-lines-default-visibility"
-        >
-          <option value="private">Private — only me</option>
-          <option value="public">Instance — all signed-in users</option>
-        </select>
-
-        {#if settingsError}
-          <p class="form-error" role="alert">{settingsError}</p>
-        {/if}
-
-        <button
-          class="admin-entry"
-          type="button"
-          onclick={openAppearance}
-          data-od-id="open-dashboard-appearance"
-        >
-          <span
-            ><strong>Appearance</strong><small
-              >{dashboard.user.role === "administrator"
-                ? "Main and Login backgrounds"
-                : "Main background and processing"}</small
-            ></span
-          >
-          <ImageIcon size={18} strokeWidth={1.8} aria-hidden="true" />
-        </button>
-
-        <button
-          class="admin-entry"
-          type="button"
-          onclick={openEmbeddedPagesSettings}
-          data-od-id="open-embedded-pages-settings"
-        >
-          <span
-            ><strong>Embedded pages</strong><small
-              >Personal links{dashboard.user.role === "administrator"
-                ? " and global instance links"
-                : " in your sidebar"}</small
-            ></span
-          >
-          <PanelTop size={18} strokeWidth={1.8} aria-hidden="true" />
-        </button>
-
-        {#if dashboard.user.role === "administrator"}
-          <button
-            class="admin-entry"
-            type="button"
-            onclick={openAdministration}
-            data-od-id="open-user-administration"
-          >
-            <span
-              ><strong>User administration</strong><small
-                >Roles, access, and account removal</small
-              ></span
-            >
-            <ArrowRight size={18} strokeWidth={1.8} aria-hidden="true" />
-          </button>
-        {/if}
-        <button
-          class="admin-entry destructive-entry"
-          type="button"
-          onclick={openDestructiveActions}
-          data-od-id="open-destructive-actions"
-        >
-          <span
-            ><strong>Destructive Actions</strong><small
-              >Permanently Remove Complete Areas Of Your Data</small
-            ></span
-          >
-          <Trash2 size={18} strokeWidth={1.8} aria-hidden="true" />
-        </button>
-      </div>
-
-      <div class="settings-actions">
-        <button
-          class="ui-button ui-button--ghost sign-out-btn"
-          type="button"
-          onclick={signOut}>Sign out</button
-        >
-        <button
-          class="ui-button ui-button--primary primary-btn"
-          type="submit"
-          disabled={savingSettings}
-          data-od-id="save-user-settings"
-        >
-          {savingSettings ? "Saving…" : "Save changes"}
-        </button>
-      </div>
-    </form>
-  </dialog>
-
-  {#if embeddedPagesSettingsOpen}
-    <EmbeddedPagesSettings
-      pages={dashboard.embedded_pages}
-      isAdministrator={dashboard.user.role === "administrator"}
-      onPagesChange={applyEmbeddedPages}
-      onPageDeleted={handleEmbeddedPageDeleted}
-      onClose={() => closeEmbeddedPagesSettings()}
-      onBack={() => closeEmbeddedPagesSettings(true)}
-    />
-  {/if}
-
-  <dialog
-    class="settings-dialog destructive-dialog"
-    {@attach captureDestructiveDialog}
-    onclick={(event) =>
-      event.target === destructiveDialog && void closeDestructiveActions()}
-    data-od-id="destructive-actions-dialog"
-  >
-    <div class="settings-heading">
-      <button
-        class="nested-dialog-back"
-        type="button"
-        aria-label="Go Back To Account Settings"
-        onclick={() => closeDestructiveActions(true)}
-        data-od-id="back-to-settings-from-destructive-actions"
-      >
-        <ChevronLeft size={17} strokeWidth={1.8} aria-hidden="true" />
-        <span>Settings</span>
-      </button>
-      <div>
-        <h2>Destructive Actions</h2>
-        <p>Permanent, Account-Scoped Content Deletion</p>
-      </div>
-      <button
-        class="ui-button ui-button--ghost ui-button--icon dialog-close"
-        aria-label="Close Destructive Actions"
-        onclick={() => closeDestructiveActions()}
-        ><X size={18} strokeWidth={1.8} aria-hidden="true" /></button
-      >
-    </div>
-
-    <div class="destructive-content">
-      <div class="destructive-notice">
-        <Trash2 size={18} aria-hidden="true" />
-        <p>
-          These Actions Permanently Delete Only Your Account’s Records. They
-          Cannot Be Undone.
-        </p>
-      </div>
-      {#if destructiveError}
-        <p class="form-error" role="alert">{destructiveError}</p>
-      {/if}
-      <div class="destructive-list">
-        {#each destructiveContentActions as action (action.scope)}
-          <article data-od-id={`delete-${action.scope}-data`}>
-            <div>
-              <strong>{action.title}</strong>
-              <small>{action.description}</small>
-            </div>
-            <button
-              class="ui-button ui-button--danger"
-              class:confirm={pendingContentDeletion === action.scope}
-              type="button"
-              disabled={Boolean(deletingContentScope)}
-              onclick={() => removeContentArea(action)}
-            >
-              {deletingContentScope === action.scope
-                ? "Deleting…"
-                : pendingContentDeletion === action.scope
-                  ? "Confirm Delete"
-                  : "Delete All"}
-            </button>
-          </article>
-        {/each}
-      </div>
-    </div>
-  </dialog>
-
-  <dialog
-    class="settings-dialog appearance-dialog"
-    {@attach captureAppearanceDialog}
-    onclose={resetAppearanceDraft}
-    onclick={(event) =>
-      event.target === appearanceDialog && void closeAppearance()}
-    data-od-id="dashboard-appearance-dialog"
-  >
-    <div class="settings-heading">
-      <button
-        class="nested-dialog-back"
-        type="button"
-        aria-label="Go back to account settings"
-        onclick={() => void closeAppearance(true)}
-        data-od-id="back-to-settings-from-appearance"
-      >
-        <ChevronLeft size={17} strokeWidth={1.8} aria-hidden="true" />
-        <span>Settings</span>
-      </button>
-      <div>
-        <h2>Appearance</h2>
-        <p>
-          {dashboard.user.role === "administrator"
-            ? "Personal Main and global Login background controls"
-            : "Your Main background and processing controls"}
-        </p>
-      </div>
-      <button
-        class="ui-button ui-button--ghost ui-button--icon dialog-close"
-        aria-label="Close appearance settings"
-        onclick={() => void closeAppearance()}
-        ><X size={18} strokeWidth={1.8} aria-hidden="true" /></button
-      >
-    </div>
-
-    <form
-      class="appearance-editor"
-      onsubmit={saveAppearance}
-      data-od-id="dashboard-appearance-form"
-    >
-      <div class="appearance-surface-list" aria-label="Background surfaces">
-        {#each appearanceWallpaperOptions as option (option.id)}
-          {#if !option.adminOnly || dashboard.user.role === "administrator"}
-            <section
-              class="appearance-surface-card"
-              data-od-id={`wallpaper-${option.id}-settings`}
-            >
-              {#if option.id === "welcome"}
-                <div
-                  class="background-preview appearance-preview main-page-preview"
-                  style:--background-preview={wallpaperBackground(option.id)}
-                  style:--preview-blur={`${backgroundBlur}px`}
-                  style:--preview-brightness={`${backgroundBrightness}%`}
-                  style:--preview-contrast={`${backgroundContrast}%`}
-                  style:--preview-saturation={`${backgroundSaturation}%`}
-                  aria-label="Main page preview with the selected wallpaper and processing"
-                  role="img"
-                  data-od-id="main-page-image-preview"
-                >
-                  <div class="main-preview-rail" aria-hidden="true">
-                    <b>P&gt;</b>
-                    <i></i><i></i><i></i><i></i>
-                  </div>
-                  <div class="main-preview-canvas" aria-hidden="true">
-                    <header>
-                      <b>$ dashboard --overview</b>
-                      <i></i>
-                    </header>
-                    <div>
-                      <article></article>
-                      <article></article>
-                      <article></article>
-                    </div>
-                  </div>
-                  <span>[ {option.code} ]</span>
-                </div>
-              {:else}
-                <div
-                  class="login-page-preview"
-                  style:--background-preview={wallpaperBackground(option.id)}
-                  style:--preview-blur={`${loginBackgroundBlur}px`}
-                  style:--preview-brightness={`${loginBackgroundBrightness}%`}
-                  style:--preview-contrast={`${loginBackgroundContrast}%`}
-                  style:--preview-saturation={`${loginBackgroundSaturation}%`}
-                  aria-label="Login page preview with the selected wallpaper and processing"
-                  role="img"
-                  data-od-id="login-page-image-preview"
-                >
-                  <div class="login-preview-brand" aria-hidden="true">
-                    <span>P&gt;</span>
-                    <strong>PANDAN</strong>
-                  </div>
-                  <div class="login-preview-context" aria-hidden="true">
-                    <div>
-                      <small>[ PRIVATE WORKSPACE ]</small>
-                      <strong>Your private workspace.</strong>
-                      <p>Dashboards, tasks, calendars, feeds, and journal.</p>
-                    </div>
-                  </div>
-                  <div class="login-preview-access" aria-hidden="true">
-                    <div class="login-preview-copy">
-                      <small>[ ACCOUNT ACCESS ]</small>
-                      <strong>Welcome back.</strong>
-                      <p>Sign in to return to your dashboard.</p>
-                    </div>
-                    <div class="login-preview-modes">
-                      <span>Sign in</span>
-                      <span>Create account</span>
-                    </div>
-                    <div class="login-preview-form">
-                      <span>Email</span>
-                      <i></i>
-                      <span>Password</span>
-                      <i></i>
-                      <b>Enter dashboard</b>
-                    </div>
-                  </div>
-                </div>
-              {/if}
-
-              <div class="appearance-surface-summary">
-                <div class="wallpaper-slot-copy">
-                  <strong>{option.title}</strong>
-                  <p>{option.description}</p>
-                  <small>
-                    {option.adminOnly
-                      ? "Administrator managed · publicly retrievable"
-                      : "Personal to your account"}
-                  </small>
-                </div>
-                <span class="background-file-name">
-                  {wallpaperFileLabel(option.id)}
-                </span>
-              </div>
-
-              <div class="wallpaper-slot-actions">
-                <label
-                  class="ui-button ui-button--secondary secondary-btn background-upload"
-                >
-                  Choose image
-                  <input
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp,image/avif"
-                    onchange={(event) => selectWallpaper(option.id, event)}
-                    data-od-id={`choose-${option.id}-wallpaper`}
-                  />
-                </label>
-                <button
-                  class="ui-button ui-button--secondary"
-                  type="button"
-                  onclick={openWallsFromAppearance}
-                  data-od-id={`browse-walls-${option.id}`}>Browse Walls</button
-                >
-                <button
-                  class="ui-button ui-button--danger background-reset"
-                  type="button"
-                  onclick={() => resetWallpaper(option.id)}
-                  data-od-id={`reset-${option.id}-wallpaper`}
-                  >Use default</button
-                >
-              </div>
-
-              <div class="appearance-control-heading">
-                <strong>{option.title}</strong>
-                <span>Processing applies only to this background.</span>
-              </div>
-
-              <div class="appearance-controls">
-                <label>
-                  <span
-                    ><strong>Blur</strong><output
-                      >{option.id === "welcome"
-                        ? backgroundBlur
-                        : loginBackgroundBlur}px</output
-                    ></span
-                  >
-                  <input
-                    type="range"
-                    min="0"
-                    max="24"
-                    step="1"
-                    value={option.id === "welcome"
-                      ? backgroundBlur
-                      : loginBackgroundBlur}
-                    oninput={(event) =>
-                      option.id === "welcome"
-                        ? (backgroundBlur = event.currentTarget.valueAsNumber)
-                        : (loginBackgroundBlur =
-                            event.currentTarget.valueAsNumber)}
-                  />
-                </label>
-                <label>
-                  <span
-                    ><strong>Brightness</strong><output
-                      >{option.id === "welcome"
-                        ? backgroundBrightness
-                        : loginBackgroundBrightness}%</output
-                    ></span
-                  >
-                  <input
-                    type="range"
-                    min="40"
-                    max="140"
-                    step="1"
-                    value={option.id === "welcome"
-                      ? backgroundBrightness
-                      : loginBackgroundBrightness}
-                    oninput={(event) =>
-                      option.id === "welcome"
-                        ? (backgroundBrightness =
-                            event.currentTarget.valueAsNumber)
-                        : (loginBackgroundBrightness =
-                            event.currentTarget.valueAsNumber)}
-                  />
-                </label>
-                <label>
-                  <span
-                    ><strong>Contrast</strong><output
-                      >{option.id === "welcome"
-                        ? backgroundContrast
-                        : loginBackgroundContrast}%</output
-                    ></span
-                  >
-                  <input
-                    type="range"
-                    min="50"
-                    max="160"
-                    step="1"
-                    value={option.id === "welcome"
-                      ? backgroundContrast
-                      : loginBackgroundContrast}
-                    oninput={(event) =>
-                      option.id === "welcome"
-                        ? (backgroundContrast =
-                            event.currentTarget.valueAsNumber)
-                        : (loginBackgroundContrast =
-                            event.currentTarget.valueAsNumber)}
-                  />
-                </label>
-                <label>
-                  <span
-                    ><strong>Saturation</strong><output
-                      >{option.id === "welcome"
-                        ? backgroundSaturation
-                        : loginBackgroundSaturation}%</output
-                    ></span
-                  >
-                  <input
-                    type="range"
-                    min="0"
-                    max="180"
-                    step="1"
-                    value={option.id === "welcome"
-                      ? backgroundSaturation
-                      : loginBackgroundSaturation}
-                    oninput={(event) =>
-                      option.id === "welcome"
-                        ? (backgroundSaturation =
-                            event.currentTarget.valueAsNumber)
-                        : (loginBackgroundSaturation =
-                            event.currentTarget.valueAsNumber)}
-                  />
-                </label>
-              </div>
-
-              <div class="appearance-surface-actions">
-                <button
-                  class="ui-button ui-button--secondary secondary-btn"
-                  type="button"
-                  onclick={() =>
-                    resetBackgroundFilters(
-                      option.id === "welcome" ? "main" : "login",
-                    )}
-                  data-od-id={`reset-${option.id}-background-filters`}
-                >
-                  <RotateCcw size={16} strokeWidth={1.8} aria-hidden="true" />
-                  Reset processing
-                </button>
-              </div>
-            </section>
-          {/if}
-        {/each}
-      </div>
-
-      {#if appearanceError}
-        <p class="form-error" role="alert">{appearanceError}</p>
-      {/if}
-
-      <div class="appearance-actions">
-        <button
-          class="ui-button ui-button--primary primary-btn"
-          type="submit"
-          disabled={savingAppearance}
-          data-od-id="save-dashboard-appearance"
-        >
-          {savingAppearance ? "Saving…" : "Save appearance"}
-        </button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog
-    class="settings-dialog admin-dialog"
-    {@attach captureAdminDialog}
-    onclick={(event) => event.target === adminDialog && adminDialog.close()}
-    data-od-id="user-administration-dialog"
-  >
-    <div class="settings-heading">
-      <button
-        class="nested-dialog-back"
-        type="button"
-        aria-label="Go back to account settings"
-        onclick={() => adminDialog?.close()}
-        data-od-id="back-to-settings-from-administration"
-      >
-        <ChevronLeft size={17} strokeWidth={1.8} aria-hidden="true" />
-        <span>Settings</span>
-      </button>
-      <div>
-        <h2>People &amp; access</h2>
-        <p>{managedUsers.length} users, {administratorCount} administrators</p>
-      </div>
-      <button
-        class="ui-button ui-button--ghost ui-button--icon dialog-close"
-        aria-label="Close user administration"
-        onclick={() => adminDialog?.close()}
-        ><X size={18} strokeWidth={1.8} aria-hidden="true" /></button
-      >
-    </div>
-
-    <div class="admin-directory" data-od-id="user-directory">
-      <section
-        class="authentication-policy"
-        aria-labelledby="authentication-policy-title"
-        data-od-id="authentication-policy"
-      >
-        <div class="authentication-policy-heading">
-          <div>
-            <p class="widget-kicker">[ AUTHENTICATION POLICY ]</p>
-            <h3 id="authentication-policy-title">Account access</h3>
-          </div>
-          <span
-            >{authConfig.oidc_enabled ? "OIDC ready" : "OIDC unavailable"}</span
-          >
-        </div>
-
-        <div class="authentication-policy-row">
-          <span>
-            <strong id="password-login-label">Password login</strong>
-            <small id="password-login-description"
-              >Allow existing accounts to sign in with email and password.</small
-            >
-          </span>
-          <button
-            class={[
-              "authentication-policy-toggle",
-              passwordLoginEnabled && "enabled",
-            ]}
-            type="button"
-            role="switch"
-            aria-checked={passwordLoginEnabled}
-            aria-labelledby="password-login-label"
-            aria-describedby="password-login-description"
-            disabled={loadingUsers ||
-              !authConfig.oidc_enabled ||
-              savingAuthenticationSettings}
-            onclick={() => (passwordLoginEnabled = !passwordLoginEnabled)}
-            data-od-id="password-login-enabled"
-          >
-            <span class="authentication-policy-toggle-track" aria-hidden="true"
-            ></span>
-          </button>
-        </div>
-        <div class="authentication-policy-row">
-          <span>
-            <strong id="password-registration-label"
-              >Password registration</strong
-            >
-            <small id="password-registration-description"
-              >Allow visitors to create password-based accounts.</small
-            >
-          </span>
-          <button
-            class={[
-              "authentication-policy-toggle",
-              passwordRegistrationEnabled && "enabled",
-            ]}
-            type="button"
-            role="switch"
-            aria-checked={passwordRegistrationEnabled}
-            aria-labelledby="password-registration-label"
-            aria-describedby="password-registration-description"
-            disabled={loadingUsers || savingAuthenticationSettings}
-            onclick={() =>
-              (passwordRegistrationEnabled = !passwordRegistrationEnabled)}
-            data-od-id="password-registration-enabled"
-          >
-            <span class="authentication-policy-toggle-track" aria-hidden="true"
-            ></span>
-          </button>
-        </div>
-        <div class="authentication-policy-row">
-          <span>
-            <strong id="oidc-registration-label">OIDC registration</strong>
-            <small id="oidc-registration-description"
-              >Allow verified OIDC identities to create new accounts. Existing
-              users can still sign in.</small
-            >
-          </span>
-          <button
-            class={[
-              "authentication-policy-toggle",
-              oidcRegistrationEnabled && "enabled",
-            ]}
-            type="button"
-            role="switch"
-            aria-checked={oidcRegistrationEnabled}
-            aria-labelledby="oidc-registration-label"
-            aria-describedby="oidc-registration-description"
-            disabled={loadingUsers ||
-              !authConfig.oidc_enabled ||
-              savingAuthenticationSettings}
-            onclick={() => (oidcRegistrationEnabled = !oidcRegistrationEnabled)}
-            data-od-id="oidc-registration-enabled"
-          >
-            <span class="authentication-policy-toggle-track" aria-hidden="true"
-            ></span>
-          </button>
-        </div>
-        {#if !authConfig.oidc_enabled}
-          <p class="authentication-policy-help">
-            Configure OIDC before disabling password login or changing OIDC
-            registration.
-          </p>
-        {/if}
-        <div class="authentication-policy-actions">
-          <button
-            class="ui-button ui-button--primary"
-            type="button"
-            disabled={loadingUsers || savingAuthenticationSettings}
-            onclick={() => void saveAuthenticationSettings()}
-            data-od-id="save-authentication-settings"
-          >
-            {savingAuthenticationSettings ? "Saving…" : "Save access settings"}
-          </button>
-        </div>
-      </section>
-
-      {#if dashboard.user.role === "administrator"}
-        <NetworkAccessSettings />
-      {/if}
-
-      <div class="admin-directory-note">
-        <p>
-          Role changes apply immediately. Your own administrator account is
-          locked here to protect access.
-        </p>
-      </div>
-
-      {#if adminError}
-        <p class="form-error" role="alert">{adminError}</p>
-      {/if}
-
-      {#if loadingUsers}
-        <div class="admin-loading" role="status">
-          <span class="sr-only">Loading user directory…</span>
-          {#each [1, 2, 3] as row (row)}
-            <span class="admin-loading-row" aria-hidden="true"></span>
-          {/each}
-        </div>
-      {:else}
-        <div class="admin-user-list">
-          {#each managedUsers as user (user.id)}
-            <article
-              class="admin-user-row"
-              data-od-id={`managed-user-${user.id}`}
-            >
-              <div class="admin-avatar" aria-hidden="true">
-                {memberInitials(user)}
-              </div>
-              <div class="admin-user-copy">
-                <div class="admin-user-name">
-                  <strong>{user.display_name}</strong>
-                  {#if user.id === dashboard.user.id}<span class="you-badge"
-                      >You</span
-                    >{/if}
-                </div>
-                <span>{user.email}</span>
-                <small>Joined {memberSince(user.created_at)}</small>
-                <small data-od-id={`user-last-login-${user.id}`}
-                  >Last login {lastLogin(user.last_login_at)}</small
-                >
-              </div>
-              <div class="admin-user-controls">
-                <label class="sr-only" for={`role-${user.id}`}
-                  >Role for {user.display_name}</label
-                >
-                <select
-                  id={`role-${user.id}`}
-                  class="select-input role-select"
-                  value={user.role}
-                  disabled={user.id === dashboard.user.id ||
-                    mutatingUserId !== ""}
-                  onchange={(event) => handleRoleChange(event, user)}
-                  data-od-id={`user-role-${user.id}`}
-                >
-                  <option value="member">Member</option>
-                  <option value="administrator">Administrator</option>
-                </select>
-                <button
-                  class="ui-button ui-button--danger remove-user-btn"
-                  type="button"
-                  disabled={user.id === dashboard.user.id ||
-                    mutatingUserId !== ""}
-                  aria-label={`Remove ${user.display_name}`}
-                  onclick={() => (pendingRemovalId = user.id)}
-                  data-od-id={`remove-user-${user.id}`}
-                >
-                  Remove
-                </button>
-              </div>
-              {#if pendingRemovalId === user.id}
-                <div
-                  class="remove-confirmation"
-                  data-od-id={`remove-confirmation-${user.id}`}
-                >
-                  <p>
-                    <strong>Remove {user.display_name}?</strong>
-                    <span
-                      >Their dashboard, settings, and active sessions will be
-                      deleted.</span
-                    >
-                  </p>
-                  <div>
-                    <button
-                      class="ui-button ui-button--secondary secondary-btn"
-                      type="button"
-                      onclick={() => (pendingRemovalId = "")}
-                      >Keep account</button
-                    >
-                    <button
-                      class="ui-button ui-button--danger remove-user-btn confirm-remove"
-                      type="button"
-                      disabled={mutatingUserId !== ""}
-                      onclick={() => removeManagedUser(user)}
-                    >
-                      {mutatingUserId === user.id
-                        ? "Removing…"
-                        : "Confirm removal"}
-                    </button>
-                  </div>
-                </div>
-              {/if}
-            </article>
-          {:else}
-            <p class="empty-state roomy">No user accounts found.</p>
-          {/each}
-        </div>
-      {/if}
     </div>
   </dialog>
 {/if}

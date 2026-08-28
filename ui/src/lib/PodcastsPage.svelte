@@ -804,7 +804,7 @@
 
 <section
   class="podcasts-page product-page"
-  class:has-player={podcastPlayer.episode !== null}
+  class:has-player={podcastPlayer.source !== null}
   data-od-id="podcasts-page"
 >
   <header class="podcasts-header page-header" data-od-id="podcasts-header">

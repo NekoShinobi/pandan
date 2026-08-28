@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
+mod jellyfin;
 mod kanban;
 mod podcasts;
 mod walls;
+pub use jellyfin::*;
 pub use kanban::*;
 pub use podcasts::*;
 pub use walls::*;
@@ -202,6 +204,7 @@ pub struct UserSettings {
     pub location: String,
     pub timezone: String,
     pub sidebar_timezones: Vec<String>,
+    pub calendar_week_start: String,
     pub temperature_unit: String,
     pub lines_default_visibility: String,
     pub podcast_playback_rate: f64,
@@ -256,6 +259,7 @@ pub struct SessionAccount {
     pub location: String,
     pub timezone: String,
     pub sidebar_timezones_json: String,
+    pub calendar_week_start: String,
     pub temperature_unit: String,
     pub lines_default_visibility: String,
     pub podcast_playback_rate: f64,

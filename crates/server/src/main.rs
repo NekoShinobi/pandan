@@ -56,10 +56,11 @@ async fn main() -> miette::Result<()> {
         "podcast media storage configured"
     );
     let state = web::Data::new(AppState {
-        pool,
+        pool: pool.clone(),
         cookie_secure,
         oidc,
         widget_integrations,
+        jellyfin: server::jellyfin::JellyfinService::new(pool),
         podcast_media,
         ntfy_events: server::ntfy::NtfyEventHub::default(),
         site_origin: SiteOrigin::from_env(),

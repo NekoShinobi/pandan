@@ -10,6 +10,7 @@
   import Trash2 from "lucide-svelte/icons/trash-2";
   import X from "lucide-svelte/icons/x";
   import { onMount, tick } from "svelte";
+  import { motionSurfaceEnter } from "$lib/motion.svelte";
   import TypedHeading from "$lib/TypedHeading.svelte";
   import {
     createCodingProject,
@@ -40,6 +41,7 @@
     gitea: "",
     forgejo: "",
   };
+  const includeArchivedStorageKey = "pandan:coding:include-archived-repositories";
 
   let coding = $state.raw<CodingResponse>(emptyCoding);
   let hasLoaded = false;
@@ -60,6 +62,7 @@
   let credentialToken = $state("");
   let credentialError = $state("");
   let savingCredential = $state(false);
+  let includeArchivedRepositories = $state(false);
 
   let filteredProjects = $derived.by(() => {
     const needle = query.trim().toLowerCase();
@@ -82,21 +85,41 @@
   let profileActivityConnected = $derived(
     coding.credentials.some((credential) => credential.connected),
   );
+  let visibleOwnedRepositories = $derived(
+    includeArchivedRepositories
+      ? coding.owned_repositories
+      : coding.owned_repositories.filter((repository) => !repository.archived),
+  );
   let openPullRequestCount = $derived(
-    coding.owned_repositories.reduce(
+    visibleOwnedRepositories.reduce(
       (total, repository) => total + (repository.open_pull_requests ?? 0),
       0,
     ),
   );
   let pendingRepositories = $derived(
-    coding.owned_repositories.filter(
+    visibleOwnedRepositories.filter(
       (repository) => (repository.open_pull_requests ?? 0) > 0,
     ),
   );
+  let archivedPendingRepositoryCount = $derived(
+    coding.owned_repositories.filter(
+      (repository) => repository.archived && (repository.open_pull_requests ?? 0) > 0,
+    ).length,
+  );
 
   onMount(() => {
+    includeArchivedRepositories =
+      localStorage.getItem(includeArchivedStorageKey) === "true";
     void loadCoding();
   });
+
+  function toggleArchivedRepositories() {
+    includeArchivedRepositories = !includeArchivedRepositories;
+    localStorage.setItem(
+      includeArchivedStorageKey,
+      String(includeArchivedRepositories),
+    );
+  }
 
   function captureProjectDialog(node: HTMLDialogElement) {
     projectDialog = node;
@@ -294,10 +317,10 @@
   {/if}
 
   <div class="coding-stats" aria-label="Coding overview" aria-busy={loading}>
-    <div><span>Projects</span><strong class:stat-placeholder={loading}>{loading ? "" : initialLoadFailed ? "—" : coding.projects.length}</strong></div>
-    <div><span>Releases loaded</span><strong class:stat-placeholder={loading}>{loading ? "" : initialLoadFailed ? "—" : coding.releases.length}</strong></div>
-    <div><span>Open pull requests</span><strong class:stat-placeholder={loading}>{loading ? "" : initialLoadFailed ? "—" : openPullRequestCount}</strong></div>
-    <div><span>Recent pipelines</span><strong class:stat-placeholder={loading}>{loading ? "" : initialLoadFailed ? "—" : coding.pipelines.length}</strong></div>
+    <div><span>Projects</span><strong class:stat-placeholder={loading}>{#if !loading}<i class="stat-value" {@attach motionSurfaceEnter({ y: 4, duration: 0.18 })}>{initialLoadFailed ? "—" : coding.projects.length}</i>{/if}</strong></div>
+    <div><span>Releases loaded</span><strong class:stat-placeholder={loading}>{#if !loading}<i class="stat-value" {@attach motionSurfaceEnter({ y: 4, duration: 0.18 })}>{initialLoadFailed ? "—" : coding.releases.length}</i>{/if}</strong></div>
+    <div><span>Open pull requests</span><strong class:stat-placeholder={loading}>{#if !loading}<i class="stat-value" {@attach motionSurfaceEnter({ y: 4, duration: 0.18 })}>{initialLoadFailed ? "—" : openPullRequestCount}</i>{/if}</strong></div>
+    <div><span>Recent pipelines</span><strong class:stat-placeholder={loading}>{#if !loading}<i class="stat-value" {@attach motionSurfaceEnter({ y: 4, duration: 0.18 })}>{initialLoadFailed ? "—" : coding.pipelines.length}</i>{/if}</strong></div>
   </div>
 
   <div class="coding-layout">
@@ -330,7 +353,7 @@
           <p>Use Retry in the page header to load subscriptions and release activity.</p>
         </div>
       {:else}
-        <div class="project-list">
+        <div class="project-list" {@attach motionSurfaceEnter({ y: 6, duration: 0.22 })}>
           {#each filteredProjects as project (project.id)}
             {@const release = releaseFor(project.id)}
             {@const pipeline = pipelineFor(project.id)}
@@ -392,6 +415,22 @@
     <aside class="coding-rail">
       <section class="merge-panel" aria-busy={loading} data-od-id="coding-merge-requests">
         <header><div><span>[ OWNED REPOSITORIES ]</span><h3>Pending pull requests</h3></div><GitMerge size={18} strokeWidth={1.6} aria-hidden="true" /></header>
+        <div class="merge-settings" data-od-id="coding-archived-repository-setting">
+          <button
+            class="ui-toggle-button archived-repository-toggle"
+            type="button"
+            aria-pressed={includeArchivedRepositories}
+            aria-label={`${includeArchivedRepositories ? "Exclude" : "Include"} archived repositories`}
+            disabled={loading || initialLoadFailed}
+            onclick={toggleArchivedRepositories}
+          >
+            <span class="ui-toggle-indicator" aria-hidden="true"></span>
+            <span>
+              <strong>Include archived</strong>
+              <small>{archivedPendingRepositoryCount} with open requests</small>
+            </span>
+          </button>
+        </div>
         {#if loading}
           <div class="panel-loading rail-loading" role="status" data-od-id="coding-merge-requests-loading">
             <span class="panel-loading-label">Loading pull requests…</span>
@@ -400,12 +439,12 @@
         {:else if initialLoadFailed}
           <div class="panel-unavailable compact"><strong>Pull request data unavailable</strong></div>
         {:else if !profileActivityConnected}
-          <div class="rail-empty">
+          <div class="rail-empty" {@attach motionSurfaceEnter({ y: 6, duration: 0.22 })}>
             <p>Connect a provider token to discover repositories owned by that account and count their open pull requests.</p>
             <button type="button" onclick={() => openCredential()}>Connect provider</button>
           </div>
         {:else}
-          <div class="merge-list">
+          <div class="merge-list" {@attach motionSurfaceEnter({ y: 6, duration: 0.22 })}>
             {#each pendingRepositories as repository (`${repository.provider}:${repository.host}:${repository.repository}`)}
               <a href={repository.url} target="_blank" rel="noreferrer" data-od-id={`owned-repository-${repository.provider}-${repository.repository.replaceAll("/", "-")}`}>
                 <span>{repository.provider} · {repository.host}</span>
@@ -415,7 +454,9 @@
                 </small>
               </a>
             {:else}
-              <div class="rail-empty"><p>No owned repositories have open pull requests.</p></div>
+              <div class="rail-empty">
+                <p>{!includeArchivedRepositories && archivedPendingRepositoryCount > 0 ? "Open requests exist only in archived repositories." : "No owned repositories have open pull requests."}</p>
+              </div>
             {/each}
           </div>
         {/if}
@@ -432,16 +473,18 @@
         {:else if initialLoadFailed}
           <div class="panel-unavailable compact"><strong>Provider access unavailable</strong></div>
         {:else if !coding.secret_storage_enabled}
-          <div class="credential-note">Configure server secret storage before saving provider tokens.</div>
+          <div class="credential-note" {@attach motionSurfaceEnter({ y: 6, duration: 0.22 })}>Configure server secret storage before saving provider tokens.</div>
         {:else}
-          <div class="credential-list">
-            {#each coding.credentials as credential (`${credential.provider}:${credential.host}`)}
-              <div><span><strong>{credential.provider}</strong><small>{credential.host}</small></span><button class="ui-button ui-button--danger" type="button" onclick={() => removeCredential(credential)}>Disconnect</button></div>
-            {:else}
-              <span class="no-credentials">No provider tokens stored.</span>
-            {/each}
+          <div class="access-content" {@attach motionSurfaceEnter({ y: 6, duration: 0.22 })}>
+            <div class="credential-list">
+              {#each coding.credentials as credential (`${credential.provider}:${credential.host}`)}
+                <div><span><strong>{credential.provider}</strong><small>{credential.host}</small></span><button class="ui-button ui-button--danger" type="button" onclick={() => removeCredential(credential)}>Disconnect</button></div>
+              {:else}
+                <span class="no-credentials">No provider tokens stored.</span>
+              {/each}
+            </div>
+            <button class="ui-button ui-button--secondary access-action" type="button" onclick={() => openCredential()}><Plus size={14} strokeWidth={1.8} /> Add provider token</button>
           </div>
-          <button class="ui-button ui-button--secondary access-action" type="button" onclick={() => openCredential()}><Plus size={14} strokeWidth={1.8} /> Add provider token</button>
         {/if}
       </section>
     </aside>
@@ -496,7 +539,8 @@
   .coding-stats > div:last-child { border-right: 0; }
   .coding-stats span { color: var(--muted); font-family: var(--font-mono); font-size: 9px; letter-spacing: .07em; text-transform: uppercase; }
   .coding-stats strong { font-family: var(--font-mono); font-size: 23px; font-weight: 520; }
-  .coding-stats strong.stat-placeholder { width: 30px; height: 9px; background: color-mix(in oklch, var(--fg) 13%, transparent); }
+  .coding-stats strong.stat-placeholder { width: 30px; height: 9px; }
+  .stat-value { display: block; font: inherit; }
   .coding-layout { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(320px, .8fr); gap: 18px; align-items: start; }
   .projects-panel, .coding-rail > section { min-width: 0; border: 1px solid var(--border); background: var(--page-surface, var(--surface)); }
   .projects-panel > header, .coding-rail > section > header { display: flex; min-height: 62px; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
@@ -509,7 +553,10 @@
   .project-loading-row { display: grid; grid-template-columns: minmax(180px, 1.3fr) minmax(120px, .8fr) minmax(125px, .8fr); min-height: 94px; align-items: center; gap: 16px; padding: 14px; border-bottom: 1px solid var(--border); }
   .project-loading-row:last-child { border-bottom: 0; }
   .loading-stack { display: grid; justify-items: start; gap: 8px; }
-  .loading-line { display: block; width: 62%; height: 7px; background: color-mix(in oklch, var(--fg) 11%, transparent); }
+  .loading-line, .coding-stats strong.stat-placeholder { background: linear-gradient(90deg, color-mix(in oklch, var(--fg) 8%, transparent) 20%, color-mix(in oklch, var(--fg) 18%, transparent) 45%, color-mix(in oklch, var(--fg) 8%, transparent) 70%); background-size: 240% 100%; animation: coding-skeleton-scan 1.35s cubic-bezier(.2, 0, 0, 1) infinite; }
+  .loading-line { display: block; width: 62%; height: 7px; }
+  .project-loading-row:nth-child(2) .loading-line { animation-delay: -.18s; }
+  .project-loading-row:nth-child(3) .loading-line { animation-delay: -.36s; }
   .loading-line--short { width: 32%; }
   .loading-line--medium { width: 58%; }
   .loading-line--long { width: 82%; height: 9px; }
@@ -541,6 +588,11 @@
   .coding-empty p { max-width: 48ch; margin: 0; line-height: 1.6; }
   .coding-empty button { margin-top: 16px; padding: 0 13px; font-family: var(--font-mono); font-size: 10px; }
   .coding-rail { display: grid; gap: 18px; }
+  .merge-settings { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .archived-repository-toggle { width: 100%; min-height: 44px; justify-content: flex-start; border: 0; padding: 0; text-align: left; }
+  .archived-repository-toggle > span:last-child { display: grid; gap: 2px; }
+  .archived-repository-toggle strong { font-family: var(--font-mono); font-size: 10px; font-weight: 550; letter-spacing: .02em; }
+  .archived-repository-toggle small { color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
   .merge-list > a { display: grid; gap: 5px; padding: 13px 14px; border-bottom: 1px solid var(--border); color: var(--fg); text-decoration: none; }
   .merge-list > a:last-child { border-bottom: 0; }
   .merge-list > a:hover strong { text-decoration: underline; text-underline-offset: 3px; }
@@ -578,7 +630,9 @@
   .coding-dialog footer > button:not(.coding-primary) { padding: 0 15px; font-family: var(--font-mono); font-size: 10px; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   :focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+  @keyframes coding-skeleton-scan { from { background-position: 100% 0; } to { background-position: -140% 0; } }
   @media (max-width: 1100px) { .coding-layout { grid-template-columns: 1fr; } .coding-rail { grid-template-columns: 1fr 1fr; } }
   @media (max-width: 780px) { .coding-header { align-items: stretch; flex-direction: column; } .header-actions { flex-wrap: wrap; } .coding-stats { grid-template-columns: repeat(2, 1fr); } .coding-stats > div:nth-child(2) { border-right: 0; } .coding-stats > div:nth-child(-n + 2) { border-bottom: 1px solid var(--border); } .projects-panel > header { align-items: stretch; flex-direction: column; } .projects-panel label { width: 100%; } .project-list > article { grid-template-columns: minmax(0, 1fr) 36px; } .release-cell, .pipeline-cell { grid-column: 1; } .delete-project { grid-column: 2; grid-row: 1; } .coding-rail { grid-template-columns: 1fr; } }
   @media (max-width: 560px) { .header-actions > button { flex: 1; } .coding-stats { grid-template-columns: 1fr; } .coding-stats > div { border-right: 0; border-bottom: 1px solid var(--border); } .coding-stats > div:last-child { border-bottom: 0; } .form-grid { grid-template-columns: 1fr; } .coding-dialog footer { align-items: stretch; flex-direction: column-reverse; } }
+  @media (prefers-reduced-motion: reduce) { .loading-line, .coding-stats strong.stat-placeholder { animation: none; } }
 </style>

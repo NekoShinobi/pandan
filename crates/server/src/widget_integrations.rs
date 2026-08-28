@@ -133,6 +133,7 @@ pub struct CodingOwnedRepository {
     pub host: String,
     pub repository: String,
     pub url: String,
+    pub archived: bool,
     pub open_pull_requests: Option<u64>,
 }
 
@@ -1003,7 +1004,7 @@ impl WidgetIntegrationService {
         }))
     }
 
-    fn decrypt_secret(&self, encoded: &str) -> Result<String, String> {
+    pub(crate) fn decrypt_secret(&self, encoded: &str) -> Result<String, String> {
         let cipher = self
             .cipher
             .as_ref()
@@ -2234,6 +2235,7 @@ async fn fetch_github_owned_repositories(
             ) {
               nodes {
                 nameWithOwner
+                isArchived
                 pullRequests(states: OPEN) { totalCount }
               }
               pageInfo { hasNextPage endCursor }
@@ -2278,6 +2280,7 @@ async fn fetch_github_owned_repositories(
                 "github",
                 host,
                 node["nameWithOwner"].as_str()?,
+                node["isArchived"].as_bool().unwrap_or(false),
                 node["pullRequests"]["totalCount"].as_u64(),
             )
         }));
@@ -2338,6 +2341,7 @@ async fn fetch_gitlab_owned_repositories(
                 "gitlab",
                 host,
                 project["path_with_namespace"].as_str()?,
+                project["archived"].as_bool().unwrap_or(false),
                 None,
             )?;
             Some((id, repository))
@@ -2465,6 +2469,7 @@ async fn fetch_forge_owned_repositories(
                 provider,
                 host,
                 repository["full_name"].as_str()?,
+                repository["archived"].as_bool().unwrap_or(false),
                 repository["open_pr_counter"].as_u64(),
             )
         }));
@@ -2485,6 +2490,7 @@ fn owned_repository(
     provider: &str,
     host: &str,
     repository: &str,
+    archived: bool,
     open_pull_requests: Option<u64>,
 ) -> Option<CodingOwnedRepository> {
     if !valid_hostname(host)
@@ -2502,6 +2508,7 @@ fn owned_repository(
         host: host.to_owned(),
         repository: repository.to_owned(),
         url: format!("https://{host}/{repository}"),
+        archived,
         open_pull_requests,
     })
 }
@@ -3664,15 +3671,22 @@ END:VCARD</card:address-data></d:prop></d:propstat></d:response>
 
     #[test]
     fn owned_repositories_validate_paths_and_sort_open_work_first() {
-        assert!(owned_repository("gitlab", "gitlab.com", "../escape", Some(2)).is_none());
+        assert!(owned_repository("gitlab", "gitlab.com", "../escape", false, Some(2)).is_none());
         assert!(
-            owned_repository("gitlab", "gitlab.com", "group/nested/service", Some(2)).is_some()
+            owned_repository(
+                "gitlab",
+                "gitlab.com",
+                "group/nested/service",
+                false,
+                Some(2)
+            )
+            .is_some()
         );
 
         let mut repositories = vec![
-            owned_repository("github", "github.com", "owner/quiet", Some(0)).unwrap(),
-            owned_repository("github", "github.com", "owner/busy", Some(7)).unwrap(),
-            owned_repository("github", "github.com", "owner/unknown", None).unwrap(),
+            owned_repository("github", "github.com", "owner/quiet", false, Some(0)).unwrap(),
+            owned_repository("github", "github.com", "owner/busy", false, Some(7)).unwrap(),
+            owned_repository("github", "github.com", "owner/unknown", true, None).unwrap(),
         ];
         sort_owned_repositories(&mut repositories);
 
@@ -3680,5 +3694,6 @@ END:VCARD</card:address-data></d:prop></d:propstat></d:response>
         assert_eq!(repositories[1].repository, "owner/quiet");
         assert_eq!(repositories[2].repository, "owner/unknown");
         assert_eq!(repositories[0].url, "https://github.com/owner/busy");
+        assert!(repositories[2].archived);
     }
 }
