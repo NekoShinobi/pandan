@@ -20,6 +20,7 @@
   import ExternalLink from "lucide-svelte/icons/external-link";
   import Home from "lucide-svelte/icons/house";
   import Menu from "lucide-svelte/icons/menu";
+  import Megaphone from "lucide-svelte/icons/megaphone";
   import MessageSquareText from "lucide-svelte/icons/message-square-text";
   import Music2 from "lucide-svelte/icons/music-2";
   import Paperclip from "lucide-svelte/icons/paperclip";
@@ -52,6 +53,8 @@
   import { motionDisclosure, motionPopover } from "$lib/motion.svelte";
   import { MediaQuery, SvelteMap, SvelteSet } from "svelte/reactivity";
   import AnimatedList from "$lib/components/AnimatedList.svelte";
+  import PandanDatePicker from "$lib/components/PandanDatePicker.svelte";
+  import AnnouncementsPage from "$lib/AnnouncementsPage.svelte";
   import AudioVisualization from "$lib/AudioVisualization.svelte";
   import AudioVisualizationControl from "$lib/AudioVisualizationControl.svelte";
   import BackgroundSettings from "$lib/BackgroundSettings.svelte";
@@ -154,6 +157,7 @@
 
   type AuthMode = "login" | "register";
   type ProductPage =
+    | "announcements"
     | "dashboard"
     | "bookmarks"
     | "tasks"
@@ -505,6 +509,14 @@
   const searchEngineStorageKey = "pandan-search-engine";
 
   const productPages = [
+    {
+      id: "announcements",
+      label: "Announcements",
+      description:
+        "Read homeserver notes, maintenance windows, and administrator updates.",
+      code: "00",
+      icon: Megaphone,
+    },
     {
       id: "dashboard",
       label: "Dashboard",
@@ -3400,12 +3412,15 @@
       return;
     }
     if (
-      /^[1-9]$/.test(event.key) &&
+      /^[0-9]$/.test(event.key) &&
       !commandDialog?.open &&
       !isTyping &&
       !layoutEditing
     ) {
-      openProductPage(productPages[Number(event.key) - 1].id);
+      const page = productPages.find(
+        (candidate) => candidate.code === event.key.padStart(2, "0"),
+      );
+      if (page) openProductPage(page.id);
     }
   }
 
@@ -4000,7 +4015,12 @@
                 >
                   <b class="sidebar-custom-marker" aria-hidden="true">G</b>
                   <span class="sidebar-custom-icon" aria-hidden="true">
-                    <EmbeddedPageIcon iconUrl={page.icon_url} size={18} />
+                    <EmbeddedPageIcon
+                      pageUrl={page.url}
+                      iconKind={page.icon_kind}
+                      iconValue={page.icon_value}
+                      size={18}
+                    />
                   </span>
                   <span class="sidebar-custom-title">{page.title}</span>
                 </button>
@@ -4054,7 +4074,12 @@
                 >
                   <b class="sidebar-custom-marker" aria-hidden="true">U</b>
                   <span class="sidebar-custom-icon" aria-hidden="true">
-                    <EmbeddedPageIcon iconUrl={page.icon_url} size={18} />
+                    <EmbeddedPageIcon
+                      pageUrl={page.url}
+                      iconKind={page.icon_kind}
+                      iconValue={page.icon_value}
+                      size={18}
+                    />
                   </span>
                   <span class="sidebar-custom-title">{page.title}</span>
                 </button>
@@ -4580,6 +4605,8 @@
                 </aside>
               </div>
             </section>
+          {:else if activeSection === "announcements"}
+            <AnnouncementsPage viewerRole={dashboard.user.role} />
           {:else if activeSection === "bookmarks"}
             <BookmarksPage
               administrator={dashboard.user.role === "administrator"}
@@ -6501,20 +6528,18 @@
 
       <AudioVisualizationControl />
 
-      {#if podcastPlayer.source === "podcast"}
-        <label class="podcast-player-rate" data-tip="Playback speed">
-          <span class="visually-hidden-label">Playback speed</span>
-          <select
-            value={podcastPlayer.playbackRate}
-            onchange={(event) =>
-              savePlaybackRate(Number(event.currentTarget.value))}
-          >
-            {#each [0.75, 1, 1.25, 1.5, 1.75, 2] as rate (rate)}
-              <option value={rate}>{rate}&#215;</option>
-            {/each}
-          </select>
-        </label>
-      {/if}
+      <label class="podcast-player-rate" data-tip="Playback speed">
+        <span class="visually-hidden-label">Playback speed</span>
+        <select
+          value={podcastPlayer.playbackRate}
+          onchange={(event) =>
+            savePlaybackRate(Number(event.currentTarget.value))}
+        >
+          {#each [0.75, 1, 1.25, 1.5, 1.75, 2] as rate (rate)}
+            <option value={rate}>{rate}&#215;</option>
+          {/each}
+        </select>
+      </label>
 
       <button
         class="ui-button ui-button--ghost ui-button--icon podcast-player-close"
@@ -6927,15 +6952,13 @@
 
         <div class="task-field">
           <label for="task-due-date">Due date</label>
-          <div class="input-with-icon">
-            <CalendarDays size={16} strokeWidth={1.8} aria-hidden="true" />
-            <input
-              id="task-due-date"
-              class="text-input"
-              type="date"
-              bind:value={taskDueDate}
-            />
-          </div>
+          <PandanDatePicker
+            id="task-due-date"
+            ariaLabel="Task due date"
+            bind:value={taskDueDate}
+            compact
+            odId="task-due-date"
+          />
         </div>
 
         <div class="task-field task-field-wide">

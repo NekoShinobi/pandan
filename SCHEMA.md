@@ -36,13 +36,13 @@ compatibility with existing installations. Password login remains available as a
 fallback when OIDC is not configured, and new OIDC identities are rejected when OIDC registration
 is disabled while known identities and verified-email links to existing users remain eligible.
 
-| Column                          | Type    | Constraints                          |
-| ------------------------------- | ------- | ------------------------------------ |
-| `id`                            | INTEGER | Primary key; singleton value `1`     |
-| `password_login_enabled`        | INTEGER | Boolean `0` or `1`; defaults to `1`  |
-| `password_registration_enabled` | INTEGER | Boolean `0` or `1`; defaults to `1`  |
-| `oidc_registration_enabled`     | INTEGER | Boolean `0` or `1`; defaults to `1`  |
-| `updated_at`                    | TEXT    | Required, RFC 3339 timestamp         |
+| Column                          | Type    | Constraints                         |
+| ------------------------------- | ------- | ----------------------------------- |
+| `id`                            | INTEGER | Primary key; singleton value `1`    |
+| `password_login_enabled`        | INTEGER | Boolean `0` or `1`; defaults to `1` |
+| `password_registration_enabled` | INTEGER | Boolean `0` or `1`; defaults to `1` |
+| `oidc_registration_enabled`     | INTEGER | Boolean `0` or `1`; defaults to `1` |
+| `updated_at`                    | TEXT    | Required, RFC 3339 timestamp        |
 
 ## `logging_settings`
 
@@ -51,15 +51,15 @@ directory itself remains an operator-controlled environment path; this table con
 events are written, the minimum level, size-based rotation, and both age- and count-based retention.
 The active file is never removed by retention. Console tracing continues to use `RUST_LOG`.
 
-| Column             | Type    | Constraints                                                               |
-| ------------------ | ------- | ------------------------------------------------------------------------- |
-| `id`               | INTEGER | Primary key; singleton value `1`                                          |
-| `file_enabled`     | INTEGER | Boolean `0` or `1`; defaults to `1`                                       |
-| `log_level`        | TEXT    | `error`, `warn`, `info`, `debug`, or `trace`; defaults to `info`           |
-| `retention_days`   | INTEGER | 1–365; defaults to `14`                                                    |
-| `max_file_size_mb` | INTEGER | 1–256 MiB per active file; defaults to `10`                                |
-| `max_files`        | INTEGER | 1–100 retained rotated files; defaults to `20`                             |
-| `updated_at`       | TEXT    | Required, RFC 3339 timestamp                                               |
+| Column             | Type    | Constraints                                                      |
+| ------------------ | ------- | ---------------------------------------------------------------- |
+| `id`               | INTEGER | Primary key; singleton value `1`                                 |
+| `file_enabled`     | INTEGER | Boolean `0` or `1`; defaults to `1`                              |
+| `log_level`        | TEXT    | `error`, `warn`, `info`, `debug`, or `trace`; defaults to `info` |
+| `retention_days`   | INTEGER | 1–365; defaults to `14`                                          |
+| `max_file_size_mb` | INTEGER | 1–256 MiB per active file; defaults to `10`                      |
+| `max_files`        | INTEGER | 1–100 retained rotated files; defaults to `20`                   |
+| `updated_at`       | TEXT    | Required, RFC 3339 timestamp                                     |
 
 ## `network_access_rules`
 
@@ -69,17 +69,17 @@ a matching `deny` rule takes precedence. Rules are scoped either to all policy-c
 integration fetches or to one integration. Browser-loaded embedded pages and external links do not
 consult this table.
 
-| Column               | Type    | Constraints                                                        |
-| -------------------- | ------- | ------------------------------------------------------------------ |
-| `id`                 | TEXT    | Primary key                                                        |
-| `action`             | TEXT    | Required, `allow` or `deny`                                        |
-| `scheme`             | TEXT    | Required, `http` or `https`                                        |
-| `host`               | TEXT    | Required normalized hostname or IP, 1–253 characters               |
-| `port`               | INTEGER | Required, 1–65,535                                                 |
+| Column               | Type    | Constraints                                                                                                                |
+| -------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `id`                 | TEXT    | Primary key                                                                                                                |
+| `action`             | TEXT    | Required, `allow` or `deny`                                                                                                |
+| `scheme`             | TEXT    | Required, `http` or `https`                                                                                                |
+| `host`               | TEXT    | Required normalized hostname or IP, 1–253 characters                                                                       |
+| `port`               | INTEGER | Required, 1–65,535                                                                                                         |
 | `integration`        | TEXT    | `all`, `rss`, `calendar`, `contacts`, `podcasts`, `notifications`, `coding`, `images`, `youtube`, `widgets`, or `jellyfin` |
-| `created_by_user_id` | TEXT    | Optional administrator audit reference, set null on account delete |
-| `created_at`         | TEXT    | Required, RFC 3339 timestamp                                       |
-| `updated_at`         | TEXT    | Required, RFC 3339 timestamp                                       |
+| `created_by_user_id` | TEXT    | Optional administrator audit reference, set null on account delete                                                         |
+| `created_at`         | TEXT    | Required, RFC 3339 timestamp                                                                                               |
+| `updated_at`         | TEXT    | Required, RFC 3339 timestamp                                                                                               |
 
 The action, scheme, host, port, and integration tuple is unique. Instances are limited to 128 rows
 by the API.
@@ -108,18 +108,18 @@ encrypted with the same XChaCha20-Poly1305 credential cipher as other provider s
 returned through the browser API. Deleting an account or replacing/removing the singleton server
 cascades the row.
 
-| Column                | Type    | Constraints                                               |
-| --------------------- | ------- | --------------------------------------------------------- |
-| `user_id`             | TEXT    | Primary key, references `users` with cascade delete       |
-| `server_setting_id`   | INTEGER | Required singleton value `1`, cascades on server delete   |
-| `jellyfin_user_id`    | TEXT    | Required upstream user identity, 1–128 characters         |
-| `jellyfin_username`   | TEXT    | Required upstream display name, 1–120 characters          |
-| `token_ciphertext`    | TEXT    | Required encrypted token, 1–8,192 characters              |
-| `device_id`           | TEXT    | Required stable Pandan device identity, 1–128 characters  |
-| `last_verified_at`    | TEXT    | Optional RFC 3339 timestamp                               |
-| `last_error`          | TEXT    | Optional bounded user-safe error, at most 500 characters  |
-| `created_at`          | TEXT    | Required, RFC 3339 timestamp                              |
-| `updated_at`          | TEXT    | Required, RFC 3339 timestamp                              |
+| Column              | Type    | Constraints                                              |
+| ------------------- | ------- | -------------------------------------------------------- |
+| `user_id`           | TEXT    | Primary key, references `users` with cascade delete      |
+| `server_setting_id` | INTEGER | Required singleton value `1`, cascades on server delete  |
+| `jellyfin_user_id`  | TEXT    | Required upstream user identity, 1–128 characters        |
+| `jellyfin_username` | TEXT    | Required upstream display name, 1–120 characters         |
+| `token_ciphertext`  | TEXT    | Required encrypted token, 1–8,192 characters             |
+| `device_id`         | TEXT    | Required stable Pandan device identity, 1–128 characters |
+| `last_verified_at`  | TEXT    | Optional RFC 3339 timestamp                              |
+| `last_error`        | TEXT    | Optional bounded user-safe error, at most 500 characters |
+| `created_at`        | TEXT    | Required, RFC 3339 timestamp                             |
+| `updated_at`        | TEXT    | Required, RFC 3339 timestamp                             |
 
 ## `users`
 
@@ -153,18 +153,18 @@ always remains. Removing an account cascades to its settings, sessions, tasks, a
 
 One preference record per user.
 
-| Column                    | Type | Constraints                                         |
-| ------------------------- | ---- | --------------------------------------------------- |
-| `user_id`                 | TEXT | Primary key, references `users` with cascade delete |
-| `display_name`            | TEXT | Required, trimmed length 1–60                       |
-| `location`                | TEXT | Required, trimmed length 1–80                       |
-| `timezone`                | TEXT | Required, trimmed length 1–80                       |
-| `sidebar_timezones_json`  | TEXT | Valid JSON array containing 1–5 timezone names      |
-| `calendar_week_start`     | TEXT | `sunday` or `monday`; defaults to `sunday`          |
-| `temperature_unit`        | TEXT | `celsius` or `fahrenheit`                           |
-| `lines_default_visibility`| TEXT | `private` or `public`; defaults to `private`        |
-| `podcast_playback_rate`   | REAL | 0.5–3.0; defaults to 1.0                            |
-| `updated_at`              | TEXT | Required, RFC 3339 timestamp                        |
+| Column                     | Type | Constraints                                         |
+| -------------------------- | ---- | --------------------------------------------------- |
+| `user_id`                  | TEXT | Primary key, references `users` with cascade delete |
+| `display_name`             | TEXT | Required, trimmed length 1–60                       |
+| `location`                 | TEXT | Required, trimmed length 1–80                       |
+| `timezone`                 | TEXT | Required, trimmed length 1–80                       |
+| `sidebar_timezones_json`   | TEXT | Valid JSON array containing 1–5 timezone names      |
+| `calendar_week_start`      | TEXT | `sunday` or `monday`; defaults to `sunday`          |
+| `temperature_unit`         | TEXT | `celsius` or `fahrenheit`                           |
+| `lines_default_visibility` | TEXT | `private` or `public`; defaults to `private`        |
+| `podcast_playback_rate`    | REAL | 0.5–3.0; defaults to 1.0                            |
+| `updated_at`               | TEXT | Required, RFC 3339 timestamp                        |
 
 ## `user_backgrounds`
 
@@ -189,7 +189,7 @@ legacy data compatibility but is no longer exposed as a separate selector. Dashb
 and loading images are user-owned and require the owner's authenticated session. The `login`
 slot is a single global image: only an administrator may replace or remove it, while the image
 itself is publicly retrievable from the application origin for the pre-authentication screen.
-This table holds only *uploaded* images. A slot may instead point at a shared wall through
+This table holds only _uploaded_ images. A slot may instead point at a shared wall through
 `user_wallpaper_selections`, which takes precedence; see that table for the full resolution order.
 
 | Column       | Type | Constraints                                                          |
@@ -294,6 +294,9 @@ rows are visible to every signed-in account and are managed only by administrato
 private to `owner_user_id`; administrators do not gain access to another account's personal rows.
 Deleting an owner cascades their personal pages, while deleting the administrator who created a
 global page only clears `created_by_user_id` so the shared entry remains available.
+Administrators may transactionally move a global row into their own personal list or move one of
+their own personal rows into the global list. The move closes the source ordering gap, appends to
+the destination, and preserves the page identifier, content, permissions, icon, and audit creator.
 
 The sidebar renders built-in pages first, then global rows, then the current account's user rows.
 `position` is zero-based within that scope and is replaced transactionally during reordering.
@@ -305,9 +308,11 @@ together, with each opt-in reducing sandbox isolation.
 to 720 pixels, with API and database constraints limiting values to 320–2,400 pixels. The interface
 offers 480, 720, and 1,080 pixel presets plus a custom option; width remains responsive to the
 application canvas.
-`icon_url` optionally replaces the default custom-page symbol in expanded sidebar rows. It must be
-a credential-free HTTPS URL no longer than 2,000 characters. The browser loads the image without a
-referrer, and the interface falls back to the packaged panel icon when the image cannot load.
+`icon_kind` selects `favicon`, `lucide`, or `custom`. Favicon rows store no value and derive the
+conventional `/favicon.ico` URL from the page origin in the browser. Lucide rows store one supported
+icon name. Custom rows store a credential-free HTTPS image URL no longer than 2,000 characters.
+Remote images load without a referrer, and the interface falls back to the packaged panel icon when
+an image cannot load.
 
 | Column               | Type    | Constraints                                                        |
 | -------------------- | ------- | ------------------------------------------------------------------ |
@@ -317,11 +322,12 @@ referrer, and the interface falls back to the packaged panel icon when the image
 | `created_by_user_id` | TEXT    | Optional audit reference to `users`, set null when creator deletes |
 | `title`              | TEXT    | Required, trimmed length 1–80                                      |
 | `description`        | TEXT    | Required, maximum length 280                                       |
-| `url`                | TEXT    | Required absolute HTTPS URL, maximum length 2,000                   |
-| `icon_url`           | TEXT    | Optional credential-free HTTPS image URL, maximum length 2,000     |
+| `url`                | TEXT    | Required absolute HTTPS URL, maximum length 2,000                  |
+| `icon_kind`          | TEXT    | Required, `favicon`, `lucide`, or `custom`                          |
+| `icon_value`         | TEXT    | Null for favicon; supported Lucide name or HTTPS custom icon URL   |
 | `allow_scripts`      | INTEGER | Required boolean, defaults to `0`                                  |
 | `allow_same_origin`  | INTEGER | Required boolean, defaults to `0`                                  |
-| `iframe_height`      | INTEGER | Required, 320–2,400 pixels, defaults to `720`                       |
+| `iframe_height`      | INTEGER | Required, 320–2,400 pixels, defaults to `720`                      |
 | `position`           | INTEGER | Required non-negative order within the page's scope                |
 | `created_at`         | TEXT    | Required, RFC 3339 timestamp                                       |
 | `updated_at`         | TEXT    | Required, RFC 3339 timestamp                                       |
@@ -346,14 +352,14 @@ Singleton processing controls for the global Login background. The values are pu
 with the authentication bootstrap so the signed-out page can render them, but only an administrator
 may update them. They are independent from every account's Main background processing.
 
-| Column                  | Type    | Constraints                                    |
-| ----------------------- | ------- | ---------------------------------------------- |
-| `id`                    | INTEGER | Primary key; singleton value `1`               |
-| `background_blur`       | INTEGER | Blur radius from 0–24 pixels                   |
-| `background_brightness` | INTEGER | Brightness percentage from 40–140              |
-| `background_contrast`   | INTEGER | Contrast percentage from 50–160                |
-| `background_saturation` | INTEGER | Saturation percentage from 0–180               |
-| `updated_at`            | TEXT    | Required, RFC 3339 timestamp                   |
+| Column                  | Type    | Constraints                       |
+| ----------------------- | ------- | --------------------------------- |
+| `id`                    | INTEGER | Primary key; singleton value `1`  |
+| `background_blur`       | INTEGER | Blur radius from 0–24 pixels      |
+| `background_brightness` | INTEGER | Brightness percentage from 40–140 |
+| `background_contrast`   | INTEGER | Contrast percentage from 50–160   |
+| `background_saturation` | INTEGER | Saturation percentage from 0–180  |
+| `updated_at`            | TEXT    | Required, RFC 3339 timestamp      |
 
 ## `sessions`
 
@@ -446,6 +452,49 @@ only from the authenticated attachment endpoint after parent-task ownership is v
 | `file_data`  | BLOB    | Required                                         |
 | `created_at` | TEXT    | Required, RFC 3339 timestamp                     |
 
+## `announcements`
+
+Instance-wide homeserver notes readable by every authenticated account. Only administrators may
+create, edit, or delete them. Deleting an author keeps the announcement and clears its author
+reference so operational history remains available.
+
+| Column       | Type | Constraints                                               |
+| ------------ | ---- | --------------------------------------------------------- |
+| `id`         | TEXT | Primary key                                               |
+| `author_id`  | TEXT | Optional `users` reference; set to null on account delete |
+| `title`      | TEXT | Required, trimmed length 1–160                            |
+| `content`    | TEXT | Required Markdown source, trimmed length 1–50,000         |
+| `created_at` | TEXT | Required, RFC 3339 timestamp                              |
+| `updated_at` | TEXT | Required, RFC 3339 timestamp                              |
+
+## `announcement_images`
+
+Administrator-uploaded announcement images stored in SQLite. Bytes are served only after
+authentication with content sniffing disabled.
+
+| Column            | Type    | Constraints                                    |
+| ----------------- | ------- | ---------------------------------------------- |
+| `id`              | TEXT    | Primary key                                    |
+| `announcement_id` | TEXT    | References `announcements` with cascade delete |
+| `file_name`       | TEXT    | Required, trimmed length 1–255                 |
+| `mime_type`       | TEXT    | JPEG, PNG, WebP, or AVIF                       |
+| `byte_size`       | INTEGER | Required, 1 byte to 10 MB                      |
+| `image_data`      | BLOB    | Required validated image bytes                 |
+| `created_at`      | TEXT    | Required, RFC 3339 timestamp                   |
+
+## `announcement_reactions`
+
+One reaction of a given emoji per account and announcement. The composite primary key is
+`(announcement_id, user_id, emoji)`, and account deletion cascades through that account's
+reactions without removing the announcement.
+
+| Column            | Type | Constraints                                    |
+| ----------------- | ---- | ---------------------------------------------- |
+| `announcement_id` | TEXT | References `announcements` with cascade delete |
+| `user_id`         | TEXT | References `users` with cascade delete         |
+| `emoji`           | TEXT | Required, 1–32 characters                      |
+| `created_at`      | TEXT | Required, RFC 3339 timestamp                   |
+
 ## `line_posts`
 
 Markdown source posts for the Lines timeline. A public post is readable by authenticated users on
@@ -454,15 +503,15 @@ administrator. Replies are posts linked through `reply_to_post_id`. Replies to p
 forced private by the API. Deleting an account cascades through its posts, while replies owned by
 other accounts retain their content and clear a deleted parent reference.
 
-| Column             | Type | Constraints                                                   |
-| ------------------ | ---- | ------------------------------------------------------------- |
-| `id`               | TEXT | Primary key                                                   |
-| `user_id`          | TEXT | Required, references `users` with cascade delete              |
-| `content`          | TEXT | Required, trimmed length 1–2,000                              |
-| `visibility`       | TEXT | `private` or `public`; defaults to `private`                   |
+| Column             | Type | Constraints                                                     |
+| ------------------ | ---- | --------------------------------------------------------------- |
+| `id`               | TEXT | Primary key                                                     |
+| `user_id`          | TEXT | Required, references `users` with cascade delete                |
+| `content`          | TEXT | Required, trimmed length 1–2,000                                |
+| `visibility`       | TEXT | `private` or `public`; defaults to `private`                    |
 | `reply_to_post_id` | TEXT | Optional self-reference; set to null when the parent is deleted |
-| `created_at`       | TEXT | Required, RFC 3339 timestamp                                  |
-| `updated_at`       | TEXT | Required, RFC 3339 timestamp                                  |
+| `created_at`       | TEXT | Required, RFC 3339 timestamp                                    |
+| `updated_at`       | TEXT | Required, RFC 3339 timestamp                                    |
 
 ## `line_post_tags`
 
@@ -470,22 +519,22 @@ Case-insensitive, normalized hashtags extracted by the server when a post is cre
 `(post_id, tag)` pair is the primary key. Tag filters and counts are evaluated only across posts
 visible to the authenticated viewer.
 
-| Column    | Type | Constraints                                      |
-| --------- | ---- | ------------------------------------------------ |
-| `post_id` | TEXT | References `line_posts` with cascade delete      |
-| `tag`     | TEXT | Required, case-insensitive length 1–64           |
+| Column    | Type | Constraints                                 |
+| --------- | ---- | ------------------------------------------- |
+| `post_id` | TEXT | References `line_posts` with cascade delete |
+| `tag`     | TEXT | Required, case-insensitive length 1–64      |
 
 ## `line_post_reactions`
 
 One reaction of a given emoji per user and post. The composite primary key is
 `(post_id, user_id, emoji)`. Reactions can be created only when the parent post is readable.
 
-| Column       | Type | Constraints                                      |
-| ------------ | ---- | ------------------------------------------------ |
-| `post_id`    | TEXT | References `line_posts` with cascade delete      |
-| `user_id`    | TEXT | References `users` with cascade delete           |
-| `emoji`      | TEXT | Required, 1–32 characters                        |
-| `created_at` | TEXT | Required, RFC 3339 timestamp                     |
+| Column       | Type | Constraints                                 |
+| ------------ | ---- | ------------------------------------------- |
+| `post_id`    | TEXT | References `line_posts` with cascade delete |
+| `user_id`    | TEXT | References `users` with cascade delete      |
+| `emoji`      | TEXT | Required, 1–32 characters                   |
+| `created_at` | TEXT | Required, RFC 3339 timestamp                |
 
 ## `line_post_attachments`
 
@@ -494,15 +543,15 @@ every request: private attachment bytes are owner-only, while public attachment 
 authenticated account. Only JPEG, PNG, WebP, and AVIF files are displayed inline; other types are
 served as downloads with content sniffing disabled.
 
-| Column       | Type    | Constraints                                           |
-| ------------ | ------- | ----------------------------------------------------- |
-| `id`         | TEXT    | Primary key                                           |
-| `post_id`    | TEXT    | References `line_posts` with cascade delete           |
-| `file_name`  | TEXT    | Required, trimmed length 1–255                        |
-| `mime_type`  | TEXT    | Required, trimmed length 1–120                        |
-| `byte_size`  | INTEGER | Required, 1 byte to 10 MB                             |
-| `file_data`  | BLOB    | Required                                              |
-| `created_at` | TEXT    | Required, RFC 3339 timestamp                          |
+| Column       | Type    | Constraints                                 |
+| ------------ | ------- | ------------------------------------------- |
+| `id`         | TEXT    | Primary key                                 |
+| `post_id`    | TEXT    | References `line_posts` with cascade delete |
+| `file_name`  | TEXT    | Required, trimmed length 1–255              |
+| `mime_type`  | TEXT    | Required, trimmed length 1–120              |
+| `byte_size`  | INTEGER | Required, 1 byte to 10 MB                   |
+| `file_data`  | BLOB    | Required                                    |
+| `created_at` | TEXT    | Required, RFC 3339 timestamp                |
 
 ## `feed_items`
 
@@ -533,22 +582,22 @@ being retried on every sweep. `last_fetched_at` still records the last successfu
 successful refresh advances `refresh_generation`; failures leave it unchanged so Current views keep
 showing the last known-good snapshot.
 
-| Column             | Type    | Constraints                            |
-| ------------------ | ------- | -------------------------------------- |
-| `id`               | TEXT    | Primary key                            |
-| `user_id`          | TEXT    | References `users` with cascade delete |
-| `url`              | TEXT    | Required source URL, unique per user   |
-| `base_url`         | TEXT    | Required normalized HTTP(S) origin      |
-| `title`            | TEXT    | Required, fetched feed title           |
-| `category`         | TEXT    | Required, trimmed length 1–40          |
-| `auto_delete_days` | INTEGER | Optional age from 1–3,650 days         |
-| `auto_delete_mode` | TEXT    | `read` or `all`                        |
-| `last_fetched_at`  | TEXT    | Optional RFC 3339 timestamp            |
-| `last_attempted_at`| TEXT    | Optional RFC 3339 refresh attempt      |
-| `last_error`       | TEXT    | Optional safe provider error           |
+| Column               | Type    | Constraints                             |
+| -------------------- | ------- | --------------------------------------- |
+| `id`                 | TEXT    | Primary key                             |
+| `user_id`            | TEXT    | References `users` with cascade delete  |
+| `url`                | TEXT    | Required source URL, unique per user    |
+| `base_url`           | TEXT    | Required normalized HTTP(S) origin      |
+| `title`              | TEXT    | Required, fetched feed title            |
+| `category`           | TEXT    | Required, trimmed length 1–40           |
+| `auto_delete_days`   | INTEGER | Optional age from 1–3,650 days          |
+| `auto_delete_mode`   | TEXT    | `read` or `all`                         |
+| `last_fetched_at`    | TEXT    | Optional RFC 3339 timestamp             |
+| `last_attempted_at`  | TEXT    | Optional RFC 3339 refresh attempt       |
+| `last_error`         | TEXT    | Optional safe provider error            |
 | `refresh_generation` | INTEGER | Latest successful snapshot, initially 0 |
-| `created_at`       | TEXT    | Required, RFC 3339 timestamp           |
-| `updated_at`       | TEXT    | Required, RFC 3339 timestamp           |
+| `created_at`         | TEXT    | Required, RFC 3339 timestamp            |
+| `updated_at`         | TEXT    | Required, RFC 3339 timestamp            |
 
 ## `rss_items`
 
@@ -560,19 +609,19 @@ are excluded from both automatic retention and manual pruning. Entries stamped w
 subscription's latest successful generation form its Current projection and are also protected from
 retention while the source still exposes them.
 
-| Column            | Type | Constraints                                         |
-| ----------------- | ---- | --------------------------------------------------- |
-| `id`              | TEXT | Primary key                                         |
-| `subscription_id` | TEXT | References `rss_subscriptions` with cascade delete  |
-| `external_id`     | TEXT | Required, unique within the subscription            |
-| `url`             | TEXT | Entry destination, empty when omitted by the feed   |
-| `comments_url`    | TEXT | Discussion destination, empty when omitted           |
-| `title`           | TEXT | Required, trimmed length 1–500                      |
-| `summary`         | TEXT | Required, defaults to an empty string               |
-| `published_at`    | TEXT | RFC 3339; fetch time is used when the feed omits it |
-| `fetched_at`      | TEXT | Required, RFC 3339 timestamp                        |
-| `read_at`         | TEXT | Optional RFC 3339 timestamp                         |
-| `last_seen_generation` | INTEGER | Successful refresh that last exposed the item |
+| Column                 | Type    | Constraints                                         |
+| ---------------------- | ------- | --------------------------------------------------- |
+| `id`                   | TEXT    | Primary key                                         |
+| `subscription_id`      | TEXT    | References `rss_subscriptions` with cascade delete  |
+| `external_id`          | TEXT    | Required, unique within the subscription            |
+| `url`                  | TEXT    | Entry destination, empty when omitted by the feed   |
+| `comments_url`         | TEXT    | Discussion destination, empty when omitted          |
+| `title`                | TEXT    | Required, trimmed length 1–500                      |
+| `summary`              | TEXT    | Required, defaults to an empty string               |
+| `published_at`         | TEXT    | RFC 3339; fetch time is used when the feed omits it |
+| `fetched_at`           | TEXT    | Required, RFC 3339 timestamp                        |
+| `read_at`              | TEXT    | Optional RFC 3339 timestamp                         |
+| `last_seen_generation` | INTEGER | Successful refresh that last exposed the item       |
 
 ## `rss_read_later`
 
@@ -580,11 +629,11 @@ Account-owned RSS Read Later membership. The API verifies that the referenced it
 same account before creating a row. Deleting the source subscription cascades through the item and
 removes its saved membership.
 
-| Column     | Type | Constraints                                                   |
-| ---------- | ---- | ------------------------------------------------------------- |
-| `user_id`  | TEXT | Composite primary key, references `users` with cascade delete |
+| Column     | Type | Constraints                                                       |
+| ---------- | ---- | ----------------------------------------------------------------- |
+| `user_id`  | TEXT | Composite primary key, references `users` with cascade delete     |
 | `item_id`  | TEXT | Composite primary key, references `rss_items` with cascade delete |
-| `saved_at` | TEXT | Required, RFC 3339 timestamp                                  |
+| `saved_at` | TEXT | Required, RFC 3339 timestamp                                      |
 
 ## `youtube_channels`
 
@@ -678,11 +727,11 @@ subscribed by that account. The saved row remains available after unsubscribing 
 metadata is shared at the instance level; it is removed when the account, video, or YouTube content
 area is deleted.
 
-| Column     | Type | Constraints                                                   |
-| ---------- | ---- | ------------------------------------------------------------- |
-| `user_id`  | TEXT | Composite primary key, references `users` with cascade delete |
+| Column     | Type | Constraints                                                            |
+| ---------- | ---- | ---------------------------------------------------------------------- |
+| `user_id`  | TEXT | Composite primary key, references `users` with cascade delete          |
 | `video_id` | TEXT | Composite primary key, references `youtube_videos` with cascade delete |
-| `saved_at` | TEXT | Required, RFC 3339 timestamp                                  |
+| `saved_at` | TEXT | Required, RFC 3339 timestamp                                           |
 
 ## `youtube_download_jobs`
 
@@ -693,36 +742,36 @@ lifecycle and ownership record. A partial unique index prevents duplicate active
 account, video, kind, format, and selected height. Administrators do not gain access to another
 account's rows or files.
 
-| Column | Type | Constraints |
-| ------ | ---- | ----------- |
-| `id` | TEXT | UUID primary key |
-| `user_id` | TEXT | Required reference to `users` with cascade delete |
-| `source_url` | TEXT | Normalized credential-free YouTube HTTPS URL, length 1–2048 |
-| `youtube_video_id` | TEXT | Required validated video ID, length 1–32 |
-| `title` | TEXT | Required bounded source title, length at most 500 |
-| `channel_name` | TEXT | Required bounded channel label, length at most 300 |
-| `duration_seconds` | INTEGER | Optional non-negative inspected duration |
-| `media_kind` | TEXT | `video` or `audio` |
-| `output_format` | TEXT | `mp4`, `mkv`, `webm`, `m4a`, `mp3`, or `opus` |
-| `max_height` | INTEGER | Optional positive video height; null for best or audio |
-| `status` | TEXT | `queued`, `inspecting`, `downloading`, `postprocessing`, `complete`, `failed`, or `cancelled` |
-| `progress_percent` | REAL | Optional real value from 0–100 |
-| `downloaded_bytes` | INTEGER | Non-negative observed transfer count |
-| `total_bytes` | INTEGER | Optional non-negative source total or estimate |
-| `speed_bytes_per_second` | REAL | Optional non-negative progress hint |
-| `eta_seconds` | INTEGER | Optional non-negative progress hint |
-| `storage_file_name` | TEXT | Server-generated filename only; empty before completion |
-| `display_file_name` | TEXT | Sanitized attachment filename; never used for path resolution |
-| `mime_type` | TEXT | Validated final MIME type; empty before completion |
-| `byte_size` | INTEGER | Non-negative final file size |
-| `attempts` | INTEGER | Claim count from 0–3 |
-| `error_code` | TEXT | Optional bounded internal failure category |
-| `last_error` | TEXT | Optional bounded user-safe message; no subprocess output |
-| `lease_started_at` | TEXT | Optional RFC 3339 worker lease |
-| `created_at` | TEXT | Required RFC 3339 timestamp |
-| `started_at` | TEXT | Optional RFC 3339 first-start timestamp |
-| `completed_at` | TEXT | Optional RFC 3339 completion timestamp |
-| `updated_at` | TEXT | Required RFC 3339 timestamp |
+| Column                   | Type    | Constraints                                                                                   |
+| ------------------------ | ------- | --------------------------------------------------------------------------------------------- |
+| `id`                     | TEXT    | UUID primary key                                                                              |
+| `user_id`                | TEXT    | Required reference to `users` with cascade delete                                             |
+| `source_url`             | TEXT    | Normalized credential-free YouTube HTTPS URL, length 1–2048                                   |
+| `youtube_video_id`       | TEXT    | Required validated video ID, length 1–32                                                      |
+| `title`                  | TEXT    | Required bounded source title, length at most 500                                             |
+| `channel_name`           | TEXT    | Required bounded channel label, length at most 300                                            |
+| `duration_seconds`       | INTEGER | Optional non-negative inspected duration                                                      |
+| `media_kind`             | TEXT    | `video` or `audio`                                                                            |
+| `output_format`          | TEXT    | `mp4`, `mkv`, `webm`, `m4a`, `mp3`, or `opus`                                                 |
+| `max_height`             | INTEGER | Optional positive video height; null for best or audio                                        |
+| `status`                 | TEXT    | `queued`, `inspecting`, `downloading`, `postprocessing`, `complete`, `failed`, or `cancelled` |
+| `progress_percent`       | REAL    | Optional real value from 0–100                                                                |
+| `downloaded_bytes`       | INTEGER | Non-negative observed transfer count                                                          |
+| `total_bytes`            | INTEGER | Optional non-negative source total or estimate                                                |
+| `speed_bytes_per_second` | REAL    | Optional non-negative progress hint                                                           |
+| `eta_seconds`            | INTEGER | Optional non-negative progress hint                                                           |
+| `storage_file_name`      | TEXT    | Server-generated filename only; empty before completion                                       |
+| `display_file_name`      | TEXT    | Sanitized attachment filename; never used for path resolution                                 |
+| `mime_type`              | TEXT    | Validated final MIME type; empty before completion                                            |
+| `byte_size`              | INTEGER | Non-negative final file size                                                                  |
+| `attempts`               | INTEGER | Claim count from 0–3                                                                          |
+| `error_code`             | TEXT    | Optional bounded internal failure category                                                    |
+| `last_error`             | TEXT    | Optional bounded user-safe message; no subprocess output                                      |
+| `lease_started_at`       | TEXT    | Optional RFC 3339 worker lease                                                                |
+| `created_at`             | TEXT    | Required RFC 3339 timestamp                                                                   |
+| `started_at`             | TEXT    | Optional RFC 3339 first-start timestamp                                                       |
+| `completed_at`           | TEXT    | Optional RFC 3339 completion timestamp                                                        |
+| `updated_at`             | TEXT    | Required RFC 3339 timestamp                                                                   |
 
 ## `youtube_download_settings`
 
@@ -732,18 +781,18 @@ account, 2 GiB per output, two global workers, one worker per account, 10 URLs p
 unsettled rows per account. Policy validation requires the worst-case concurrent reservation to fit
 both storage budgets.
 
-| Column | Type | Constraints |
-| ------ | ---- | ----------- |
-| `id` | INTEGER | Primary key constrained to `1` |
-| `member_downloads_enabled` | INTEGER | Boolean, default enabled |
-| `storage_budget_bytes` | INTEGER | Positive instance ceiling |
-| `per_user_budget_bytes` | INTEGER | Positive account ceiling no larger than instance storage |
-| `max_output_bytes` | INTEGER | Positive per-job ceiling no larger than account storage |
-| `global_concurrency` | INTEGER | 1–8 |
-| `per_user_concurrency` | INTEGER | 1–4 and no larger than global concurrency |
-| `max_batch_urls` | INTEGER | 1–50 |
-| `max_queued_per_user` | INTEGER | 1–200 |
-| `updated_at` | TEXT | Required RFC 3339 timestamp |
+| Column                     | Type    | Constraints                                              |
+| -------------------------- | ------- | -------------------------------------------------------- |
+| `id`                       | INTEGER | Primary key constrained to `1`                           |
+| `member_downloads_enabled` | INTEGER | Boolean, default enabled                                 |
+| `storage_budget_bytes`     | INTEGER | Positive instance ceiling                                |
+| `per_user_budget_bytes`    | INTEGER | Positive account ceiling no larger than instance storage |
+| `max_output_bytes`         | INTEGER | Positive per-job ceiling no larger than account storage  |
+| `global_concurrency`       | INTEGER | 1–8                                                      |
+| `per_user_concurrency`     | INTEGER | 1–4 and no larger than global concurrency                |
+| `max_batch_urls`           | INTEGER | 1–50                                                     |
+| `max_queued_per_user`      | INTEGER | 1–200                                                    |
+| `updated_at`               | TEXT    | Required RFC 3339 timestamp                              |
 
 ## `podcasts`
 
@@ -754,28 +803,28 @@ uniqueness key, so the same show cannot be catalogued twice under cosmetically d
 Artwork is cached here as a blob and refreshed at most once a day; a failed fetch never overwrites
 it. Episode audio is **not** stored in SQLite — see `podcast_downloads`.
 
-| Column                  | Type    | Constraints                                            |
-| ----------------------- | ------- | ------------------------------------------------------ |
-| `id`                    | TEXT    | Primary key                                            |
-| `feed_url`              | TEXT    | Required, trimmed length 1–2048, as submitted          |
-| `normalized_url`        | TEXT    | Required, unique, trimmed length 1–2048                |
-| `title`                 | TEXT    | Required, trimmed length 1–300                         |
-| `description`           | TEXT    | Required, defaults to empty                            |
-| `author`                | TEXT    | Required, defaults to empty                            |
-| `site_url`              | TEXT    | Required, defaults to empty                            |
-| `language`              | TEXT    | Required, defaults to empty                            |
-| `artwork_url`           | TEXT    | Required, defaults to empty                            |
-| `artwork_content_type`  | TEXT    | Required, defaults to empty                            |
-| `artwork_data`          | BLOB    | Optional cached image bytes                            |
-| `artwork_fetched_at`    | TEXT    | Optional RFC 3339 timestamp                            |
-| `auto_download_count`   | INTEGER | Newest episodes cached automatically, 0–25, default 3  |
-| `max_retained_episodes` | INTEGER | Retention window, 1–1000, default 50                   |
-| `added_by`              | TEXT    | Optional reference to `users`, null on account delete  |
-| `last_fetched_at`       | TEXT    | Optional RFC 3339 timestamp                            |
-| `refresh_started_at`    | TEXT    | Optional refresh lease, RFC 3339 timestamp             |
-| `last_error`            | TEXT    | Optional isolated refresh failure                      |
-| `created_at`            | TEXT    | Required, RFC 3339 timestamp                           |
-| `updated_at`            | TEXT    | Required, RFC 3339 timestamp                           |
+| Column                  | Type    | Constraints                                           |
+| ----------------------- | ------- | ----------------------------------------------------- |
+| `id`                    | TEXT    | Primary key                                           |
+| `feed_url`              | TEXT    | Required, trimmed length 1–2048, as submitted         |
+| `normalized_url`        | TEXT    | Required, unique, trimmed length 1–2048               |
+| `title`                 | TEXT    | Required, trimmed length 1–300                        |
+| `description`           | TEXT    | Required, defaults to empty                           |
+| `author`                | TEXT    | Required, defaults to empty                           |
+| `site_url`              | TEXT    | Required, defaults to empty                           |
+| `language`              | TEXT    | Required, defaults to empty                           |
+| `artwork_url`           | TEXT    | Required, defaults to empty                           |
+| `artwork_content_type`  | TEXT    | Required, defaults to empty                           |
+| `artwork_data`          | BLOB    | Optional cached image bytes                           |
+| `artwork_fetched_at`    | TEXT    | Optional RFC 3339 timestamp                           |
+| `auto_download_count`   | INTEGER | Newest episodes cached automatically, 0–25, default 3 |
+| `max_retained_episodes` | INTEGER | Retention window, 1–1000, default 50                  |
+| `added_by`              | TEXT    | Optional reference to `users`, null on account delete |
+| `last_fetched_at`       | TEXT    | Optional RFC 3339 timestamp                           |
+| `refresh_started_at`    | TEXT    | Optional refresh lease, RFC 3339 timestamp            |
+| `last_error`            | TEXT    | Optional isolated refresh failure                     |
+| `created_at`            | TEXT    | Required, RFC 3339 timestamp                          |
+| `updated_at`            | TEXT    | Required, RFC 3339 timestamp                          |
 
 ## `podcast_requests`
 
@@ -808,20 +857,20 @@ Feed items indexed at the instance level, shared by every subscriber. Unique per
 feeds that omit a guid fall back to the enclosure URL so re-indexing stays idempotent. Rows are
 refreshed in place, so a retitled episode keeps everyone's listening position.
 
-| Column             | Type    | Constraints                                        |
-| ------------------ | ------- | -------------------------------------------------- |
-| `id`               | TEXT    | Primary key                                        |
-| `podcast_id`       | TEXT    | References `podcasts` with cascade delete          |
-| `guid`             | TEXT    | Required, trimmed length 1–2048, unique per show   |
-| `title`            | TEXT    | Required, trimmed length 1–500                     |
-| `description`      | TEXT    | Required, defaults to empty                        |
-| `episode_url`      | TEXT    | Required, defaults to empty                        |
-| `enclosure_url`    | TEXT    | Required, trimmed length 1–2048                    |
-| `enclosure_type`   | TEXT    | Required, defaults to empty                        |
-| `enclosure_bytes`  | INTEGER | Optional, non-negative                             |
-| `duration_seconds` | INTEGER | Optional, non-negative                             |
-| `published_at`     | TEXT    | Required, RFC 3339 timestamp                       |
-| `fetched_at`       | TEXT    | Required, RFC 3339 timestamp                       |
+| Column             | Type    | Constraints                                      |
+| ------------------ | ------- | ------------------------------------------------ |
+| `id`               | TEXT    | Primary key                                      |
+| `podcast_id`       | TEXT    | References `podcasts` with cascade delete        |
+| `guid`             | TEXT    | Required, trimmed length 1–2048, unique per show |
+| `title`            | TEXT    | Required, trimmed length 1–500                   |
+| `description`      | TEXT    | Required, defaults to empty                      |
+| `episode_url`      | TEXT    | Required, defaults to empty                      |
+| `enclosure_url`    | TEXT    | Required, trimmed length 1–2048                  |
+| `enclosure_type`   | TEXT    | Required, defaults to empty                      |
+| `enclosure_bytes`  | INTEGER | Optional, non-negative                           |
+| `duration_seconds` | INTEGER | Optional, non-negative                           |
+| `published_at`     | TEXT    | Required, RFC 3339 timestamp                     |
+| `fetched_at`       | TEXT    | Required, RFC 3339 timestamp                     |
 
 ## `podcast_downloads`
 
@@ -832,46 +881,46 @@ filesystem. `requested_by` is `ON DELETE SET NULL` on purpose: cached audio is a
 resource and must outlive the account that first asked for it. Startup reconciles this table against
 the media root in both directions.
 
-| Column             | Type    | Constraints                                                   |
-| ------------------ | ------- | ------------------------------------------------------------- |
-| `episode_id`       | TEXT    | Primary key, references `podcast_episodes` with cascade delete |
-| `status`           | TEXT    | One of `queued`, `downloading`, `ready`, `failed`             |
-| `requested_by`     | TEXT    | Optional reference to `users`, null on account delete         |
-| `file_name`        | TEXT    | Plain file name inside the media root, defaults to empty      |
-| `content_type`     | TEXT    | Required, defaults to empty                                   |
-| `byte_size`        | INTEGER | Required, non-negative, defaults to 0                         |
-| `downloaded_bytes` | INTEGER | Required, non-negative, defaults to 0                         |
-| `pinned`           | INTEGER | 0 or 1; pinned files are never evicted                        |
-| `attempts`         | INTEGER | Required, non-negative, defaults to 0                         |
-| `last_error`       | TEXT    | Required, defaults to empty                                   |
-| `lease_started_at` | TEXT    | Optional worker lease, RFC 3339 timestamp                     |
+| Column             | Type    | Constraints                                                           |
+| ------------------ | ------- | --------------------------------------------------------------------- |
+| `episode_id`       | TEXT    | Primary key, references `podcast_episodes` with cascade delete        |
+| `status`           | TEXT    | One of `queued`, `downloading`, `ready`, `failed`                     |
+| `requested_by`     | TEXT    | Optional reference to `users`, null on account delete                 |
+| `file_name`        | TEXT    | Plain file name inside the media root, defaults to empty              |
+| `content_type`     | TEXT    | Required, defaults to empty                                           |
+| `byte_size`        | INTEGER | Required, non-negative, defaults to 0                                 |
+| `downloaded_bytes` | INTEGER | Required, non-negative, defaults to 0                                 |
+| `pinned`           | INTEGER | 0 or 1; pinned files are never evicted                                |
+| `attempts`         | INTEGER | Required, non-negative, defaults to 0                                 |
+| `last_error`       | TEXT    | Required, defaults to empty                                           |
+| `lease_started_at` | TEXT    | Optional worker lease, RFC 3339 timestamp                             |
 | `last_accessed_at` | TEXT    | Optional RFC 3339 timestamp; least-recently-used eviction ranks on it |
-| `created_at`       | TEXT    | Required, RFC 3339 timestamp                                  |
-| `updated_at`       | TEXT    | Required, RFC 3339 timestamp                                  |
+| `created_at`       | TEXT    | Required, RFC 3339 timestamp                                          |
+| `updated_at`       | TEXT    | Required, RFC 3339 timestamp                                          |
 
 ## `podcast_subscriptions`
 
 Private account-to-podcast membership. Every episode read — metadata, audio bytes, and listening
 state — resolves through this table.
 
-| Column       | Type | Constraints                                                 |
-| ------------ | ---- | ----------------------------------------------------------- |
-| `user_id`    | TEXT | Composite primary key, references `users` with cascade delete |
+| Column       | Type | Constraints                                                      |
+| ------------ | ---- | ---------------------------------------------------------------- |
+| `user_id`    | TEXT | Composite primary key, references `users` with cascade delete    |
 | `podcast_id` | TEXT | Composite primary key, references `podcasts` with cascade delete |
-| `created_at` | TEXT | Required, RFC 3339 timestamp                                |
+| `created_at` | TEXT | Required, RFC 3339 timestamp                                     |
 
 ## `podcast_episode_progress`
 
 Private per-account resume position and completion state, written on an interval while playing and
 on pause, seek, and page hide.
 
-| Column             | Type    | Constraints                                                    |
-| ------------------ | ------- | -------------------------------------------------------------- |
-| `user_id`          | TEXT    | Composite primary key, references `users` with cascade delete  |
+| Column             | Type    | Constraints                                                              |
+| ------------------ | ------- | ------------------------------------------------------------------------ |
+| `user_id`          | TEXT    | Composite primary key, references `users` with cascade delete            |
 | `episode_id`       | TEXT    | Composite primary key, references `podcast_episodes` with cascade delete |
-| `position_seconds` | INTEGER | Required, non-negative, defaults to 0                          |
-| `completed_at`     | TEXT    | Optional RFC 3339 timestamp                                    |
-| `updated_at`       | TEXT    | Required, RFC 3339 timestamp                                   |
+| `position_seconds` | INTEGER | Required, non-negative, defaults to 0                                    |
+| `completed_at`     | TEXT    | Optional RFC 3339 timestamp                                              |
+| `updated_at`       | TEXT    | Required, RFC 3339 timestamp                                             |
 
 ## `podcast_queue`
 
@@ -879,23 +928,23 @@ Private per-account play order. This is play order, not a saved collection. `UNI
 is checked per statement, so reordering parks every affected row in the 256–511 band before writing
 final 0–255 positions; the two ranges cannot overlap, which is what makes a full reversal safe.
 
-| Column       | Type    | Constraints                                                     |
-| ------------ | ------- | --------------------------------------------------------------- |
-| `user_id`    | TEXT    | Composite primary key, references `users` with cascade delete   |
+| Column       | Type    | Constraints                                                              |
+| ------------ | ------- | ------------------------------------------------------------------------ |
+| `user_id`    | TEXT    | Composite primary key, references `users` with cascade delete            |
 | `episode_id` | TEXT    | Composite primary key, references `podcast_episodes` with cascade delete |
-| `position`   | INTEGER | 0–511; 0–255 are final positions, 256–511 the reorder parking band |
-| `added_at`   | TEXT    | Required, RFC 3339 timestamp                                    |
+| `position`   | INTEGER | 0–511; 0–255 are final positions, 256–511 the reorder parking band       |
+| `added_at`   | TEXT    | Required, RFC 3339 timestamp                                             |
 
 ## `podcast_saved_episodes`
 
 Private account-to-episode saved list, mirroring `rss_read_later` and `youtube_watch_later`. A saved
 episode is exempt from retention trimming.
 
-| Column       | Type | Constraints                                                     |
-| ------------ | ---- | --------------------------------------------------------------- |
-| `user_id`    | TEXT | Composite primary key, references `users` with cascade delete   |
+| Column       | Type | Constraints                                                              |
+| ------------ | ---- | ------------------------------------------------------------------------ |
+| `user_id`    | TEXT | Composite primary key, references `users` with cascade delete            |
 | `episode_id` | TEXT | Composite primary key, references `podcast_episodes` with cascade delete |
-| `saved_at`   | TEXT | Required, RFC 3339 timestamp                                    |
+| `saved_at`   | TEXT | Required, RFC 3339 timestamp                                             |
 
 ## `podcast_settings`
 
@@ -903,16 +952,16 @@ Singleton administrator-controlled podcast policy, seeded by migration `038_podc
 `authentication_settings` is. Closing requests makes the catalogue administrator-only; the storage
 budget bounds how much disk cached audio may occupy before least-recently-used eviction runs.
 
-| Column                          | Type    | Constraints                                          |
-| ------------------------------- | ------- | ---------------------------------------------------- |
-| `id`                            | INTEGER | Primary key, always 1                                |
-| `requests_enabled`              | INTEGER | 0 or 1, defaults to 1                                |
-| `member_downloads_enabled`      | INTEGER | 0 or 1, defaults to 1                                |
-| `max_pending_requests_per_user` | INTEGER | 0–100, defaults to 5                                 |
-| `storage_budget_bytes`          | INTEGER | 0–1 TiB, defaults to 20 GiB                          |
-| `max_episode_bytes`             | INTEGER | 1 MiB–5 GiB, defaults to 500 MiB                     |
-| `default_auto_download_count`   | INTEGER | 0–25, defaults to 3                                  |
-| `updated_at`                    | TEXT    | Required, RFC 3339 timestamp                         |
+| Column                          | Type    | Constraints                      |
+| ------------------------------- | ------- | -------------------------------- |
+| `id`                            | INTEGER | Primary key, always 1            |
+| `requests_enabled`              | INTEGER | 0 or 1, defaults to 1            |
+| `member_downloads_enabled`      | INTEGER | 0 or 1, defaults to 1            |
+| `max_pending_requests_per_user` | INTEGER | 0–100, defaults to 5             |
+| `storage_budget_bytes`          | INTEGER | 0–1 TiB, defaults to 20 GiB      |
+| `max_episode_bytes`             | INTEGER | 1 MiB–5 GiB, defaults to 500 MiB |
+| `default_auto_download_count`   | INTEGER | 0–25, defaults to 3              |
+| `updated_at`                    | TEXT    | Required, RFC 3339 timestamp     |
 
 ## `journal_nodes`
 
@@ -980,15 +1029,15 @@ with XChaCha20-Poly1305 and API responses expose only whether a token exists. Th
 the upstream subscription open independently of browser sessions. A recovery-sync or stream failure
 records a user-safe error without discarding previously retrieved notifications.
 
-| Column             | Type | Constraints                                                    |
-| ------------------ | ---- | -------------------------------------------------------------- |
-| `user_id`          | TEXT | Primary key, references `users` with cascade delete            |
-| `base_url`         | TEXT | Required credential-free HTTP(S) ntfy server URL                |
-| `token_ciphertext` | TEXT | Optional encrypted access token, never returned by the API     |
-| `last_synced_at`   | TEXT | Optional RFC 3339 timestamp                                     |
-| `last_error`       | TEXT | Optional safe provider error                                   |
-| `created_at`       | TEXT | Required, RFC 3339 timestamp                                   |
-| `updated_at`       | TEXT | Required, RFC 3339 timestamp                                   |
+| Column             | Type | Constraints                                                |
+| ------------------ | ---- | ---------------------------------------------------------- |
+| `user_id`          | TEXT | Primary key, references `users` with cascade delete        |
+| `base_url`         | TEXT | Required credential-free HTTP(S) ntfy server URL           |
+| `token_ciphertext` | TEXT | Optional encrypted access token, never returned by the API |
+| `last_synced_at`   | TEXT | Optional RFC 3339 timestamp                                |
+| `last_error`       | TEXT | Optional safe provider error                               |
+| `created_at`       | TEXT | Required, RFC 3339 timestamp                               |
+| `updated_at`       | TEXT | Required, RFC 3339 timestamp                               |
 
 ## `ntfy_topics`
 
@@ -999,15 +1048,15 @@ subscriptions.
 Changing the connected server clears locally cached ntfy messages and resets every topic cursor,
 while retaining the manually entered topic names and labels so they can be polled on the new server.
 
-| Column            | Type | Constraints                                                     |
-| ----------------- | ---- | --------------------------------------------------------------- |
-| `id`              | TEXT | Primary key                                                     |
-| `user_id`         | TEXT | References `ntfy_connections` with cascade delete               |
-| `topic`           | TEXT | Required, 1–64 portable topic characters, unique per user       |
-| `label`           | TEXT | Required display label, up to 80 characters                     |
-| `last_message_id` | TEXT | Optional ntfy message ID used as the incremental sync cursor    |
-| `created_at`      | TEXT | Required, RFC 3339 timestamp                                    |
-| `updated_at`      | TEXT | Required, RFC 3339 timestamp                                    |
+| Column            | Type | Constraints                                                  |
+| ----------------- | ---- | ------------------------------------------------------------ |
+| `id`              | TEXT | Primary key                                                  |
+| `user_id`         | TEXT | References `ntfy_connections` with cascade delete            |
+| `topic`           | TEXT | Required, 1–64 portable topic characters, unique per user    |
+| `label`           | TEXT | Required display label, up to 80 characters                  |
+| `last_message_id` | TEXT | Optional ntfy message ID used as the incremental sync cursor |
+| `created_at`      | TEXT | Required, RFC 3339 timestamp                                 |
+| `updated_at`      | TEXT | Required, RFC 3339 timestamp                                 |
 
 ## `ntfy_notifications`
 
@@ -1022,22 +1071,22 @@ column but the application no longer writes or lists archived notifications. Tag
 retain the bounded upstream JSON; view links and copy actions run in the browser, while HTTP actions
 require an authenticated user gesture and the server network policy.
 
-| Column         | Type    | Constraints                                                  |
-| -------------- | ------- | ------------------------------------------------------------ |
-| `id`           | TEXT    | Primary key                                                  |
-| `user_id`      | TEXT    | References `users` with cascade delete                       |
-| `topic_id`     | TEXT    | References `ntfy_topics` with cascade delete                 |
-| `remote_id`    | TEXT    | Required upstream message ID, unique within one topic        |
-| `occurred_at`  | INTEGER | Required Unix timestamp supplied by ntfy                     |
-| `title`        | TEXT    | Required, normalized display title                           |
-| `message`      | TEXT    | Required notification body                                   |
-| `priority`     | INTEGER | Required ntfy priority, normalized to 1–5                    |
-| `tags_json`    | TEXT    | Required valid JSON array                                    |
-| `click_url`    | TEXT    | Optional absolute HTTP(S) destination                        |
-| `actions_json` | TEXT    | Required valid JSON array of bounded ntfy actions            |
-| `seen_at`      | TEXT    | Optional RFC 3339 timestamp                                  |
-| `archived_at`  | TEXT    | Legacy compatibility column; new rows remain NULL            |
-| `received_at`  | TEXT    | Required RFC 3339 timestamp                                  |
+| Column         | Type    | Constraints                                           |
+| -------------- | ------- | ----------------------------------------------------- |
+| `id`           | TEXT    | Primary key                                           |
+| `user_id`      | TEXT    | References `users` with cascade delete                |
+| `topic_id`     | TEXT    | References `ntfy_topics` with cascade delete          |
+| `remote_id`    | TEXT    | Required upstream message ID, unique within one topic |
+| `occurred_at`  | INTEGER | Required Unix timestamp supplied by ntfy              |
+| `title`        | TEXT    | Required, normalized display title                    |
+| `message`      | TEXT    | Required notification body                            |
+| `priority`     | INTEGER | Required ntfy priority, normalized to 1–5             |
+| `tags_json`    | TEXT    | Required valid JSON array                             |
+| `click_url`    | TEXT    | Optional absolute HTTP(S) destination                 |
+| `actions_json` | TEXT    | Required valid JSON array of bounded ntfy actions     |
+| `seen_at`      | TEXT    | Optional RFC 3339 timestamp                           |
+| `archived_at`  | TEXT    | Legacy compatibility column; new rows remain NULL     |
+| `received_at`  | TEXT    | Required RFC 3339 timestamp                           |
 
 ## `contact_dav_sources`
 
@@ -1112,18 +1161,24 @@ an upstream contact replaces its photo; deleting the contact cascades to the pho
 
 User-owned regular payment records shown in Subscriptions mode.
 
-| Column          | Type    | Constraints                                                                             |
-| --------------- | ------- | --------------------------------------------------------------------------------------- |
-| `id`            | TEXT    | Primary key                                                                             |
-| `user_id`       | TEXT    | References `users` with cascade delete                                                  |
-| `service`       | TEXT    | Required, trimmed length 1–120                                                          |
-| `description`   | TEXT    | Required, up to 2,000 characters                                                        |
-| `frequency`     | TEXT    | Required, trimmed length 1–40                                                           |
-| `amount_micros` | INTEGER | Exact charge per billing period in millionths of one currency unit; 0–1,000,000,000,000 |
-| `currency`      | TEXT    | Required uppercase three-letter currency code; defaults to `USD` for migrated records   |
-| `first_paid_on` | TEXT    | Required ISO calendar date                                                              |
-| `created_at`    | TEXT    | Required, RFC 3339 timestamp                                                            |
-| `updated_at`    | TEXT    | Required, RFC 3339 timestamp                                                            |
+New and edited records store a validated interval and unit. `frequency` remains as the
+server-formatted display label for compatibility. Legacy rows with an unrecognized free-form label
+may leave the structured fields null until the record is edited.
+
+| Column               | Type    | Constraints                                                                             |
+| -------------------- | ------- | --------------------------------------------------------------------------------------- |
+| `id`                 | TEXT    | Primary key                                                                             |
+| `user_id`            | TEXT    | References `users` with cascade delete                                                  |
+| `service`            | TEXT    | Required, trimmed length 1–120                                                          |
+| `description`        | TEXT    | Required, up to 2,000 characters                                                        |
+| `frequency`          | TEXT    | Required server-formatted display label, trimmed length 1–40                            |
+| `frequency_interval` | INTEGER | 1–999 for structured schedules; null only for unrecognized legacy labels                |
+| `frequency_unit`     | TEXT    | `day`, `week`, `month`, or `year`; null only for unrecognized legacy labels              |
+| `amount_micros`      | INTEGER | Exact charge per billing period in millionths of one currency unit; 0–1,000,000,000,000 |
+| `currency`           | TEXT    | Required uppercase three-letter currency code; defaults to `USD` for migrated records   |
+| `first_paid_on`      | TEXT    | Required ISO calendar date                                                              |
+| `created_at`         | TEXT    | Required, RFC 3339 timestamp                                                            |
+| `updated_at`         | TEXT    | Required, RFC 3339 timestamp                                                            |
 
 ## `coding_projects`
 
@@ -1162,17 +1217,17 @@ The destination remains a browser link; only the derived origin `/favicon.ico` i
 server. Supported favicon bytes are cached in the same row and are returned only after the request
 resolves through that row's `user_id`.
 
-| Column                 | Type | Constraints                                                                                         |
-| ---------------------- | ---- | --------------------------------------------------------------------------------------------------- |
-| `id`                   | TEXT | Primary key                                                                                         |
-| `user_id`              | TEXT | Required, references `users` with cascade delete                                                    |
-| `title`                | TEXT | Required, trimmed length 1–120                                                                      |
-| `url`                  | TEXT | Required credential-free HTTP or HTTPS URL, up to 2,048 bytes; unique per account                  |
-| `favicon_content_type` | TEXT | Nullable; AVIF, JPEG, PNG, WebP, ICO, or Microsoft icon media type                                  |
-| `favicon_data`         | BLOB | Nullable cached icon bytes, 1 byte through 256 KiB                                                  |
-| `favicon_fetched_at`   | TEXT | Nullable RFC 3339 timestamp; present exactly when cached favicon media type and bytes are present   |
-| `created_at`           | TEXT | Required, RFC 3339 timestamp                                                                        |
-| `updated_at`           | TEXT | Required, RFC 3339 timestamp                                                                        |
+| Column                 | Type | Constraints                                                                                       |
+| ---------------------- | ---- | ------------------------------------------------------------------------------------------------- |
+| `id`                   | TEXT | Primary key                                                                                       |
+| `user_id`              | TEXT | Required, references `users` with cascade delete                                                  |
+| `title`                | TEXT | Required, trimmed length 1–120                                                                    |
+| `url`                  | TEXT | Required credential-free HTTP or HTTPS URL, up to 2,048 bytes; unique per account                 |
+| `favicon_content_type` | TEXT | Nullable; AVIF, JPEG, PNG, WebP, ICO, or Microsoft icon media type                                |
+| `favicon_data`         | BLOB | Nullable cached icon bytes, 1 byte through 256 KiB                                                |
+| `favicon_fetched_at`   | TEXT | Nullable RFC 3339 timestamp; present exactly when cached favicon media type and bytes are present |
+| `created_at`           | TEXT | Required, RFC 3339 timestamp                                                                      |
+| `updated_at`           | TEXT | Required, RFC 3339 timestamp                                                                      |
 
 ## `bookmark_library_categories`
 
@@ -1180,15 +1235,15 @@ Categories for the full Bookmarks product page. A global category is visible to 
 authenticated account and may be mutated only through administrator routes. A personal category
 belongs to one account.
 
-| Column               | Type | Constraints                                                                 |
-| -------------------- | ---- | --------------------------------------------------------------------------- |
-| `id`                 | TEXT | Primary key                                                                 |
-| `scope`              | TEXT | `global` or `personal`                                                     |
-| `user_id`            | TEXT | Null for global; required user reference with cascade delete for personal   |
-| `created_by_user_id` | TEXT | Optional creator reference with null-on-delete                              |
-| `name`               | TEXT | Required, trimmed length 1–80; case-insensitive unique within its scope     |
-| `created_at`         | TEXT | Required, RFC 3339 timestamp                                                 |
-| `updated_at`         | TEXT | Required, RFC 3339 timestamp                                                 |
+| Column               | Type | Constraints                                                               |
+| -------------------- | ---- | ------------------------------------------------------------------------- |
+| `id`                 | TEXT | Primary key                                                               |
+| `scope`              | TEXT | `global` or `personal`                                                    |
+| `user_id`            | TEXT | Null for global; required user reference with cascade delete for personal |
+| `created_by_user_id` | TEXT | Optional creator reference with null-on-delete                            |
+| `name`               | TEXT | Required, trimmed length 1–80; case-insensitive unique within its scope   |
+| `created_at`         | TEXT | Required, RFC 3339 timestamp                                              |
+| `updated_at`         | TEXT | Required, RFC 3339 timestamp                                              |
 
 Deleting a category cascades all of its bookmark-library items.
 
@@ -1197,19 +1252,19 @@ Deleting a category cascades all of its bookmark-library items.
 Square bookmark tiles grouped by `bookmark_library_categories`. Destinations are credential-free
 HTTP or HTTPS URLs. Favicon and custom icon failures leave the item saved with a Lucide fallback.
 
-| Column              | Type | Constraints                                                                                         |
-| ------------------- | ---- | --------------------------------------------------------------------------------------------------- |
-| `id`                | TEXT | Primary key                                                                                         |
-| `category_id`       | TEXT | Required category reference with cascade delete                                                     |
-| `title`             | TEXT | Required, trimmed length 1–120                                                                      |
-| `url`               | TEXT | Required destination, up to 2,048 bytes; unique within one category                                |
-| `icon_kind`         | TEXT | `favicon`, `lucide`, or `custom`                                                                  |
-| `icon_value`        | TEXT | Null for favicon; supported Lucide name or credential-free HTTPS custom icon URL                   |
-| `icon_content_type` | TEXT | Nullable; AVIF, JPEG, PNG, WebP, ICO, or Microsoft icon media type                                  |
-| `icon_data`         | BLOB | Nullable cached remote icon bytes, 1 byte through 256 KiB                                           |
-| `icon_fetched_at`   | TEXT | Nullable RFC 3339 timestamp; present exactly with cached icon media type and bytes                  |
-| `created_at`        | TEXT | Required, RFC 3339 timestamp                                                                        |
-| `updated_at`        | TEXT | Required, RFC 3339 timestamp                                                                        |
+| Column              | Type | Constraints                                                                        |
+| ------------------- | ---- | ---------------------------------------------------------------------------------- |
+| `id`                | TEXT | Primary key                                                                        |
+| `category_id`       | TEXT | Required category reference with cascade delete                                    |
+| `title`             | TEXT | Required, trimmed length 1–120                                                     |
+| `url`               | TEXT | Required destination, up to 2,048 bytes; unique within one category                |
+| `icon_kind`         | TEXT | `favicon`, `lucide`, or `custom`                                                   |
+| `icon_value`        | TEXT | Null for favicon; supported Lucide name or credential-free HTTPS custom icon URL   |
+| `icon_content_type` | TEXT | Nullable; AVIF, JPEG, PNG, WebP, ICO, or Microsoft icon media type                 |
+| `icon_data`         | BLOB | Nullable cached remote icon bytes, 1 byte through 256 KiB                          |
+| `icon_fetched_at`   | TEXT | Nullable RFC 3339 timestamp; present exactly with cached icon media type and bytes |
+| `created_at`        | TEXT | Required, RFC 3339 timestamp                                                       |
+| `updated_at`        | TEXT | Required, RFC 3339 timestamp                                                       |
 
 ## `dashboard_widgets`
 
@@ -1226,21 +1281,21 @@ widget with `config_json.placement = "utility_rail"`. That system widget stores 
 Kick account lists for the dashboard's fixed right rail; legacy movable `streams` widgets remain
 valid and retain their encrypted credentials.
 
-| Column        | Type    | Constraints                                                         |
-| ------------- | ------- | ------------------------------------------------------------------- |
-| `id`          | TEXT    | Primary key                                                         |
-| `user_id`     | TEXT    | Required, references `users` with cascade delete                    |
-| `kind`        | TEXT    | Supported widget type, including the local `bible-verse` widget     |
-| `workspace`   | INTEGER | Legacy partition identifier; new widgets use dashboard `0`          |
-| `position`    | INTEGER | Zero-based dashboard reading order, bounded to 0–127                |
-| `size`        | TEXT    | `compact`, `standard`, `wide`, or `full`                            |
-| `grid_x`      | INTEGER | GridStack column offset, 0–11                                       |
-| `grid_y`      | INTEGER | GridStack row offset, 0–255                                         |
-| `grid_w`      | INTEGER | GridStack width, 1–12 columns                                       |
-| `grid_h`      | INTEGER | GridStack height, 1–12 rows                                         |
-| `config_json` | TEXT    | Valid JSON object containing non-secret per-instance configuration  |
-| `created_at`  | TEXT    | Required, RFC 3339 timestamp                                        |
-| `updated_at`  | TEXT    | Required, RFC 3339 timestamp                                        |
+| Column        | Type    | Constraints                                                        |
+| ------------- | ------- | ------------------------------------------------------------------ |
+| `id`          | TEXT    | Primary key                                                        |
+| `user_id`     | TEXT    | Required, references `users` with cascade delete                   |
+| `kind`        | TEXT    | Supported widget type, including the local `bible-verse` widget    |
+| `workspace`   | INTEGER | Legacy partition identifier; new widgets use dashboard `0`         |
+| `position`    | INTEGER | Zero-based dashboard reading order, bounded to 0–127               |
+| `size`        | TEXT    | `compact`, `standard`, `wide`, or `full`                           |
+| `grid_x`      | INTEGER | GridStack column offset, 0–11                                      |
+| `grid_y`      | INTEGER | GridStack row offset, 0–255                                        |
+| `grid_w`      | INTEGER | GridStack width, 1–12 columns                                      |
+| `grid_h`      | INTEGER | GridStack height, 1–12 rows                                        |
+| `config_json` | TEXT    | Valid JSON object containing non-secret per-instance configuration |
+| `created_at`  | TEXT    | Required, RFC 3339 timestamp                                       |
+| `updated_at`  | TEXT    | Required, RFC 3339 timestamp                                       |
 
 ## `widget_secrets`
 
@@ -1267,62 +1322,62 @@ removed or demoted.
 
 ### `kanban_workspaces`
 
-| Column               | Type | Constraints                                      |
-| -------------------- | ---- | ------------------------------------------------ |
-| `id`                 | TEXT | Primary key                                      |
-| `name`               | TEXT | Required, trimmed length 1–80                    |
-| `description`        | TEXT | Required, up to 1,000 characters                 |
-| `created_by_user_id` | TEXT | Optional user reference with null-on-delete      |
-| `created_at`         | TEXT | Required, RFC 3339 timestamp                     |
-| `updated_at`         | TEXT | Required, RFC 3339 timestamp                     |
+| Column               | Type | Constraints                                 |
+| -------------------- | ---- | ------------------------------------------- |
+| `id`                 | TEXT | Primary key                                 |
+| `name`               | TEXT | Required, trimmed length 1–80               |
+| `description`        | TEXT | Required, up to 1,000 characters            |
+| `created_by_user_id` | TEXT | Optional user reference with null-on-delete |
+| `created_at`         | TEXT | Required, RFC 3339 timestamp                |
+| `updated_at`         | TEXT | Required, RFC 3339 timestamp                |
 
 ### `kanban_workspace_members`
 
 In-app invitations are rows with `status = invited`; targets must already exist in `users`.
 
-| Column                 | Type | Constraints                                                   |
-| ---------------------- | ---- | ------------------------------------------------------------- |
-| `workspace_id`         | TEXT | Composite primary key, workspace reference with cascade delete |
-| `user_id`              | TEXT | Composite primary key, user reference with cascade delete     |
-| `role`                 | TEXT | `admin`, `member`, or `guest`                                 |
-| `status`               | TEXT | `invited` or `active`                                         |
-| `invited_by_user_id`   | TEXT | Optional inviter reference with null-on-delete                |
-| `created_at`           | TEXT | Required, RFC 3339 timestamp                                  |
-| `updated_at`           | TEXT | Required, RFC 3339 timestamp                                  |
+| Column               | Type | Constraints                                                    |
+| -------------------- | ---- | -------------------------------------------------------------- |
+| `workspace_id`       | TEXT | Composite primary key, workspace reference with cascade delete |
+| `user_id`            | TEXT | Composite primary key, user reference with cascade delete      |
+| `role`               | TEXT | `admin`, `member`, or `guest`                                  |
+| `status`             | TEXT | `invited` or `active`                                          |
+| `invited_by_user_id` | TEXT | Optional inviter reference with null-on-delete                 |
+| `created_at`         | TEXT | Required, RFC 3339 timestamp                                   |
+| `updated_at`         | TEXT | Required, RFC 3339 timestamp                                   |
 
 ### `kanban_role_permissions` and `kanban_member_permissions`
 
-| Table                       | Key                                      | Purpose                                                  |
-| --------------------------- | ---------------------------------------- | -------------------------------------------------------- |
-| `kanban_role_permissions`   | workspace, role, permission              | Required boolean grant for each role and all 24 permissions |
-| `kanban_member_permissions` | workspace, user, permission              | Optional boolean override, cascades with membership      |
+| Table                       | Key                         | Purpose                                                     |
+| --------------------------- | --------------------------- | ----------------------------------------------------------- |
+| `kanban_role_permissions`   | workspace, role, permission | Required boolean grant for each role and all 24 permissions |
+| `kanban_member_permissions` | workspace, user, permission | Optional boolean override, cascades with membership         |
 
 ### `kanban_boards`
 
 New boards receive three ordered columns: `Todo`, `In Progress`, and `Finished`.
 
-| Column               | Type    | Constraints                                      |
-| -------------------- | ------- | ------------------------------------------------ |
-| `id`                 | TEXT    | Primary key                                      |
-| `workspace_id`       | TEXT    | Workspace reference with cascade delete          |
-| `name`               | TEXT    | Required, trimmed length 1–120                   |
-| `description`        | TEXT    | Required, up to 2,000 characters                 |
-| `visibility`         | TEXT    | `private` or `public`; both require membership   |
-| `archived`           | INTEGER | Required boolean                                 |
-| `position`           | INTEGER | Non-negative workspace order                     |
-| `created_by_user_id` | TEXT    | Optional user reference with null-on-delete      |
-| `created_at`         | TEXT    | Required, RFC 3339 timestamp                     |
-| `updated_at`         | TEXT    | Required, RFC 3339 timestamp                     |
+| Column               | Type    | Constraints                                    |
+| -------------------- | ------- | ---------------------------------------------- |
+| `id`                 | TEXT    | Primary key                                    |
+| `workspace_id`       | TEXT    | Workspace reference with cascade delete        |
+| `name`               | TEXT    | Required, trimmed length 1–120                 |
+| `description`        | TEXT    | Required, up to 2,000 characters               |
+| `visibility`         | TEXT    | `private` or `public`; both require membership |
+| `archived`           | INTEGER | Required boolean                               |
+| `position`           | INTEGER | Non-negative workspace order                   |
+| `created_by_user_id` | TEXT    | Optional user reference with null-on-delete    |
+| `created_at`         | TEXT    | Required, RFC 3339 timestamp                   |
+| `updated_at`         | TEXT    | Required, RFC 3339 timestamp                   |
 
 `kanban_board_favorites` has a composite `(board_id, user_id)` primary key and stores each user's
 favorite boards independently.
 
 ### `kanban_columns` and `kanban_cards`
 
-| Table             | Important columns | Constraints and behavior                                                    |
-| ----------------- | ----------------- | --------------------------------------------------------------------------- |
-| `kanban_columns`  | board, name, position | Name length 1–80; ordered within one board; deletion requires no active cards |
-| `kanban_cards`    | column, title, description, due date, position | Title length 1–240; Markdown source up to 100,000 characters; optional ISO date; archive timestamp preserves history |
+| Table            | Important columns                              | Constraints and behavior                                                                                             |
+| ---------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `kanban_columns` | board, name, position                          | Name length 1–80; ordered within one board; deletion requires no active cards                                        |
+| `kanban_cards`   | column, title, description, due date, position | Title length 1–240; Markdown source up to 100,000 characters; optional ISO date; archive timestamp preserves history |
 
 Card moves rewrite source and destination positions in one transaction and may not cross boards.
 `kanban_card_assignees` links cards to active workspace members. `kanban_labels` stores unique
@@ -1331,13 +1386,13 @@ board-scoped names with one of `accent`, `blue`, `amber`, `red`, `violet`, or `g
 
 ### Card collaboration tables
 
-| Table                     | Purpose and constraints                                                        |
-| ------------------------- | ------------------------------------------------------------------------------ |
-| `kanban_comments`         | User-attributed card comments, trimmed length 1–10,000; user deletion preserves content |
-| `kanban_checklists`       | Ordered named checklists, name length 1–120                                    |
-| `kanban_checklist_items`  | Ordered checklist rows with a required title and completion boolean            |
-| `kanban_attachments`      | SQLite file bytes, safe name and MIME metadata, 1 byte through 10 MiB           |
-| `kanban_card_activity`    | Append-only actor, action, detail, and timestamp history for significant card changes |
+| Table                    | Purpose and constraints                                                                 |
+| ------------------------ | --------------------------------------------------------------------------------------- |
+| `kanban_comments`        | User-attributed card comments, trimmed length 1–10,000; user deletion preserves content |
+| `kanban_checklists`      | Ordered named checklists, name length 1–120                                             |
+| `kanban_checklist_items` | Ordered checklist rows with a required title and completion boolean                     |
+| `kanban_attachments`     | SQLite file bytes, safe name and MIME metadata, 1 byte through 10 MiB                   |
+| `kanban_card_activity`   | Append-only actor, action, detail, and timestamp history for significant card changes   |
 
 All collaboration rows cascade from their parent card. Attachment reads and mutations resolve the
 parent card's workspace and effective permission before bytes are returned or changed.

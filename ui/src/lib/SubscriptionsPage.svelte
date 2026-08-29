@@ -1,32 +1,44 @@
 <script lang="ts">
   import CalendarClock from "lucide-svelte/icons/calendar-clock";
   import CreditCard from "lucide-svelte/icons/credit-card";
-  import Pencil from "lucide-svelte/icons/pencil";
+  import Ellipsis from "lucide-svelte/icons/ellipsis";
   import Plus from "lucide-svelte/icons/plus";
   import Search from "lucide-svelte/icons/search";
   import Trash2 from "lucide-svelte/icons/trash-2";
   import X from "lucide-svelte/icons/x";
   import { onMount, tick } from "svelte";
+  import PandanDatePicker from "$lib/components/PandanDatePicker.svelte";
+  import { motionPopover } from "$lib/motion.svelte";
   import TypedHeading from "$lib/TypedHeading.svelte";
   import {
     createPaymentSubscription,
     deletePaymentSubscription,
     fetchPaymentSubscriptions,
     updatePaymentSubscription,
+    type PaymentFrequencyUnit,
     type PaymentSubscription,
     type PaymentSubscriptionInput,
   } from "$lib/api";
 
-  const frequencySuggestions = [
-    { label: "Daily", occurrences: 365 },
-    { label: "Weekly", occurrences: 52 },
-    { label: "Every 2 weeks", occurrences: 26 },
-    { label: "Monthly", occurrences: 12 },
-    { label: "Every 2 months", occurrences: 6 },
-    { label: "Quarterly", occurrences: 4 },
-    { label: "Every 6 months", occurrences: 2 },
-    { label: "Yearly", occurrences: 1 },
+  const frequencyPresets = [
+    { label: "Daily", interval: 1, unit: "day" },
+    { label: "Weekly", interval: 1, unit: "week" },
+    { label: "Every 2 weeks", interval: 2, unit: "week" },
+    { label: "Monthly", interval: 1, unit: "month" },
+    { label: "Every 2 months", interval: 2, unit: "month" },
+    { label: "Quarterly", interval: 3, unit: "month" },
+    { label: "Every 6 months", interval: 6, unit: "month" },
+    { label: "Yearly", interval: 1, unit: "year" },
   ] as const;
+  const frequencyUnits: ReadonlyArray<{
+    value: PaymentFrequencyUnit;
+    label: string;
+  }> = [
+    { value: "day", label: "Days" },
+    { value: "week", label: "Weeks" },
+    { value: "month", label: "Months" },
+    { value: "year", label: "Years" },
+  ];
   const currencySuggestions = [
     "USD",
     "EUR",
@@ -52,14 +64,21 @@
   let editingId = $state<string | null>(null);
   let service = $state("");
   let description = $state("");
-  let frequency = $state("Monthly");
+  let frequencyInterval = $state("1");
+  let frequencyUnit = $state<PaymentFrequencyUnit>("month");
   let amount = $state("");
   let currency = $state("USD");
   let firstPaidOn = $state("");
   let formError = $state("");
   let saving = $state(false);
+  let menuId = $state("");
   let deleteId = $state("");
-
+  let frequencyPreview = $derived.by(() => {
+    const interval = parseFrequencyInterval(frequencyInterval);
+    return interval === null
+      ? "Enter a whole number from 1 to 999."
+      : `Schedule: ${formatFrequency(interval, frequencyUnit)}`;
+  });
   let filteredSubscriptions = $derived.by(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return subscriptions;
@@ -76,7 +95,7 @@
   let costTotals = $derived.by(() => {
     const totals: Record<string, number> = {};
     for (const subscription of subscriptions) {
-      const occurrences = annualOccurrences(subscription.frequency);
+      const occurrences = annualOccurrences(subscription);
       if (occurrences === null || subscription.amount_micros <= 0) continue;
       totals[subscription.currency] =
         (totals[subscription.currency] ?? 0) +
@@ -92,11 +111,40 @@
       }))
       .sort((left, right) => left.currency.localeCompare(right.currency));
   });
+  let serviceCostRows = $derived.by(() => {
+    const rows: Array<{
+      id: string;
+      service: string;
+      frequency: string;
+      currency: string;
+      monthly: number;
+      yearly: number;
+    }> = [];
+    for (const subscription of subscriptions) {
+      const occurrences = annualOccurrences(subscription);
+      if (occurrences === null || subscription.amount_micros <= 0) continue;
+      const yearlyMicros = Math.round(subscription.amount_micros * occurrences);
+      rows.push({
+        id: subscription.id,
+        service: subscription.service,
+        frequency: subscription.frequency,
+        currency: subscription.currency,
+        monthly: Math.round(yearlyMicros / 12),
+        yearly: yearlyMicros,
+      });
+    }
+    return rows.sort(
+      (left, right) =>
+        left.currency.localeCompare(right.currency) ||
+        right.yearly - left.yearly ||
+        left.service.localeCompare(right.service),
+    );
+  });
   let excludedCostCount = $derived(
     subscriptions.filter(
       (subscription) =>
         subscription.amount_micros > 0 &&
-        annualOccurrences(subscription.frequency) === null,
+        annualOccurrences(subscription) === null,
     ).length,
   );
 
@@ -134,10 +182,13 @@
   }
 
   async function openCreate() {
+    menuId = "";
+    deleteId = "";
     editingId = null;
     service = "";
     description = "";
-    frequency = "Monthly";
+    frequencyInterval = "1";
+    frequencyUnit = "month";
     amount = "";
     currency = "USD";
     firstPaidOn = new Date().toISOString().slice(0, 10);
@@ -148,10 +199,13 @@
   }
 
   function openEdit(subscription: PaymentSubscription) {
+    menuId = "";
     editingId = subscription.id;
     service = subscription.service;
     description = subscription.description;
-    frequency = subscription.frequency;
+    const parts = frequencyParts(subscription);
+    frequencyInterval = String(parts?.interval ?? 1);
+    frequencyUnit = parts?.unit ?? "month";
     amount = amountInputValue(subscription.amount_micros);
     currency = subscription.currency;
     firstPaidOn = subscription.first_paid_on;
@@ -174,10 +228,21 @@
       formError = "Currency must be a three-letter code such as USD or EUR.";
       return;
     }
+    const normalizedFrequencyInterval =
+      parseFrequencyInterval(frequencyInterval);
+    if (normalizedFrequencyInterval === null) {
+      formError = "Frequency must be a whole number from 1 to 999.";
+      return;
+    }
+    if (!parseDateKey(firstPaidOn)) {
+      formError = "Choose a valid first payment date.";
+      return;
+    }
     const input: PaymentSubscriptionInput = {
       service: service.trim(),
       description: description.trim(),
-      frequency: frequency.trim(),
+      frequency_interval: normalizedFrequencyInterval,
+      frequency_unit: frequencyUnit,
       amount_micros: amountMicros,
       currency: normalizedCurrency,
       first_paid_on: firstPaidOn,
@@ -217,6 +282,7 @@
       subscriptions = subscriptions.filter(
         (item) => item.id !== subscription.id,
       );
+      menuId = "";
       deleteId = "";
     } catch (reason: unknown) {
       pageError =
@@ -226,6 +292,69 @@
     } finally {
       saving = false;
     }
+  }
+
+  function toggleSubscriptionMenu(subscriptionId: string) {
+    menuId = menuId === subscriptionId ? "" : subscriptionId;
+    deleteId = "";
+  }
+
+  function closeSubscriptionMenuOnFocusOut(
+    event: FocusEvent,
+    subscriptionId: string,
+  ) {
+    const anchor = event.currentTarget;
+    const nextTarget = event.relatedTarget;
+    if (
+      anchor instanceof HTMLElement &&
+      nextTarget instanceof Node &&
+      anchor.contains(nextTarget)
+    ) {
+      return;
+    }
+    if (menuId === subscriptionId) {
+      menuId = "";
+      deleteId = "";
+    }
+  }
+
+  function handleWindowKeydown(event: KeyboardEvent) {
+    if (event.key !== "Escape" || !menuId) return;
+    const activeMenuId = menuId;
+    menuId = "";
+    deleteId = "";
+    void tick().then(() => {
+      document
+        .getElementById(`subscription-menu-trigger-${activeMenuId}`)
+        ?.focus();
+    });
+  }
+
+  function handleWindowPointerdown(event: PointerEvent) {
+    const target = event.target;
+    if (!menuId) return;
+    if (
+      target instanceof Element &&
+      target.closest(`[data-subscription-menu-root="${menuId}"]`)
+    ) {
+      return;
+    }
+    menuId = "";
+    deleteId = "";
+  }
+
+  function parseDateKey(value: string): Date | null {
+    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]) - 1;
+    const day = Number(match[3]);
+    const date = new Date(year, month, day, 12);
+    return date.getFullYear() === year &&
+      date.getMonth() === month &&
+      date.getDate() === day
+      ? date
+      : null;
   }
 
   function formatDate(value: string) {
@@ -239,13 +368,83 @@
         }).format(date);
   }
 
-  function annualOccurrences(value: string): number | null {
-    const normalized = value.trim().toLowerCase();
+  function applyFrequencyPreset(preset: (typeof frequencyPresets)[number]) {
+    frequencyInterval = String(preset.interval);
+    frequencyUnit = preset.unit;
+  }
+
+  function isFrequencyPresetActive(preset: (typeof frequencyPresets)[number]) {
     return (
-      frequencySuggestions.find(
-        (suggestion) => suggestion.label.toLowerCase() === normalized,
-      )?.occurrences ?? null
+      frequencyInterval === String(preset.interval) &&
+      frequencyUnit === preset.unit
     );
+  }
+
+  function parseFrequencyInterval(value: string): number | null {
+    const interval = Number(value);
+    return Number.isInteger(interval) && interval >= 1 && interval <= 999
+      ? interval
+      : null;
+  }
+
+  function frequencyParts(
+    subscription: PaymentSubscription,
+  ): { interval: number; unit: PaymentFrequencyUnit } | null {
+    if (
+      subscription.frequency_interval !== null &&
+      subscription.frequency_interval >= 1 &&
+      subscription.frequency_interval <= 999 &&
+      subscription.frequency_unit !== null
+    ) {
+      return {
+        interval: subscription.frequency_interval,
+        unit: subscription.frequency_unit,
+      };
+    }
+    return parseFrequency(subscription.frequency);
+  }
+
+  function parseFrequency(
+    value: string,
+  ): { interval: number; unit: PaymentFrequencyUnit } | null {
+    const normalized = value.trim().toLowerCase();
+    const preset = frequencyPresets.find(
+      (option) => option.label.toLowerCase() === normalized,
+    );
+    if (preset) {
+      return { interval: preset.interval, unit: preset.unit };
+    }
+    const match = normalized.match(
+      /^every\s+([1-9]\d{0,2})\s+(days?|weeks?|months?|years?)$/,
+    );
+    if (!match) return null;
+    const interval = Number(match[1]);
+    const unit = match[2]?.replace(/s$/, "") as
+      PaymentFrequencyUnit | undefined;
+    return unit ? { interval, unit } : null;
+  }
+
+  function formatFrequency(interval: number, unit: PaymentFrequencyUnit) {
+    if (interval === 1) {
+      if (unit === "day") return "Daily";
+      if (unit === "week") return "Weekly";
+      if (unit === "month") return "Monthly";
+      return "Yearly";
+    }
+    if (interval === 3 && unit === "month") return "Quarterly";
+    return `Every ${interval} ${unit}s`;
+  }
+
+  function annualOccurrences(subscription: PaymentSubscription): number | null {
+    const parts = frequencyParts(subscription);
+    if (!parts) return null;
+    const yearlyOccurrences = {
+      day: 365,
+      week: 52,
+      month: 12,
+      year: 1,
+    } satisfies Record<PaymentFrequencyUnit, number>;
+    return yearlyOccurrences[parts.unit] / parts.interval;
   }
 
   function parseAmountMicros(value: string): number | null {
@@ -282,7 +481,15 @@
   }
 </script>
 
-<section class="subscriptions-page product-page" data-od-id="subscriptions-page">
+<svelte:window
+  onkeydown={handleWindowKeydown}
+  onpointerdown={handleWindowPointerdown}
+/>
+
+<section
+  class="subscriptions-page product-page"
+  data-od-id="subscriptions-page"
+>
   <header class="subscriptions-header page-header">
     <div>
       <TypedHeading
@@ -291,7 +498,11 @@
       />
       <p>Keep a private record of services that bill on a regular cadence.</p>
     </div>
-    <button class="ui-button ui-button--primary subscriptions-primary" type="button" onclick={openCreate}>
+    <button
+      class="ui-button ui-button--primary subscriptions-primary"
+      type="button"
+      onclick={openCreate}
+    >
       <Plus size={16} strokeWidth={1.8} aria-hidden="true" /> Add subscription
     </button>
   </header>
@@ -311,9 +522,10 @@
         <h3 id="cost-summary-title">Recurring spend</h3>
       </div>
       <p>
-        Annualized from each billing cadence. Currencies stay separate.
+        Annualized from each billing cadence. Totals and service breakdowns keep
+        currencies separate.
         {#if excludedCostCount > 0}
-          {excludedCostCount} custom {excludedCostCount === 1
+          {excludedCostCount} legacy {excludedCostCount === 1
             ? "cadence is"
             : "cadences are"} excluded.
         {/if}
@@ -359,6 +571,53 @@
           </div>
         {/each}
       </div>
+      <section
+        class="service-cost-breakdown"
+        aria-labelledby="service-cost-breakdown-title"
+        data-od-id="subscription-cost-by-service"
+      >
+        <header>
+          <div>
+            <span>[ COST.BY_SERVICE ]</span>
+            <h4 id="service-cost-breakdown-title">By service</h4>
+          </div>
+          <small>
+            {serviceCostRows.length}
+            {serviceCostRows.length === 1 ? "service" : "services"} with recorded
+            spend
+          </small>
+        </header>
+        <div class="service-cost-table">
+          <div class="service-cost-labels" aria-hidden="true">
+            <span>Service</span><span>Currency</span><span>Per month</span><span
+              >Per year</span
+            >
+          </div>
+          {#each serviceCostRows as row (row.id)}
+            <div
+              class="service-cost-row"
+              data-od-id={`subscription-service-cost-${row.id}`}
+            >
+              <span class="service-cost-name">
+                <strong>{row.service}</strong>
+                <small>{row.frequency}</small>
+              </span>
+              <span class="service-cost-value">
+                <small>Currency</small>
+                <strong>{row.currency}</strong>
+              </span>
+              <span class="service-cost-value">
+                <small>Month</small>
+                {formatMoney(row.monthly, row.currency)}
+              </span>
+              <span class="service-cost-value">
+                <small>Year</small>
+                {formatMoney(row.yearly, row.currency)}
+              </span>
+            </div>
+          {/each}
+        </div>
+      </section>
     {:else}
       <p class="cost-summary-empty">
         Add a cost to a subscription to calculate your recurring spend.
@@ -387,50 +646,111 @@
     <header>
       <span>Service</span><span>Description</span><span>Cost</span><span
         >Frequency</span
-      ><span>First paid</span><span>Actions</span>
+      ><span>First paid</span><span class="sr-only">Menu</span>
     </header>
     {#if loading}
       <div class="subscriptions-status">Loading subscriptions…</div>
     {:else}
       {#each filteredSubscriptions as subscription (subscription.id)}
-        <article>
-          <div class="service-cell">
-            <span class="service-icon"
-              ><CreditCard size={17} strokeWidth={1.6} /></span
-            ><strong>{subscription.service}</strong>
-          </div>
-          <p>{subscription.description || "No description"}</p>
-          <div class="cost-cell">
-            <strong
-              >{formatMoney(
-                subscription.amount_micros,
-                subscription.currency,
-              )}</strong
-            >
-            <span>per billing period</span>
-          </div>
-          <div class="frequency-cell">
-            <CalendarClock size={14} strokeWidth={1.7} /><span
-              >{subscription.frequency}</span
-            >
-          </div>
-          <time datetime={subscription.first_paid_on}
-            >{formatDate(subscription.first_paid_on)}</time
+        <article
+          class={menuId === subscription.id ? "has-open-menu" : ""}
+          data-od-id={`subscription-entry-${subscription.id}`}
+        >
+          <button
+            class="subscription-row-edit"
+            type="button"
+            aria-label={`Edit ${subscription.service}`}
+            data-od-id={`edit-subscription-${subscription.id}`}
+            onclick={() => openEdit(subscription)}
           >
-          <div class="row-actions">
-            <button
-              type="button"
-              aria-label={`Edit ${subscription.service}`}
-              onclick={() => openEdit(subscription)}
-              ><Pencil size={14} /></button
+            <span class="service-cell">
+              <span class="service-icon"
+                ><CreditCard
+                  size={17}
+                  strokeWidth={1.6}
+                  aria-hidden="true"
+                /></span
+              ><strong>{subscription.service}</strong>
+            </span>
+            <span class="description-cell"
+              >{subscription.description || "No description"}</span
             >
-            <button
-              class="ui-button ui-button--danger ui-button--icon"
-              class:confirm={deleteId === subscription.id}
-              type="button"
-              aria-label={`Delete ${subscription.service}`}
-              onclick={() => remove(subscription)}><Trash2 size={14} /></button
+            <span class="cost-cell">
+              <strong
+                >{formatMoney(
+                  subscription.amount_micros,
+                  subscription.currency,
+                )}</strong
+              >
+              <small>per billing period</small>
+            </span>
+            <span class="frequency-cell">
+              <CalendarClock
+                size={14}
+                strokeWidth={1.7}
+                aria-hidden="true"
+              /><span>{subscription.frequency}</span>
+            </span>
+            <time datetime={subscription.first_paid_on}
+              >{formatDate(subscription.first_paid_on)}</time
             >
+          </button>
+          <div
+            class="subscription-row-menu"
+            role="group"
+            aria-label={`Actions for ${subscription.service}`}
+            data-subscription-menu-root={subscription.id}
+            onfocusout={(event) =>
+              closeSubscriptionMenuOnFocusOut(event, subscription.id)}
+          >
+            <button
+              class="subscription-row-menu-trigger"
+              id={`subscription-menu-trigger-${subscription.id}`}
+              type="button"
+              aria-label={`More actions for ${subscription.service}`}
+              aria-haspopup="menu"
+              aria-expanded={menuId === subscription.id}
+              aria-controls={`subscription-menu-${subscription.id}`}
+              disabled={saving}
+              data-od-id={`subscription-actions-${subscription.id}`}
+              onclick={() => toggleSubscriptionMenu(subscription.id)}
+            >
+              <Ellipsis size={18} strokeWidth={1.8} aria-hidden="true" />
+            </button>
+            <div
+              class="subscription-row-menu-popover"
+              id={`subscription-menu-${subscription.id}`}
+              role="menu"
+              aria-label={`${subscription.service} actions`}
+              aria-hidden={menuId !== subscription.id}
+              inert={menuId !== subscription.id}
+              data-od-id={`subscription-menu-${subscription.id}`}
+              {@attach motionPopover(menuId === subscription.id, {
+                closedY: -6,
+              })}
+            >
+              <button
+                class={[
+                  "subscription-delete-action",
+                  deleteId === subscription.id && "is-armed",
+                ]}
+                type="button"
+                role="menuitem"
+                disabled={saving}
+                aria-label={deleteId === subscription.id
+                  ? `Confirm deletion of ${subscription.service}`
+                  : `Delete ${subscription.service}`}
+                data-od-id={`delete-subscription-${subscription.id}`}
+                onclick={() => remove(subscription)}
+              >
+                <Trash2 size={15} strokeWidth={1.8} aria-hidden="true" />
+                <span>
+                  {deleteId === subscription.id
+                    ? "Confirm delete"
+                    : "Delete subscription"}
+                </span>
+              </button>
+            </div>
           </div>
         </article>
       {:else}
@@ -462,8 +782,11 @@
         <span>[ SUBSCRIPTION.EDIT ]</span>
         <h2>{editingId ? "Edit subscription" : "Add subscription"}</h2>
       </div>
-      <button class="ui-button ui-button--ghost ui-button--icon" type="button" aria-label="Close" onclick={() => dialog?.close()}
-        ><X size={18} /></button
+      <button
+        class="ui-button ui-button--ghost ui-button--icon"
+        type="button"
+        aria-label="Close"
+        onclick={() => dialog?.close()}><X size={18} /></button
       >
     </header>
     <form onsubmit={save}>
@@ -525,32 +848,75 @@
           </div>
         </div>
 
-        <div class="form-grid">
-          <div>
-            <label for="subscription-frequency">Frequency</label>
-            <select
-              data-od-id="subscription-frequency-input"
-              id="subscription-frequency"
-              bind:value={frequency}
-              required
-            >
-              {#if !frequencySuggestions.some((option) => option.label === frequency)}
-                <option value={frequency}>{frequency} (custom)</option>
-              {/if}
-              {#each frequencySuggestions as option (option.label)}
-                <option value={option.label}>{option.label}</option>
-              {/each}
-            </select>
+        <fieldset
+          class="subscription-frequency-editor"
+          data-od-id="subscription-frequency-editor"
+        >
+          <legend>Frequency</legend>
+          <div class="frequency-presets" aria-label="Quick frequency presets">
+            {#each frequencyPresets as preset (preset.label)}
+              <button
+                class={[
+                  "frequency-preset",
+                  isFrequencyPresetActive(preset) && "is-active",
+                ]}
+                type="button"
+                aria-pressed={isFrequencyPresetActive(preset)}
+                data-od-id={`subscription-frequency-preset-${preset.label
+                  .toLowerCase()
+                  .replaceAll(" ", "-")}`}
+                onclick={() => applyFrequencyPreset(preset)}
+              >
+                {preset.label}
+              </button>
+            {/each}
           </div>
-          <div>
-            <label for="subscription-first-date">First date paid</label>
-            <input
-              id="subscription-first-date"
-              type="date"
-              bind:value={firstPaidOn}
-              required
-            />
+          <div class="frequency-custom-grid">
+            <div>
+              <label for="subscription-frequency-interval">Repeat every</label>
+              <input
+                data-od-id="subscription-frequency-interval"
+                id="subscription-frequency-interval"
+                type="number"
+                inputmode="numeric"
+                min="1"
+                max="999"
+                step="1"
+                value={frequencyInterval}
+                aria-describedby="subscription-frequency-preview"
+                required
+                oninput={(event) =>
+                  (frequencyInterval = event.currentTarget.value)}
+              />
+            </div>
+            <div>
+              <label for="subscription-frequency-unit">Unit</label>
+              <select
+                data-od-id="subscription-frequency-unit"
+                id="subscription-frequency-unit"
+                bind:value={frequencyUnit}
+                required
+              >
+                {#each frequencyUnits as unit (unit.value)}
+                  <option value={unit.value}>{unit.label}</option>
+                {/each}
+              </select>
+            </div>
           </div>
+          <p id="subscription-frequency-preview" aria-live="polite">
+            {frequencyPreview}
+          </p>
+        </fieldset>
+
+        <div class="subscription-date-field">
+          <label for="subscription-first-date">First date paid</label>
+          <PandanDatePicker
+            id="subscription-first-date"
+            ariaLabel="First date paid"
+            bind:value={firstPaidOn}
+            required
+            odId="subscription-first-date"
+          />
         </div>
 
         {#if formError}<p class="subscriptions-form-error" role="alert">
@@ -558,8 +924,14 @@
           </p>{/if}
       </div>
       <footer>
-        <button class="ui-button ui-button--secondary" type="button" onclick={() => dialog?.close()}>Cancel</button
-        ><button class="ui-button ui-button--primary subscriptions-primary" type="submit" disabled={saving}
+        <button
+          class="ui-button ui-button--secondary"
+          type="button"
+          onclick={() => dialog?.close()}>Cancel</button
+        ><button
+          class="ui-button ui-button--primary subscriptions-primary"
+          type="submit"
+          disabled={saving}
           >{saving
             ? "Saving…"
             : editingId
@@ -586,7 +958,7 @@
     padding-bottom: 18px;
     border-bottom: 1px solid var(--border);
   }
-  .subscription-dialog header span {
+  .subscription-dialog > header span {
     color: var(--muted);
     font-family: var(--font-mono);
     font-size: 10px;
@@ -636,7 +1008,11 @@
   }
   .cost-summary {
     border: 1px solid var(--border);
-    background: color-mix(in oklch, var(--page-surface, var(--surface)) 92%, transparent);
+    background: color-mix(
+      in oklch,
+      var(--page-surface, var(--surface)) 92%,
+      transparent
+    );
   }
   .cost-summary > header {
     display: flex;
@@ -719,6 +1095,96 @@
     margin: 0;
     padding: 24px 16px;
   }
+  .service-cost-breakdown {
+    border-top: 1px solid var(--border);
+  }
+  .service-cost-breakdown > header {
+    display: flex;
+    min-height: 60px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    border-bottom: 1px solid var(--border);
+    padding: 11px 16px;
+  }
+  .service-cost-breakdown > header span {
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.09em;
+  }
+  .service-cost-breakdown h4 {
+    margin: 3px 0 0;
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 550;
+  }
+  .service-cost-breakdown > header > small {
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.02em;
+  }
+  .service-cost-labels,
+  .service-cost-row {
+    display: grid;
+    grid-template-columns: minmax(180px, 1.5fr) 84px repeat(
+        2,
+        minmax(120px, 1fr)
+      );
+    align-items: center;
+    gap: 14px;
+    padding-inline: 16px;
+  }
+  .service-cost-labels {
+    min-height: 34px;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+  }
+  .service-cost-row {
+    min-height: 58px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono);
+  }
+  .service-cost-row:last-child {
+    border-bottom: 0;
+  }
+  .service-cost-name,
+  .service-cost-value {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+  }
+  .service-cost-name strong {
+    overflow: hidden;
+    font-size: 12px;
+    font-weight: 550;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .service-cost-name small {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 9px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .service-cost-value {
+    font-size: 12px;
+    font-weight: 550;
+  }
+  .service-cost-value small {
+    display: none;
+    color: var(--muted);
+    font-size: 9px;
+    font-weight: 450;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
   .subscriptions-toolbar {
     display: flex;
     align-items: center;
@@ -732,7 +1198,11 @@
     align-items: center;
     gap: 9px;
     border: 1px solid var(--border);
-    background: color-mix(in oklch, var(--page-surface, var(--surface)) 90%, transparent);
+    background: color-mix(
+      in oklch,
+      var(--page-surface, var(--surface)) 90%,
+      transparent
+    );
     padding: 0 12px;
   }
   .subscriptions-toolbar input {
@@ -751,18 +1221,19 @@
   }
   .subscriptions-table {
     border: 1px solid var(--border);
-    background: color-mix(in oklch, var(--page-surface, var(--surface)) 92%, transparent);
+    background: color-mix(
+      in oklch,
+      var(--page-surface, var(--surface)) 92%,
+      transparent
+    );
   }
-  .subscriptions-table > header,
-  .subscriptions-table > article {
+  .subscriptions-table > header {
     display: grid;
     grid-template-columns:
       minmax(160px, 1.1fr) minmax(200px, 1.5fr) minmax(120px, 0.75fr)
-      minmax(120px, 0.75fr) minmax(120px, 0.75fr) 82px;
+      minmax(120px, 0.75fr) minmax(120px, 0.75fr) 60px;
     align-items: center;
     gap: 16px;
-  }
-  .subscriptions-table > header {
     min-height: 42px;
     border-bottom: 1px solid var(--border);
     padding: 0 16px;
@@ -773,12 +1244,42 @@
     text-transform: uppercase;
   }
   .subscriptions-table > article {
+    position: relative;
+    z-index: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 60px;
     min-height: 72px;
     border-bottom: 1px solid var(--border);
-    padding: 12px 16px;
   }
   .subscriptions-table > article:last-child {
     border-bottom: 0;
+  }
+  .subscriptions-table > article.has-open-menu {
+    z-index: 4;
+  }
+  .subscription-row-edit {
+    display: grid;
+    width: 100%;
+    min-width: 0;
+    min-height: 72px;
+    grid-template-columns:
+      minmax(160px, 1.1fr) minmax(200px, 1.5fr) minmax(120px, 0.75fr)
+      minmax(120px, 0.75fr) minmax(120px, 0.75fr);
+    align-items: center;
+    gap: 16px;
+    border: 0;
+    background: transparent;
+    padding: 12px 0 12px 16px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .subscription-row-edit:hover {
+    background: color-mix(in oklch, var(--fg) 5%, transparent);
+  }
+  .subscription-row-edit:focus-visible {
+    position: relative;
+    z-index: 1;
+    outline-offset: -2px;
   }
   .service-cell {
     display: flex;
@@ -800,10 +1301,9 @@
     font-size: 13px;
     font-weight: 550;
   }
-  .subscriptions-table article p {
+  .description-cell {
     display: -webkit-box;
     overflow: hidden;
-    margin: 0;
     color: var(--muted);
     font-size: 11px;
     line-height: 1.5;
@@ -820,7 +1320,7 @@
     font-size: 12px;
     font-weight: 550;
   }
-  .cost-cell span {
+  .cost-cell small {
     color: var(--muted);
     font-size: 9px;
   }
@@ -831,29 +1331,63 @@
     font-family: var(--font-mono);
     font-size: 10px;
   }
-  .subscriptions-table time {
+  .subscription-row-edit time {
     color: var(--muted);
     font-family: var(--font-mono);
     font-size: 10px;
   }
-  .row-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 5px;
-  }
-  .row-actions button {
+  .subscription-row-menu {
+    position: relative;
+    z-index: 2;
     display: grid;
-    width: 34px;
-    height: 34px;
+    align-self: stretch;
+    place-items: center;
+    padding-right: 8px;
+  }
+  .subscription-row-menu-trigger {
+    display: grid;
+    width: 44px;
+    height: 44px;
     place-items: center;
     border: 1px solid var(--border);
     background: transparent;
   }
-  .row-actions button:hover {
+  .subscription-row-menu-trigger:hover,
+  .subscription-row-menu-trigger[aria-expanded="true"] {
     border-color: var(--fg);
   }
-  .row-actions button.confirm {
+  .subscription-row-menu-popover {
+    position: absolute;
+    z-index: 10;
+    top: calc(50% + 25px);
+    right: 8px;
+    width: 210px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    padding: 6px;
+  }
+  .subscription-row-menu-popover button {
+    display: flex;
+    width: 100%;
+    min-height: 44px;
+    align-items: center;
+    gap: 9px;
+    border: 1px solid transparent;
+    background: transparent;
+    padding: 0 10px;
+    color: oklch(72% 0.16 25);
+    text-align: left;
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+  .subscription-row-menu-popover button:hover {
+    border-color: oklch(62% 0.19 25 / 0.65);
+    background: oklch(20% 0.04 25 / 0.75);
+    color: oklch(82% 0.09 25);
+  }
+  .subscription-delete-action.is-armed {
     border-color: oklch(62% 0.19 25);
+    background: oklch(20% 0.04 25 / 0.75);
     color: oklch(72% 0.16 25);
   }
   .subscriptions-status {
@@ -910,7 +1444,7 @@
     background: oklch(5% 0 0 / 0.7);
     backdrop-filter: blur(5px);
   }
-  .subscription-dialog header {
+  .subscription-dialog > header {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -923,7 +1457,7 @@
     font-size: 20px;
     font-weight: 550;
   }
-  .subscription-dialog header button {
+  .subscription-dialog > header button {
     width: 36px;
     height: 36px;
     border: 1px solid var(--border);
@@ -978,7 +1512,64 @@
     display: grid;
     gap: 8px;
   }
-  .subscription-dialog footer {
+  .subscription-frequency-editor {
+    display: grid;
+    min-width: 0;
+    gap: 12px;
+    margin: 6px 0 0;
+    border: 1px solid var(--border);
+    padding: 14px;
+  }
+  .subscription-frequency-editor legend {
+    padding: 0 6px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+  }
+  .frequency-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .frequency-preset {
+    min-height: 44px;
+    flex: 1 1 118px;
+    border: 1px solid var(--border);
+    background: transparent;
+    padding: 0 10px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.02em;
+  }
+  .frequency-preset:hover {
+    border-color: var(--fg);
+  }
+  .frequency-preset.is-active {
+    border-color: var(--fg);
+    background: var(--fg);
+    color: var(--bg);
+  }
+  .frequency-custom-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .frequency-custom-grid > div,
+  .subscription-date-field {
+    display: grid;
+    gap: 8px;
+  }
+  .subscription-date-field {
+    margin-top: 6px;
+  }
+  .subscription-frequency-editor p {
+    margin: 0;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1.5;
+  }
+  .subscription-dialog form > footer {
     flex: 0 0 auto;
     display: flex;
     justify-content: flex-end;
@@ -987,7 +1578,7 @@
     background: var(--page-surface, var(--surface));
     padding: 16px 20px;
   }
-  .subscription-dialog footer > button:not(.subscriptions-primary) {
+  .subscription-dialog form > footer > button:not(.subscriptions-primary) {
     min-height: 42px;
     border: 1px solid var(--border);
     background: transparent;
@@ -1010,18 +1601,21 @@
       display: none;
     }
     .subscriptions-table > article {
-      grid-template-columns: 1fr auto;
+      grid-template-columns: minmax(0, 1fr) 60px;
+    }
+    .subscription-row-edit {
+      grid-template-columns: 1fr;
       gap: 10px;
+      padding: 14px 0 14px 14px;
     }
-    .subscriptions-table article p,
-    .cost-cell,
-    .frequency-cell,
-    .subscriptions-table time {
-      grid-column: 1;
-    }
-    .row-actions {
+    .subscription-row-menu {
       grid-column: 2;
-      grid-row: 1 / span 4;
+      grid-row: 1;
+      place-items: start center;
+      padding-top: 10px;
+    }
+    .subscription-row-menu-popover {
+      top: 54px;
     }
   }
   @media (max-width: 640px) {
@@ -1036,10 +1630,15 @@
       align-items: stretch;
       flex-direction: column;
     }
-    .form-grid {
+    .form-grid,
+    .frequency-custom-grid {
       grid-template-columns: 1fr;
     }
     .cost-summary > header {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .service-cost-breakdown > header {
       align-items: flex-start;
       flex-direction: column;
     }
@@ -1055,6 +1654,20 @@
       grid-column: 1 / -1;
     }
     .cost-summary-row small {
+      display: block;
+    }
+    .service-cost-labels {
+      display: none;
+    }
+    .service-cost-row {
+      grid-template-columns: 84px repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      padding-block: 14px;
+    }
+    .service-cost-name {
+      grid-column: 1 / -1;
+    }
+    .service-cost-value small {
       display: block;
     }
   }

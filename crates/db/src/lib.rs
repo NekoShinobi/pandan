@@ -1,3 +1,4 @@
+pub mod announcement_queries;
 pub mod bookmark_library_queries;
 pub mod contact_queries;
 pub mod entities;
@@ -229,6 +230,18 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "059_bookmark_library",
         include_str!("../migrations/059_bookmark_library.sql"),
+    ),
+    (
+        "060_announcements",
+        include_str!("../migrations/060_announcements.sql"),
+    ),
+    (
+        "061_embedded_page_icon_sources",
+        include_str!("../migrations/061_embedded_page_icon_sources.sql"),
+    ),
+    (
+        "062_payment_subscription_frequencies",
+        include_str!("../migrations/062_payment_subscription_frequencies.sql"),
     ),
 ];
 
@@ -1204,8 +1217,13 @@ mod tests {
         run_migrations(&pool)
             .await
             .expect("height migration applies");
-        let (iframe_height, allow_scripts, icon_url): (i64, bool, Option<String>) = sqlx::query_as(
-            "SELECT iframe_height, allow_scripts, icon_url FROM embedded_pages \
+        let (iframe_height, allow_scripts, icon_kind, icon_value): (
+            i64,
+            bool,
+            String,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT iframe_height, allow_scripts, icon_kind, icon_value FROM embedded_pages \
              WHERE id = 'legacy-embedded-page'",
         )
         .fetch_one(&pool)
@@ -1214,7 +1232,8 @@ mod tests {
 
         assert_eq!(iframe_height, 720);
         assert!(!allow_scripts);
-        assert_eq!(icon_url, None);
+        assert_eq!(icon_kind, "favicon");
+        assert_eq!(icon_value, None);
     }
 
     #[tokio::test]
@@ -1251,6 +1270,7 @@ mod tests {
             "Status",
             "Instance status",
             "https://status.example.com/",
+            "custom",
             Some("https://status.example.com/icon.svg"),
             false,
             false,
@@ -1264,6 +1284,7 @@ mod tests {
             "Notes",
             "Private notes",
             "https://notes.example.com/",
+            "custom",
             Some("https://notes.example.com/icon.png"),
             true,
             true,
@@ -1277,6 +1298,7 @@ mod tests {
             "Reports",
             "Private reports",
             "https://reports.example.com/",
+            "favicon",
             None,
             false,
             false,
@@ -1290,6 +1312,7 @@ mod tests {
             "Other",
             "Another account's page",
             "https://other.example.com/",
+            "favicon",
             None,
             false,
             false,
@@ -1314,11 +1337,36 @@ mod tests {
         assert!(!owner_pages[1].allow_scripts);
         assert_eq!(owner_pages[0].iframe_height, 960);
         assert_eq!(owner_pages[1].iframe_height, 640);
+        assert_eq!(owner_pages[0].icon_kind, "custom");
         assert_eq!(
-            owner_pages[0].icon_url.as_deref(),
+            owner_pages[0].icon_value.as_deref(),
             Some("https://notes.example.com/icon.png")
         );
-        assert_eq!(owner_pages[1].icon_url, None);
+        assert_eq!(owner_pages[1].icon_kind, "favicon");
+        assert_eq!(owner_pages[1].icon_value, None);
+        let moved_personal =
+            queries::move_global_embedded_page_to_personal(&pool, &owner.id, &global.id, 32)
+                .await
+                .expect("global page moves to personal");
+        let queries::EmbeddedPageMoveOutcome::Moved(moved_personal) = moved_personal else {
+            panic!("global page should move to the owner's personal list");
+        };
+        assert_eq!(moved_personal.scope, "user");
+        assert_eq!(
+            moved_personal.owner_user_id.as_deref(),
+            Some(owner.id.as_str())
+        );
+        assert_eq!(moved_personal.position, 2);
+        let moved_global =
+            queries::move_personal_embedded_page_to_global(&pool, &owner.id, &global.id, 32)
+                .await
+                .expect("personal page moves to global");
+        let queries::EmbeddedPageMoveOutcome::Moved(moved_global) = moved_global else {
+            panic!("personal page should move back to the global list");
+        };
+        assert_eq!(moved_global.scope, "global");
+        assert_eq!(moved_global.owner_user_id, None);
+        assert_eq!(moved_global.position, 0);
         let updated_first = queries::update_personal_embedded_page(
             &pool,
             &owner.id,
@@ -1326,7 +1374,8 @@ mod tests {
             "Notes",
             "Private notes",
             "https://notes.example.com/",
-            None,
+            "lucide",
+            Some("terminal"),
             true,
             true,
             960,
@@ -1334,7 +1383,8 @@ mod tests {
         .await
         .expect("personal page updates")
         .expect("owned personal page is found");
-        assert_eq!(updated_first.icon_url, None);
+        assert_eq!(updated_first.icon_kind, "lucide");
+        assert_eq!(updated_first.icon_value.as_deref(), Some("terminal"));
         assert!(
             owner_pages.iter().all(|page| page.id != foreign.id),
             "another account's page never appears"
@@ -1383,8 +1433,9 @@ mod tests {
             .expect("global pages load");
         assert_eq!(global_pages.len(), 1);
         assert_eq!(global_pages[0].id, global.id);
+        assert_eq!(global_pages[0].icon_kind, "custom");
         assert_eq!(
-            global_pages[0].icon_url.as_deref(),
+            global_pages[0].icon_value.as_deref(),
             Some("https://status.example.com/icon.svg")
         );
         assert!(global_pages[0].created_by_user_id.is_none());
@@ -2842,6 +2893,8 @@ mod tests {
             "Example Service",
             "Team plan",
             "Monthly",
+            1,
+            "month",
             2_500_000,
             "USD",
             "2026-01-15",
@@ -2862,6 +2915,8 @@ mod tests {
                 "Changed",
                 "",
                 "Yearly",
+                1,
+                "year",
                 30_000_000,
                 "USD",
                 "2026-01-15",
@@ -2872,6 +2927,8 @@ mod tests {
         );
         assert_eq!(payment.amount_micros, 2_500_000);
         assert_eq!(payment.currency, "USD");
+        assert_eq!(payment.frequency_interval, Some(1));
+        assert_eq!(payment.frequency_unit.as_deref(), Some("month"));
     }
 
     #[tokio::test]

@@ -41,6 +41,13 @@ pub enum WorkspaceDeleteOutcome {
     LastWorkspace,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmbeddedPageMoveOutcome {
+    Moved(Box<EmbeddedPage>),
+    NotFound,
+    TargetFull,
+}
+
 #[derive(Debug, Clone, FromRow)]
 struct TaskRecord {
     id: String,
@@ -1584,7 +1591,8 @@ pub async fn list_payment_subscriptions(
     user_id: &str,
 ) -> Result<Vec<PaymentSubscription>, sqlx::Error> {
     sqlx::query_as::<_, PaymentSubscription>(
-        "SELECT id, service, description, frequency, amount_micros, currency, first_paid_on, created_at, updated_at \
+        "SELECT id, service, description, frequency, frequency_interval, frequency_unit, \
+         amount_micros, currency, first_paid_on, created_at, updated_at \
          FROM payment_subscriptions WHERE user_id = ? \
          ORDER BY service COLLATE NOCASE ASC, first_paid_on ASC",
     )
@@ -1600,6 +1608,8 @@ pub async fn create_payment_subscription(
     service: &str,
     description: &str,
     frequency: &str,
+    frequency_interval: i64,
+    frequency_unit: &str,
     amount_micros: i64,
     currency: &str,
     first_paid_on: &str,
@@ -1608,14 +1618,17 @@ pub async fn create_payment_subscription(
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
         "INSERT INTO payment_subscriptions \
-         (id, user_id, service, description, frequency, amount_micros, currency, first_paid_on, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, user_id, service, description, frequency, frequency_interval, frequency_unit, \
+          amount_micros, currency, first_paid_on, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(user_id)
     .bind(service)
     .bind(description)
     .bind(frequency)
+    .bind(frequency_interval)
+    .bind(frequency_unit)
     .bind(amount_micros)
     .bind(currency)
     .bind(first_paid_on)
@@ -1624,7 +1637,8 @@ pub async fn create_payment_subscription(
     .execute(pool)
     .await?;
     sqlx::query_as::<_, PaymentSubscription>(
-        "SELECT id, service, description, frequency, amount_micros, currency, first_paid_on, created_at, updated_at \
+        "SELECT id, service, description, frequency, frequency_interval, frequency_unit, \
+         amount_micros, currency, first_paid_on, created_at, updated_at \
          FROM payment_subscriptions WHERE id = ? AND user_id = ?",
     )
     .bind(id)
@@ -1641,18 +1655,23 @@ pub async fn update_payment_subscription(
     service: &str,
     description: &str,
     frequency: &str,
+    frequency_interval: i64,
+    frequency_unit: &str,
     amount_micros: i64,
     currency: &str,
     first_paid_on: &str,
 ) -> Result<Option<PaymentSubscription>, sqlx::Error> {
     let result = sqlx::query(
         "UPDATE payment_subscriptions SET service = ?, description = ?, frequency = ?, \
-         amount_micros = ?, currency = ?, first_paid_on = ?, updated_at = ? \
+         frequency_interval = ?, frequency_unit = ?, amount_micros = ?, currency = ?, \
+         first_paid_on = ?, updated_at = ? \
          WHERE id = ? AND user_id = ?",
     )
     .bind(service)
     .bind(description)
     .bind(frequency)
+    .bind(frequency_interval)
+    .bind(frequency_unit)
     .bind(amount_micros)
     .bind(currency)
     .bind(first_paid_on)
@@ -1665,7 +1684,8 @@ pub async fn update_payment_subscription(
         return Ok(None);
     }
     sqlx::query_as::<_, PaymentSubscription>(
-        "SELECT id, service, description, frequency, amount_micros, currency, first_paid_on, created_at, updated_at \
+        "SELECT id, service, description, frequency, frequency_interval, frequency_unit, \
+         amount_micros, currency, first_paid_on, created_at, updated_at \
          FROM payment_subscriptions WHERE id = ? AND user_id = ?",
     )
     .bind(id)
@@ -3122,7 +3142,8 @@ pub async fn list_global_embedded_pages(
     pool: &SqlitePool,
 ) -> Result<Vec<EmbeddedPage>, sqlx::Error> {
     sqlx::query_as::<_, EmbeddedPage>(
-        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, icon_url, \
+        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
+         icon_kind, icon_value, \
          allow_scripts, allow_same_origin, iframe_height, position, created_at, updated_at \
          FROM embedded_pages \
          WHERE scope = 'global' AND owner_user_id IS NULL \
@@ -3142,7 +3163,8 @@ pub async fn list_personal_embedded_pages(
     user_id: &str,
 ) -> Result<Vec<EmbeddedPage>, sqlx::Error> {
     sqlx::query_as::<_, EmbeddedPage>(
-        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, icon_url, \
+        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
+         icon_kind, icon_value, \
          allow_scripts, allow_same_origin, iframe_height, position, created_at, updated_at \
          FROM embedded_pages \
          WHERE scope = 'user' AND owner_user_id = ? \
@@ -3196,7 +3218,8 @@ pub async fn create_personal_embedded_page(
     title: &str,
     description: &str,
     url: &str,
-    icon_url: Option<&str>,
+    icon_kind: &str,
+    icon_value: Option<&str>,
     allow_scripts: bool,
     allow_same_origin: bool,
     iframe_height: i64,
@@ -3209,7 +3232,8 @@ pub async fn create_personal_embedded_page(
         title,
         description,
         url,
-        icon_url,
+        icon_kind,
+        icon_value,
         allow_scripts,
         allow_same_origin,
         iframe_height,
@@ -3228,7 +3252,8 @@ pub async fn create_global_embedded_page(
     title: &str,
     description: &str,
     url: &str,
-    icon_url: Option<&str>,
+    icon_kind: &str,
+    icon_value: Option<&str>,
     allow_scripts: bool,
     allow_same_origin: bool,
     iframe_height: i64,
@@ -3241,7 +3266,8 @@ pub async fn create_global_embedded_page(
         title,
         description,
         url,
-        icon_url,
+        icon_kind,
+        icon_value,
         allow_scripts,
         allow_same_origin,
         iframe_height,
@@ -3257,7 +3283,8 @@ async fn create_embedded_page(
     title: &str,
     description: &str,
     url: &str,
-    icon_url: Option<&str>,
+    icon_kind: &str,
+    icon_value: Option<&str>,
     allow_scripts: bool,
     allow_same_origin: bool,
     iframe_height: i64,
@@ -3284,9 +3311,10 @@ async fn create_embedded_page(
 
     sqlx::query(
         "INSERT INTO embedded_pages \
-         (id, scope, owner_user_id, created_by_user_id, title, description, url, icon_url, \
-          allow_scripts, allow_same_origin, iframe_height, position, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, scope, owner_user_id, created_by_user_id, title, description, url, \
+          icon_kind, icon_value, allow_scripts, allow_same_origin, iframe_height, position, \
+          created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(scope)
@@ -3295,7 +3323,8 @@ async fn create_embedded_page(
     .bind(title)
     .bind(description)
     .bind(url)
-    .bind(icon_url)
+    .bind(icon_kind)
+    .bind(icon_value)
     .bind(allow_scripts)
     .bind(allow_same_origin)
     .bind(iframe_height)
@@ -3314,7 +3343,8 @@ async fn create_embedded_page(
         title: title.to_owned(),
         description: description.to_owned(),
         url: url.to_owned(),
-        icon_url: icon_url.map(str::to_owned),
+        icon_kind: icon_kind.to_owned(),
+        icon_value: icon_value.map(str::to_owned),
         allow_scripts,
         allow_same_origin,
         iframe_height,
@@ -3336,21 +3366,24 @@ pub async fn update_personal_embedded_page(
     title: &str,
     description: &str,
     url: &str,
-    icon_url: Option<&str>,
+    icon_kind: &str,
+    icon_value: Option<&str>,
     allow_scripts: bool,
     allow_same_origin: bool,
     iframe_height: i64,
 ) -> Result<Option<EmbeddedPage>, sqlx::Error> {
     let updated_at = chrono::Utc::now().to_rfc3339();
     let result = sqlx::query(
-        "UPDATE embedded_pages SET title = ?, description = ?, url = ?, icon_url = ?, \
-         allow_scripts = ?, allow_same_origin = ?, iframe_height = ?, updated_at = ? \
+        "UPDATE embedded_pages SET title = ?, description = ?, url = ?, icon_kind = ?, \
+         icon_value = ?, allow_scripts = ?, allow_same_origin = ?, iframe_height = ?, \
+         updated_at = ? \
          WHERE id = ? AND scope = 'user' AND owner_user_id = ?",
     )
     .bind(title)
     .bind(description)
     .bind(url)
-    .bind(icon_url)
+    .bind(icon_kind)
+    .bind(icon_value)
     .bind(allow_scripts)
     .bind(allow_same_origin)
     .bind(iframe_height)
@@ -3364,7 +3397,8 @@ pub async fn update_personal_embedded_page(
     }
 
     sqlx::query_as::<_, EmbeddedPage>(
-        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, icon_url, \
+        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
+         icon_kind, icon_value, \
          allow_scripts, allow_same_origin, iframe_height, position, created_at, updated_at \
          FROM embedded_pages WHERE id = ?",
     )
@@ -3384,21 +3418,24 @@ pub async fn update_global_embedded_page(
     title: &str,
     description: &str,
     url: &str,
-    icon_url: Option<&str>,
+    icon_kind: &str,
+    icon_value: Option<&str>,
     allow_scripts: bool,
     allow_same_origin: bool,
     iframe_height: i64,
 ) -> Result<Option<EmbeddedPage>, sqlx::Error> {
     let updated_at = chrono::Utc::now().to_rfc3339();
     let result = sqlx::query(
-        "UPDATE embedded_pages SET title = ?, description = ?, url = ?, icon_url = ?, \
-         allow_scripts = ?, allow_same_origin = ?, iframe_height = ?, updated_at = ? \
+        "UPDATE embedded_pages SET title = ?, description = ?, url = ?, icon_kind = ?, \
+         icon_value = ?, allow_scripts = ?, allow_same_origin = ?, iframe_height = ?, \
+         updated_at = ? \
          WHERE id = ? AND scope = 'global' AND owner_user_id IS NULL",
     )
     .bind(title)
     .bind(description)
     .bind(url)
-    .bind(icon_url)
+    .bind(icon_kind)
+    .bind(icon_value)
     .bind(allow_scripts)
     .bind(allow_same_origin)
     .bind(iframe_height)
@@ -3411,13 +3448,126 @@ pub async fn update_global_embedded_page(
     }
 
     sqlx::query_as::<_, EmbeddedPage>(
-        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, icon_url, \
+        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
+         icon_kind, icon_value, \
          allow_scripts, allow_same_origin, iframe_height, position, created_at, updated_at \
          FROM embedded_pages WHERE id = ?",
     )
     .bind(page_id)
     .fetch_optional(pool)
     .await
+}
+
+/// Moves an instance-wide page into the administrator's personal list.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the transaction cannot be completed.
+pub async fn move_global_embedded_page_to_personal(
+    pool: &SqlitePool,
+    administrator_id: &str,
+    page_id: &str,
+    maximum_pages: i64,
+) -> Result<EmbeddedPageMoveOutcome, sqlx::Error> {
+    move_embedded_page_scope(pool, page_id, None, Some(administrator_id), maximum_pages).await
+}
+
+/// Moves one administrator-owned personal page into the instance-wide list.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the transaction cannot be completed.
+pub async fn move_personal_embedded_page_to_global(
+    pool: &SqlitePool,
+    administrator_id: &str,
+    page_id: &str,
+    maximum_pages: i64,
+) -> Result<EmbeddedPageMoveOutcome, sqlx::Error> {
+    move_embedded_page_scope(pool, page_id, Some(administrator_id), None, maximum_pages).await
+}
+
+async fn move_embedded_page_scope(
+    pool: &SqlitePool,
+    page_id: &str,
+    source_owner_user_id: Option<&str>,
+    target_owner_user_id: Option<&str>,
+    maximum_pages: i64,
+) -> Result<EmbeddedPageMoveOutcome, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    let source_position = sqlx::query_scalar::<_, i64>(
+        "SELECT position FROM embedded_pages WHERE id = ? AND ( \
+         (? IS NULL AND scope = 'global' AND owner_user_id IS NULL) OR \
+         (scope = 'user' AND owner_user_id = ?))",
+    )
+    .bind(page_id)
+    .bind(source_owner_user_id)
+    .bind(source_owner_user_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some(source_position) = source_position else {
+        transaction.rollback().await?;
+        return Ok(EmbeddedPageMoveOutcome::NotFound);
+    };
+
+    let (target_count, target_position) = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COUNT(*), COALESCE(MAX(position) + 1, 0) FROM embedded_pages WHERE \
+         (? IS NULL AND scope = 'global' AND owner_user_id IS NULL) OR \
+         (scope = 'user' AND owner_user_id = ?)",
+    )
+    .bind(target_owner_user_id)
+    .bind(target_owner_user_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    if target_count >= maximum_pages {
+        transaction.rollback().await?;
+        return Ok(EmbeddedPageMoveOutcome::TargetFull);
+    }
+
+    let updated_at = chrono::Utc::now().to_rfc3339();
+    let update = sqlx::query(
+        "UPDATE embedded_pages SET \
+         scope = CASE WHEN ? IS NULL THEN 'global' ELSE 'user' END, \
+         owner_user_id = ?, position = ?, updated_at = ? \
+         WHERE id = ? AND ( \
+         (? IS NULL AND scope = 'global' AND owner_user_id IS NULL) OR \
+         (scope = 'user' AND owner_user_id = ?))",
+    )
+    .bind(target_owner_user_id)
+    .bind(target_owner_user_id)
+    .bind(target_position)
+    .bind(&updated_at)
+    .bind(page_id)
+    .bind(source_owner_user_id)
+    .bind(source_owner_user_id)
+    .execute(&mut *transaction)
+    .await?;
+    if update.rows_affected() != 1 {
+        transaction.rollback().await?;
+        return Ok(EmbeddedPageMoveOutcome::NotFound);
+    }
+
+    sqlx::query(
+        "UPDATE embedded_pages SET position = position - 1 WHERE position > ? AND ( \
+         (? IS NULL AND scope = 'global' AND owner_user_id IS NULL) OR \
+         (scope = 'user' AND owner_user_id = ?))",
+    )
+    .bind(source_position)
+    .bind(source_owner_user_id)
+    .bind(source_owner_user_id)
+    .execute(&mut *transaction)
+    .await?;
+
+    let moved = sqlx::query_as::<_, EmbeddedPage>(
+        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
+         icon_kind, icon_value, allow_scripts, allow_same_origin, iframe_height, position, \
+         created_at, updated_at \
+         FROM embedded_pages WHERE id = ?",
+    )
+    .bind(page_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(EmbeddedPageMoveOutcome::Moved(Box::new(moved)))
 }
 
 /// Deletes a private embedded page owned by one account and closes its ordering gap.

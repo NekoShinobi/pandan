@@ -39,6 +39,32 @@ export interface TaskAttachment {
   created_at: string;
 }
 
+export interface AnnouncementImage {
+  id: string;
+  file_name: string;
+  mime_type: string;
+  byte_size: number;
+  created_at: string;
+}
+
+export interface AnnouncementReaction {
+  emoji: string;
+  count: number;
+  reacted_by_viewer: boolean;
+}
+
+export interface Announcement {
+  id: string;
+  author_id: string | null;
+  author_name: string;
+  title: string;
+  content: string;
+  images: AnnouncementImage[];
+  reactions: AnnouncementReaction[];
+  created_at: string;
+  updated_at: string;
+}
+
 export type LineVisibility = "private" | "public";
 
 export interface LinePostAttachment {
@@ -609,11 +635,15 @@ export interface ContactImportResult {
   total: number;
 }
 
+export type PaymentFrequencyUnit = "day" | "week" | "month" | "year";
+
 export interface PaymentSubscription {
   id: string;
   service: string;
   description: string;
   frequency: string;
+  frequency_interval: number | null;
+  frequency_unit: PaymentFrequencyUnit | null;
   amount_micros: number;
   currency: string;
   first_paid_on: string;
@@ -624,7 +654,8 @@ export interface PaymentSubscription {
 export interface PaymentSubscriptionInput {
   service: string;
   description: string;
-  frequency: string;
+  frequency_interval: number;
+  frequency_unit: PaymentFrequencyUnit;
   amount_micros: number;
   currency: string;
   first_paid_on: string;
@@ -778,8 +809,7 @@ export interface BookmarkLibraryCategoryRecord {
   updated_at: string;
 }
 
-export interface BookmarkLibraryCategory
-  extends BookmarkLibraryCategoryRecord {
+export interface BookmarkLibraryCategory extends BookmarkLibraryCategoryRecord {
   bookmarks: BookmarkLibraryItem[];
 }
 
@@ -1268,6 +1298,7 @@ export interface DashboardResponse {
 }
 
 export type EmbeddedPageScope = "global" | "user";
+export type EmbeddedPageIconKind = "favicon" | "lucide" | "custom";
 
 export interface EmbeddedPage {
   id: string;
@@ -1277,7 +1308,8 @@ export interface EmbeddedPage {
   title: string;
   description: string;
   url: string;
-  icon_url: string | null;
+  icon_kind: EmbeddedPageIconKind;
+  icon_value: string | null;
   allow_scripts: boolean;
   allow_same_origin: boolean;
   iframe_height: number;
@@ -1295,7 +1327,8 @@ export interface EmbeddedPageInput {
   title: string;
   description: string;
   url: string;
-  icon_url: string | null;
+  icon_kind: EmbeddedPageIconKind;
+  icon_value: string | null;
   allow_scripts: boolean;
   allow_same_origin: boolean;
   iframe_height: number;
@@ -1493,10 +1526,7 @@ export function deleteBookmarkLibraryItem(
   });
 }
 
-export function bookmarkLibraryIconUrl(
-  id: string,
-  revision: string,
-): string {
+export function bookmarkLibraryIconUrl(id: string, revision: string): string {
   return `/api/bookmark-library/bookmarks/${encodeURIComponent(id)}/icon?v=${encodeURIComponent(revision)}`;
 }
 
@@ -1570,6 +1600,21 @@ export function updateGlobalEmbeddedPage(
       headers: { "content-type": "application/json" },
       credentials: "same-origin",
       body: JSON.stringify(input),
+    },
+  );
+}
+
+export function moveEmbeddedPageScope(
+  pageId: string,
+  scope: EmbeddedPageScope,
+): Promise<EmbeddedPage> {
+  return requestJson<EmbeddedPage>(
+    `/api/admin/embedded-pages/${encodeURIComponent(pageId)}/scope`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ scope }),
     },
   );
 }
@@ -2383,6 +2428,113 @@ export function taskAttachmentUrl(
   attachmentId: string,
 ): string {
   return `/api/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attachmentId)}`;
+}
+
+export function fetchAnnouncements(): Promise<Announcement[]> {
+  return requestJson<Announcement[]>("/api/announcements", {
+    credentials: "same-origin",
+  });
+}
+
+export function createAnnouncement(input: {
+  title: string;
+  content: string;
+}): Promise<Announcement> {
+  return requestJson<Announcement>("/api/announcements", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateAnnouncement(
+  announcementId: string,
+  input: { title: string; content: string },
+): Promise<Announcement> {
+  return requestJson<Announcement>(
+    `/api/announcements/${encodeURIComponent(announcementId)}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function deleteAnnouncement(
+  announcementId: string,
+): Promise<void> {
+  const response = await fetch(
+    `/api/announcements/${encodeURIComponent(announcementId)}`,
+    { method: "DELETE", credentials: "same-origin" },
+  );
+  if (!response.ok) {
+    const payload = (await response
+      .json()
+      .catch(() => ({}))) as ApiErrorResponse;
+    throw new ApiError(
+      payload.error ?? `Request failed with status ${response.status}`,
+      response.status,
+    );
+  }
+}
+
+export function uploadAnnouncementImage(
+  announcementId: string,
+  file: File,
+): Promise<AnnouncementImage> {
+  return requestJson<AnnouncementImage>(
+    `/api/announcements/${encodeURIComponent(announcementId)}/images?file_name=${encodeURIComponent(file.name)}`,
+    {
+      method: "POST",
+      headers: { "content-type": file.type },
+      credentials: "same-origin",
+      body: file,
+    },
+  );
+}
+
+export function announcementImageUrl(
+  announcementId: string,
+  imageId: string,
+): string {
+  return `/api/announcements/${encodeURIComponent(announcementId)}/images/${encodeURIComponent(imageId)}`;
+}
+
+export function announcementAuthorAvatarUrl(announcementId: string): string {
+  return `/api/announcements/${encodeURIComponent(announcementId)}/author-avatar`;
+}
+
+export async function deleteAnnouncementImage(
+  announcementId: string,
+  imageId: string,
+): Promise<void> {
+  const response = await fetch(announcementImageUrl(announcementId, imageId), {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    const payload = (await response
+      .json()
+      .catch(() => ({}))) as ApiErrorResponse;
+    throw new ApiError(
+      payload.error ?? `Request failed with status ${response.status}`,
+      response.status,
+    );
+  }
+}
+
+export function setAnnouncementReaction(
+  announcementId: string,
+  emoji: string,
+  active: boolean,
+): Promise<Announcement> {
+  return requestJson<Announcement>(
+    `/api/announcements/${encodeURIComponent(announcementId)}/reactions/${encodeURIComponent(emoji)}`,
+    { method: active ? "PUT" : "DELETE", credentials: "same-origin" },
+  );
 }
 
 export function fetchLinePosts(

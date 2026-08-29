@@ -518,8 +518,8 @@ class PodcastPlayer {
     this.downloadedAudio = null;
     this.upNext = [];
     this.played = [];
-    this.playbackRate = 1;
-    element.playbackRate = 1;
+    // The shell owns one playback-speed preference across every audio source.
+    element.playbackRate = this.playbackRate;
 
     if (switching) {
       this.currentTime = 0;
@@ -575,8 +575,8 @@ class PodcastPlayer {
     this.played = [];
     this.musicUpNext = [];
     this.musicPlayed = [];
-    this.playbackRate = 1;
-    element.playbackRate = 1;
+    // Completed audio downloads use the same persisted speed as podcasts and music.
+    element.playbackRate = this.playbackRate;
 
     if (switching) {
       this.currentTime = 0;

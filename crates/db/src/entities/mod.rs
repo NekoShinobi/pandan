@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
+mod announcements;
 mod jellyfin;
 mod kanban;
 mod podcasts;
 mod walls;
 mod youtube_downloads;
+pub use announcements::*;
 pub use jellyfin::*;
 pub use kanban::*;
 pub use podcasts::*;
@@ -295,7 +297,8 @@ pub struct EmbeddedPage {
     pub title: String,
     pub description: String,
     pub url: String,
-    pub icon_url: Option<String>,
+    pub icon_kind: String,
+    pub icon_value: Option<String>,
     pub allow_scripts: bool,
     pub allow_same_origin: bool,
     pub iframe_height: i64,
@@ -516,6 +519,8 @@ pub struct PaymentSubscription {
     pub service: String,
     pub description: String,
     pub frequency: String,
+    pub frequency_interval: Option<i64>,
+    pub frequency_unit: Option<String>,
     pub amount_micros: i64,
     pub currency: String,
     pub first_paid_on: String,

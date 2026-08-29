@@ -1,5 +1,6 @@
 <script lang="ts">
   import ArrowDown from "lucide-svelte/icons/arrow-down";
+  import ArrowRightLeft from "lucide-svelte/icons/arrow-right-left";
   import ArrowUp from "lucide-svelte/icons/arrow-up";
   import Pencil from "lucide-svelte/icons/pencil";
   import Plus from "lucide-svelte/icons/plus";
@@ -10,17 +11,48 @@
     createPersonalEmbeddedPage,
     deleteGlobalEmbeddedPage,
     deletePersonalEmbeddedPage,
+    moveEmbeddedPageScope,
     reorderGlobalEmbeddedPages,
     reorderPersonalEmbeddedPages,
     updateGlobalEmbeddedPage,
     updatePersonalEmbeddedPage,
     type EmbeddedPage,
+    type EmbeddedPageIconKind,
     type EmbeddedPageInput,
     type EmbeddedPagesResponse,
     type EmbeddedPageScope,
   } from "$lib/api";
 
   const DEFAULT_IFRAME_HEIGHT = 720;
+  const lucideIconNames = [
+    "bell",
+    "book-open",
+    "bookmark",
+    "briefcase",
+    "calendar-days",
+    "cloud",
+    "code",
+    "database",
+    "folder",
+    "gamepad-2",
+    "git-branch",
+    "globe",
+    "heart",
+    "house",
+    "image",
+    "link",
+    "lock",
+    "mail",
+    "music",
+    "podcast",
+    "rocket",
+    "rss",
+    "shopping-bag",
+    "star",
+    "terminal",
+    "video",
+    "wrench",
+  ];
   type HeightOption = "480" | "720" | "1080" | "custom";
 
   type Props = {
@@ -43,7 +75,8 @@
   let formTitle = $state("");
   let formDescription = $state("");
   let formUrl = $state("");
-  let formIconUrl = $state("");
+  let formIconKind = $state<EmbeddedPageIconKind>("favicon");
+  let formIconValue = $state("");
   let formAllowScripts = $state(false);
   let formAllowSameOrigin = $state(false);
   let formIframeHeight = $state(DEFAULT_IFRAME_HEIGHT);
@@ -52,13 +85,10 @@
   let listError = $state("");
   let busyAction = $state("");
   let pendingDeleteId = $state("");
+  let pendingScopeMoveId = $state("");
 
   function collectionKey(scope: EmbeddedPageScope): "global" | "personal" {
     return scope === "global" ? "global" : "personal";
-  }
-
-  function scopeName(scope: EmbeddedPageScope) {
-    return scope === "global" ? "Global custom" : "Personal custom";
   }
 
   function pageHost(page: EmbeddedPage) {
@@ -81,6 +111,12 @@
     if (option !== "custom") formIframeHeight = Number(option);
   }
 
+  function chooseIconKind(kind: EmbeddedPageIconKind) {
+    if (formIconKind === kind) return;
+    formIconKind = kind;
+    formIconValue = kind === "lucide" ? "bookmark" : "";
+  }
+
   function openCreate(scope: EmbeddedPageScope) {
     if (scope === "global" && !isAdministrator) return;
     formScope = scope;
@@ -88,13 +124,15 @@
     formTitle = "";
     formDescription = "";
     formUrl = "";
-    formIconUrl = "";
+    formIconKind = "favicon";
+    formIconValue = "";
     formAllowScripts = false;
     formAllowSameOrigin = false;
     formIframeHeight = DEFAULT_IFRAME_HEIGHT;
     formHeightOption = "720";
     formError = "";
     pendingDeleteId = "";
+    pendingScopeMoveId = "";
     formOpen = true;
   }
 
@@ -104,13 +142,15 @@
     formTitle = page.title;
     formDescription = page.description;
     formUrl = page.url;
-    formIconUrl = page.icon_url ?? "";
+    formIconKind = page.icon_kind;
+    formIconValue = page.icon_value ?? "";
     formAllowScripts = page.allow_scripts;
     formAllowSameOrigin = page.allow_same_origin;
     formIframeHeight = page.iframe_height;
     formHeightOption = heightOptionFor(page.iframe_height);
     formError = "";
     pendingDeleteId = "";
+    pendingScopeMoveId = "";
     formOpen = true;
   }
 
@@ -130,7 +170,9 @@
       title: formTitle,
       description: formDescription,
       url: formUrl,
-      icon_url: formIconUrl.trim() || null,
+      icon_kind: formIconKind,
+      icon_value:
+        formIconKind === "favicon" ? null : formIconValue.trim() || null,
       allow_scripts: formAllowScripts,
       allow_same_origin: formAllowSameOrigin,
       iframe_height: formIframeHeight,
@@ -219,6 +261,39 @@
       busyAction = "";
     }
   }
+
+  async function transferPage(page: EmbeddedPage) {
+    if (busyAction || !isAdministrator) return;
+    const targetScope: EmbeddedPageScope =
+      page.scope === "global" ? "user" : "global";
+    const sourceKey = collectionKey(page.scope);
+    const targetKey = collectionKey(targetScope);
+    busyAction = `scope:${page.id}`;
+    listError = "";
+    try {
+      const moved = await moveEmbeddedPageScope(page.id, targetScope);
+      onPagesChange({
+        ...pages,
+        [sourceKey]: pages[sourceKey].filter(
+          (candidate) => candidate.id !== page.id,
+        ),
+        [targetKey]: [...pages[targetKey], moved],
+      });
+      pendingScopeMoveId = "";
+      if (editingId === page.id) {
+        formOpen = false;
+        editingId = "";
+        formError = "";
+      }
+    } catch (reason: unknown) {
+      listError =
+        reason instanceof Error
+          ? reason.message
+          : "Unable to change embedded page scope";
+    } finally {
+      busyAction = "";
+    }
+  }
 </script>
 
 {#snippet pageGroup(
@@ -259,7 +334,12 @@
           data-od-id={`embedded-page-settings-${page.id}`}
         >
           <div class="embedded-page-settings-icon" aria-hidden="true">
-            <EmbeddedPageIcon iconUrl={page.icon_url} size={18} />
+            <EmbeddedPageIcon
+              pageUrl={page.url}
+              iconKind={page.icon_kind}
+              iconValue={page.icon_value}
+              size={18}
+            />
           </div>
           <div class="embedded-page-settings-copy">
             <div>
@@ -300,6 +380,26 @@
             >
               <ArrowDown size={16} strokeWidth={1.8} aria-hidden="true" />
             </button>
+            {#if isAdministrator}
+              <button
+                class="ui-button ui-button--ghost ui-button--icon"
+                type="button"
+                aria-label={page.scope === "global"
+                  ? `Move ${page.title} to my pages`
+                  : `Make ${page.title} global`}
+                title={page.scope === "global"
+                  ? "Move to My pages"
+                  : "Make global"}
+                disabled={busyAction !== ""}
+                onclick={() => {
+                  pendingDeleteId = "";
+                  pendingScopeMoveId = page.id;
+                }}
+                data-od-id={`change-embedded-page-${page.id}-scope`}
+              >
+                <ArrowRightLeft size={16} strokeWidth={1.8} aria-hidden="true" />
+              </button>
+            {/if}
             <button
               class="ui-button ui-button--ghost ui-button--icon"
               type="button"
@@ -315,12 +415,58 @@
               type="button"
               aria-label={`Delete ${page.title}`}
               disabled={busyAction !== ""}
-              onclick={() => (pendingDeleteId = page.id)}
+              onclick={() => {
+                pendingScopeMoveId = "";
+                pendingDeleteId = page.id;
+              }}
               data-od-id={`delete-embedded-page-${page.id}`}
             >
               <Trash2 size={16} strokeWidth={1.8} aria-hidden="true" />
             </button>
           </div>
+          {#if pendingScopeMoveId === page.id}
+            <div
+              class="embedded-page-delete-confirmation embedded-page-scope-confirmation"
+              data-od-id={`confirm-change-embedded-page-${page.id}-scope`}
+            >
+              <p>
+                <strong>
+                  {page.scope === "global"
+                    ? `Move ${page.title} to My pages?`
+                    : `Make ${page.title} global?`}
+                </strong>
+                <span>
+                  {page.scope === "global"
+                    ? "It will disappear from every other account and become private to you."
+                    : "It will become available to every signed-in account."}
+                </span>
+              </p>
+              <div>
+                <button
+                  class="ui-button ui-button--secondary"
+                  type="button"
+                  disabled={busyAction !== ""}
+                  onclick={() => (pendingScopeMoveId = "")}
+                  data-od-id={`keep-embedded-page-${page.id}-scope`}
+                >
+                  Keep current scope
+                </button>
+                <button
+                  class="ui-button ui-button--primary"
+                  type="button"
+                  disabled={busyAction !== ""}
+                  onclick={() => void transferPage(page)}
+                  data-od-id={`commit-change-embedded-page-${page.id}-scope`}
+                >
+                  {busyAction === `scope:${page.id}`
+                    ? "Moving…"
+                    : page.scope === "global"
+                      ? "Move to My pages"
+                      : "Make global"}
+                </button>
+              </div>
+            </div>
+          {/if}
           {#if pendingDeleteId === page.id}
             <div
               class="embedded-page-delete-confirmation"
@@ -434,20 +580,70 @@
           embedding; those pages can still be opened externally.
         </p>
 
-        <label for="embedded-page-icon-url">Sidebar icon URL (optional)</label>
-        <input
-          id="embedded-page-icon-url"
-          class="text-input"
-          type="url"
-          bind:value={formIconUrl}
-          maxlength="2000"
-          pattern="https://.*"
-          placeholder="https://example.com/icon.svg"
-          data-od-id="embedded-page-icon-url"
-        />
+        <fieldset class="embedded-page-icon-source">
+          <legend>Sidebar icon</legend>
+          <div>
+            <button
+              type="button"
+              aria-pressed={formIconKind === "favicon"}
+              disabled={busyAction !== ""}
+              onclick={() => chooseIconKind("favicon")}
+              data-od-id="embedded-page-icon-favicon">Favicon</button
+            >
+            <button
+              type="button"
+              aria-pressed={formIconKind === "lucide"}
+              disabled={busyAction !== ""}
+              onclick={() => chooseIconKind("lucide")}
+              data-od-id="embedded-page-icon-lucide">Lucide</button
+            >
+            <button
+              type="button"
+              aria-pressed={formIconKind === "custom"}
+              disabled={busyAction !== ""}
+              onclick={() => chooseIconKind("custom")}
+              data-od-id="embedded-page-icon-custom">Custom URL</button
+            >
+          </div>
+        </fieldset>
+
+        {#if formIconKind === "lucide"}
+          <label for="embedded-page-lucide-icon">Lucide icon name</label>
+          <select
+            id="embedded-page-lucide-icon"
+            class="select-input embedded-page-icon-value"
+            bind:value={formIconValue}
+            required
+            data-od-id="embedded-page-lucide-select"
+          >
+            {#each lucideIconNames as iconName (iconName)}
+              <option value={iconName}>{iconName}</option>
+            {/each}
+          </select>
+        {:else if formIconKind === "custom"}
+          <label for="embedded-page-icon-url">Custom icon URL</label>
+          <input
+            id="embedded-page-icon-url"
+            class="text-input"
+            type="url"
+            bind:value={formIconValue}
+            maxlength="2000"
+            pattern="https://.*"
+            placeholder="https://example.com/icon.svg"
+            required
+            data-od-id="embedded-page-custom-icon-url"
+          />
+          <p class="field-note">
+            Use a direct credential-free HTTPS image URL.
+          </p>
+        {:else}
+          <p class="field-note">
+            Pandan uses the conventional /favicon.ico at the page's origin.
+          </p>
+        {/if}
         <p class="field-note">
-          Use a direct HTTPS image URL. If it cannot load, Pandan shows the
-          default custom-page icon.
+          If a remote image cannot load, Pandan shows the default custom-page
+          icon.
         </p>
 
         <label for="embedded-page-height-preset">Iframe height</label>

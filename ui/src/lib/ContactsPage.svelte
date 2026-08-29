@@ -19,6 +19,7 @@
   import { onMount, tick } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import AnimatedList from "$lib/components/AnimatedList.svelte";
+  import PandanDatePicker from "$lib/components/PandanDatePicker.svelte";
   import TypedHeading from "$lib/TypedHeading.svelte";
   import {
     createContact,
@@ -1387,11 +1388,17 @@
                 bind:value={contactDraft.nickname}
                 maxlength="120"
               /></label
-            ><div class="birthday-editor">
-              <label>
-                Birthday
+            >
+            <div class="birthday-editor">
+              <div class="birthday-date-field">
+                <label
+                  for={birthdayYearUnknown
+                    ? "contact-birthday-month-day"
+                    : "contact-birthday"}>Birthday</label
+                >
                 {#if birthdayYearUnknown}
                   <input
+                    id="contact-birthday-month-day"
                     bind:value={birthdayMonthDay}
                     inputmode="numeric"
                     maxlength="5"
@@ -1400,9 +1407,17 @@
                     aria-label="Birthday month and day"
                   />
                 {:else}
-                  <input type="date" bind:value={contactDraft.birthday} />
+                  <PandanDatePicker
+                    id="contact-birthday"
+                    ariaLabel="Birthday"
+                    value={contactDraft.birthday ?? ""}
+                    compact
+                    odId="contact-birthday"
+                    onchange={(birthday) =>
+                      (contactDraft.birthday = birthday || null)}
+                  />
                 {/if}
-              </label>
+              </div>
               <button
                 class="toggle-pill birthday-toggle"
                 class:enabled={birthdayYearUnknown}
@@ -1557,7 +1572,7 @@
         </fieldset>
         <fieldset>
           <legend>Important dates</legend
-          >{#each contactDraft.important_dates as date (date)}<div
+          >{#each contactDraft.important_dates as date, dateIndex (date)}<div
               class="repeat-row date-row"
             >
               <input
@@ -1565,11 +1580,17 @@
                 maxlength="80"
                 placeholder="Label"
                 aria-label="Date label"
-              /><input
-                type="date"
-                bind:value={date.date}
-                aria-label="Important date"
-              /><button
+              />
+              <div class="date-picker-cell">
+                <PandanDatePicker
+                  id={`contact-important-date-${dateIndex}`}
+                  ariaLabel={`Important date ${dateIndex + 1}`}
+                  bind:value={date.date}
+                  compact
+                  odId={`contact-important-date-${dateIndex}`}
+                />
+              </div>
+              <button
                 class="toggle-pill date-toggle"
                 class:enabled={date.recurring}
                 type="button"
@@ -2600,6 +2621,14 @@
     align-items: end;
     gap: 8px;
   }
+  .birthday-date-field,
+  .date-picker-cell {
+    min-width: 0;
+  }
+  .birthday-date-field {
+    display: grid;
+    gap: 8px;
+  }
   .birthday-toggle {
     min-height: 42px;
     white-space: nowrap;
@@ -3037,7 +3066,7 @@
       grid-template-columns: 1fr 44px;
     }
     .repeat-row select,
-    .date-row input:nth-child(2),
+    .date-row .date-picker-cell,
     .date-row .date-toggle {
       grid-column: 1;
     }

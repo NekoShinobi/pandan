@@ -25,6 +25,7 @@ use thiserror::Error;
 use tokio::time::{Duration as TokioDuration, sleep};
 use tracing::{info, warn};
 
+mod announcements;
 mod bible;
 mod bookmark_library;
 mod bookmarks;
@@ -459,7 +460,12 @@ pub struct PaymentSubscriptionRequest {
     pub service: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub frequency: String,
+    #[serde(default)]
+    pub frequency_interval: Option<i64>,
+    #[serde(default)]
+    pub frequency_unit: Option<String>,
     #[serde(default)]
     pub amount_micros: i64,
     #[serde(default = "default_currency")]
@@ -474,7 +480,9 @@ fn default_currency() -> String {
 struct ValidatedPaymentSubscription<'a> {
     service: &'a str,
     description: &'a str,
-    frequency: &'a str,
+    frequency: String,
+    frequency_interval: i64,
+    frequency_unit: String,
     amount_micros: i64,
     currency: String,
     first_paid_on: String,
@@ -1980,6 +1988,7 @@ fn validate_image_upload(
                 "avatar" => "avatar image type is not supported",
                 "contact photo" => "contact photo type is not supported",
                 "wall" => "wall image type is not supported",
+                "announcement image" => "announcement image type is not supported",
                 _ => "wallpaper image type is not supported",
             }));
         }
@@ -1991,6 +2000,7 @@ fn validate_image_upload(
             "avatar" => "avatar image content does not match its type",
             "contact photo" => "contact photo content does not match its type",
             "wall" => "wall image content does not match its type",
+            "announcement image" => "announcement image content does not match its type",
             _ => "wallpaper image content does not match its type",
         }))
     }
@@ -3064,7 +3074,9 @@ async fn create_payment_subscription(
         &account.id,
         validated.service,
         validated.description,
-        validated.frequency,
+        &validated.frequency,
+        validated.frequency_interval,
+        &validated.frequency_unit,
         validated.amount_micros,
         &validated.currency,
         &validated.first_paid_on,
@@ -3087,7 +3099,9 @@ async fn update_payment_subscription(
         &subscription_id,
         validated.service,
         validated.description,
-        validated.frequency,
+        &validated.frequency,
+        validated.frequency_interval,
+        &validated.frequency_unit,
         validated.amount_micros,
         &validated.currency,
         &validated.first_paid_on,
@@ -3114,7 +3128,8 @@ fn validate_payment_subscription(
     payload: &PaymentSubscriptionRequest,
 ) -> Result<ValidatedPaymentSubscription<'_>, ApiError> {
     let service = validate_short_text(&payload.service, "service is required", 120)?;
-    let frequency = validate_short_text(&payload.frequency, "frequency is required", 40)?;
+    let (frequency_interval, frequency_unit) = validate_payment_frequency(payload)?;
+    let frequency = format_payment_frequency(frequency_interval, &frequency_unit);
     let description = payload.description.trim();
     if description.chars().count() > 2_000 {
         return Err(ApiError::BadRequest(
@@ -3136,10 +3151,75 @@ fn validate_payment_subscription(
         service,
         description,
         frequency,
+        frequency_interval,
+        frequency_unit,
         amount_micros: payload.amount_micros,
         currency,
         first_paid_on,
     })
+}
+
+fn validate_payment_frequency(
+    payload: &PaymentSubscriptionRequest,
+) -> Result<(i64, String), ApiError> {
+    let (interval, unit) = match (
+        payload.frequency_interval,
+        payload.frequency_unit.as_deref(),
+    ) {
+        (Some(interval), Some(unit)) => (interval, unit.trim().to_ascii_lowercase()),
+        (None, None) => parse_payment_frequency(&payload.frequency)
+            .ok_or(ApiError::BadRequest("subscription frequency is invalid"))?,
+        _ => {
+            return Err(ApiError::BadRequest(
+                "subscription frequency interval and unit are both required",
+            ));
+        }
+    };
+    if !(1..=999).contains(&interval) {
+        return Err(ApiError::BadRequest(
+            "subscription frequency interval must be between 1 and 999",
+        ));
+    }
+    if !matches!(unit.as_str(), "day" | "week" | "month" | "year") {
+        return Err(ApiError::BadRequest(
+            "subscription frequency unit must be day, week, month, or year",
+        ));
+    }
+    Ok((interval, unit))
+}
+
+fn parse_payment_frequency(value: &str) -> Option<(i64, String)> {
+    let normalized = value.trim().to_ascii_lowercase();
+    let preset = match normalized.as_str() {
+        "daily" => Some((1, "day")),
+        "weekly" => Some((1, "week")),
+        "monthly" => Some((1, "month")),
+        "quarterly" => Some((3, "month")),
+        "yearly" | "annually" => Some((1, "year")),
+        _ => None,
+    };
+    if let Some((interval, unit)) = preset {
+        return Some((interval, unit.to_owned()));
+    }
+
+    let (interval, unit) = normalized.strip_prefix("every ")?.split_once(' ')?;
+    let interval = interval.parse::<i64>().ok()?;
+    let unit = unit.trim().strip_suffix('s').unwrap_or(unit.trim());
+    Some((interval, unit.to_owned()))
+}
+
+fn format_payment_frequency(interval: i64, unit: &str) -> String {
+    match (interval, unit) {
+        (1, "day") => "Daily".to_owned(),
+        (1, "week") => "Weekly".to_owned(),
+        (1, "month") => "Monthly".to_owned(),
+        (3, "month") => "Quarterly".to_owned(),
+        (1, "year") => "Yearly".to_owned(),
+        _ => format!(
+            "Every {interval} {unit}{}",
+            if interval == 1 { "" } else { "s" }
+        ),
+    }
 }
 
 async fn journal(
@@ -3326,6 +3406,7 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
                 web::get().to(get_login_wallpaper),
             )
             .route("/dashboard", web::get().to(dashboard))
+            .configure(announcements::configure)
             .configure(bookmark_library::configure)
             .configure(bookmarks::configure)
             .configure(embedded_pages::configure)
@@ -3787,6 +3868,57 @@ mod tests {
         assert!(validate_calendar_color("teal").is_err());
         assert!(validate_calendar_color("#12345G").is_err());
         assert!(validate_calendar_color("#12345678").is_err());
+    }
+
+    #[actix_web::test]
+    async fn payment_frequencies_accept_structured_and_legacy_schedules() {
+        let structured = PaymentSubscriptionRequest {
+            service: "Example".to_owned(),
+            description: String::new(),
+            frequency: String::new(),
+            frequency_interval: Some(18),
+            frequency_unit: Some("MONTH".to_owned()),
+            amount_micros: 0,
+            currency: "USD".to_owned(),
+            first_paid_on: "2026-08-29".to_owned(),
+        };
+        let validated = validate_payment_subscription(&structured).expect("frequency is valid");
+        assert_eq!(validated.frequency_interval, 18);
+        assert_eq!(validated.frequency_unit, "month");
+        assert_eq!(validated.frequency, "Every 18 months");
+
+        let legacy = PaymentSubscriptionRequest {
+            frequency: "Quarterly".to_owned(),
+            frequency_interval: None,
+            frequency_unit: None,
+            ..structured
+        };
+        let validated = validate_payment_subscription(&legacy).expect("legacy preset is valid");
+        assert_eq!(validated.frequency_interval, 3);
+        assert_eq!(validated.frequency_unit, "month");
+        assert_eq!(validated.frequency, "Quarterly");
+    }
+
+    #[actix_web::test]
+    async fn payment_frequencies_reject_incomplete_or_out_of_range_schedules() {
+        let request = PaymentSubscriptionRequest {
+            service: "Example".to_owned(),
+            description: String::new(),
+            frequency: String::new(),
+            frequency_interval: Some(0),
+            frequency_unit: Some("month".to_owned()),
+            amount_micros: 0,
+            currency: "USD".to_owned(),
+            first_paid_on: "2026-08-29".to_owned(),
+        };
+        assert!(validate_payment_subscription(&request).is_err());
+
+        let request = PaymentSubscriptionRequest {
+            frequency_interval: Some(2),
+            frequency_unit: None,
+            ..request
+        };
+        assert!(validate_payment_subscription(&request).is_err());
     }
 
     #[actix_web::test]
@@ -6200,6 +6332,8 @@ mod tests {
         )
         .await;
         assert_eq!(personal.scope, "user");
+        assert_eq!(personal.icon_kind, "favicon");
+        assert_eq!(personal.icon_value, None);
 
         let global: db::entities::EmbeddedPage = test::call_and_read_body_json(
             &app,
@@ -6209,12 +6343,17 @@ mod tests {
                 .set_json(serde_json::json!({
                     "title": "Status",
                     "description": "Instance status",
-                    "url": "https://status.example.com/"
+                    "url": "https://status.example.com/",
+                    "icon_kind": "lucide",
+                    "icon_value": "terminal"
                 }))
                 .to_request(),
         )
         .await;
         assert_eq!(global.scope, "global");
+        assert_eq!(global.icon_kind, "lucide");
+        assert_eq!(global.icon_value.as_deref(), Some("terminal"));
+        let global_id = global.id.clone();
 
         let forbidden = test::call_service(
             &app,
@@ -6230,6 +6369,52 @@ mod tests {
         )
         .await;
         assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+        let forbidden_scope_move = test::call_service(
+            &app,
+            test::TestRequest::patch()
+                .uri(&format!("/api/admin/embedded-pages/{global_id}/scope"))
+                .cookie(member.clone())
+                .set_json(serde_json::json!({ "scope": "user" }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(forbidden_scope_move.status(), StatusCode::FORBIDDEN);
+
+        let hidden_personal_move = test::call_service(
+            &app,
+            test::TestRequest::patch()
+                .uri(&format!("/api/admin/embedded-pages/{}/scope", personal.id))
+                .cookie(administrator.clone())
+                .set_json(serde_json::json!({ "scope": "global" }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(hidden_personal_move.status(), StatusCode::NOT_FOUND);
+
+        let personal_global: db::entities::EmbeddedPage = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::patch()
+                .uri(&format!("/api/admin/embedded-pages/{global_id}/scope"))
+                .cookie(administrator.clone())
+                .set_json(serde_json::json!({ "scope": "user" }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(personal_global.scope, "user");
+        assert!(personal_global.owner_user_id.is_some());
+
+        let restored_global: db::entities::EmbeddedPage = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::patch()
+                .uri(&format!("/api/admin/embedded-pages/{global_id}/scope"))
+                .cookie(administrator.clone())
+                .set_json(serde_json::json!({ "scope": "global" }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(restored_global.scope, "global");
+        assert_eq!(restored_global.owner_user_id, None);
 
         let invalid = test::call_service(
             &app,
@@ -6254,7 +6439,7 @@ mod tests {
                 .to_request(),
         )
         .await;
-        assert_eq!(member_pages.global, vec![global.clone()]);
+        assert_eq!(member_pages.global, vec![restored_global.clone()]);
         assert_eq!(member_pages.personal, vec![personal.clone()]);
 
         let other_pages: EmbeddedPagesResponse = test::call_and_read_body_json(
@@ -6265,7 +6450,7 @@ mod tests {
                 .to_request(),
         )
         .await;
-        assert_eq!(other_pages.global, vec![global]);
+        assert_eq!(other_pages.global, vec![restored_global]);
         assert!(other_pages.personal.is_empty());
 
         let hidden_from_administrator = test::call_service(

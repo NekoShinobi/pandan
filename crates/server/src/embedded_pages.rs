@@ -14,6 +14,35 @@ const MAX_ICON_URL_CHARACTERS: usize = 2_000;
 const DEFAULT_IFRAME_HEIGHT: i64 = 720;
 const MIN_IFRAME_HEIGHT: i64 = 320;
 const MAX_IFRAME_HEIGHT: i64 = 2_400;
+const SUPPORTED_LUCIDE_ICONS: &[&str] = &[
+    "bell",
+    "book-open",
+    "bookmark",
+    "briefcase",
+    "calendar-days",
+    "cloud",
+    "code",
+    "database",
+    "folder",
+    "gamepad-2",
+    "git-branch",
+    "globe",
+    "heart",
+    "house",
+    "image",
+    "link",
+    "lock",
+    "mail",
+    "music",
+    "podcast",
+    "rocket",
+    "rss",
+    "shopping-bag",
+    "star",
+    "terminal",
+    "video",
+    "wrench",
+];
 
 const fn default_iframe_height() -> i64 {
     DEFAULT_IFRAME_HEIGHT
@@ -32,6 +61,10 @@ struct EmbeddedPageInput {
     description: String,
     url: String,
     #[serde(default)]
+    icon_kind: Option<String>,
+    #[serde(default)]
+    icon_value: Option<String>,
+    #[serde(default)]
     icon_url: Option<String>,
     #[serde(default)]
     allow_scripts: bool,
@@ -44,6 +77,20 @@ struct EmbeddedPageInput {
 #[derive(Debug, Deserialize)]
 struct EmbeddedPageOrderInput {
     page_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmbeddedPageScopeInput {
+    scope: String,
+}
+
+struct ValidatedEmbeddedPageInput {
+    title: String,
+    description: String,
+    url: String,
+    icon_kind: String,
+    icon_value: Option<String>,
+    iframe_height: i64,
 }
 
 pub fn configure(config: &mut web::ServiceConfig) {
@@ -74,6 +121,10 @@ pub fn configure(config: &mut web::ServiceConfig) {
         .route(
             "/admin/embedded-pages/{page_id}",
             web::delete().to(delete_global_page),
+        )
+        .route(
+            "/admin/embedded-pages/{page_id}/scope",
+            web::patch().to(move_page_scope),
         );
 }
 
@@ -105,17 +156,18 @@ async fn create_personal_page(
 ) -> Result<(web::Json<EmbeddedPage>, StatusCode), ApiError> {
     let account = authenticated_account(&state, &request).await?;
     enforce_personal_page_limit(&state.pool, &account.id).await?;
-    let (title, description, url, icon_url, iframe_height) = validate_input(&payload)?;
+    let input = validate_input(&payload)?;
     let page = db::queries::create_personal_embedded_page(
         &state.pool,
         &account.id,
-        &title,
-        &description,
-        &url,
-        icon_url.as_deref(),
+        &input.title,
+        &input.description,
+        &input.url,
+        &input.icon_kind,
+        input.icon_value.as_deref(),
         payload.allow_scripts,
         payload.allow_same_origin,
-        iframe_height,
+        input.iframe_height,
     )
     .await?;
     Ok((web::Json(page), StatusCode::CREATED))
@@ -128,17 +180,18 @@ async fn create_global_page(
 ) -> Result<(web::Json<EmbeddedPage>, StatusCode), ApiError> {
     let administrator = authenticated_administrator(&state, &request).await?;
     enforce_global_page_limit(&state.pool).await?;
-    let (title, description, url, icon_url, iframe_height) = validate_input(&payload)?;
+    let input = validate_input(&payload)?;
     let page = db::queries::create_global_embedded_page(
         &state.pool,
         &administrator.id,
-        &title,
-        &description,
-        &url,
-        icon_url.as_deref(),
+        &input.title,
+        &input.description,
+        &input.url,
+        &input.icon_kind,
+        input.icon_value.as_deref(),
         payload.allow_scripts,
         payload.allow_same_origin,
-        iframe_height,
+        input.iframe_height,
     )
     .await?;
     Ok((web::Json(page), StatusCode::CREATED))
@@ -151,18 +204,19 @@ async fn update_personal_page(
     payload: web::Json<EmbeddedPageInput>,
 ) -> Result<web::Json<EmbeddedPage>, ApiError> {
     let account = authenticated_account(&state, &request).await?;
-    let (title, description, url, icon_url, iframe_height) = validate_input(&payload)?;
+    let input = validate_input(&payload)?;
     db::queries::update_personal_embedded_page(
         &state.pool,
         &account.id,
         &page_id,
-        &title,
-        &description,
-        &url,
-        icon_url.as_deref(),
+        &input.title,
+        &input.description,
+        &input.url,
+        &input.icon_kind,
+        input.icon_value.as_deref(),
         payload.allow_scripts,
         payload.allow_same_origin,
-        iframe_height,
+        input.iframe_height,
     )
     .await?
     .map(web::Json)
@@ -176,17 +230,18 @@ async fn update_global_page(
     payload: web::Json<EmbeddedPageInput>,
 ) -> Result<web::Json<EmbeddedPage>, ApiError> {
     authenticated_administrator(&state, &request).await?;
-    let (title, description, url, icon_url, iframe_height) = validate_input(&payload)?;
+    let input = validate_input(&payload)?;
     db::queries::update_global_embedded_page(
         &state.pool,
         &page_id,
-        &title,
-        &description,
-        &url,
-        icon_url.as_deref(),
+        &input.title,
+        &input.description,
+        &input.url,
+        &input.icon_kind,
+        input.icon_value.as_deref(),
         payload.allow_scripts,
         payload.allow_same_origin,
-        iframe_height,
+        input.iframe_height,
     )
     .await?
     .map(web::Json)
@@ -216,6 +271,49 @@ async fn delete_global_page(
         Ok(HttpResponse::NoContent().finish())
     } else {
         Err(ApiError::NotFound("embedded page not found"))
+    }
+}
+
+async fn move_page_scope(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    page_id: web::Path<String>,
+    payload: web::Json<EmbeddedPageScopeInput>,
+) -> Result<web::Json<EmbeddedPage>, ApiError> {
+    let administrator = authenticated_administrator(&state, &request).await?;
+    let outcome = match payload.scope.trim() {
+        "user" => {
+            db::queries::move_global_embedded_page_to_personal(
+                &state.pool,
+                &administrator.id,
+                &page_id,
+                MAX_EMBEDDED_PAGES_PER_SCOPE,
+            )
+            .await?
+        }
+        "global" => {
+            db::queries::move_personal_embedded_page_to_global(
+                &state.pool,
+                &administrator.id,
+                &page_id,
+                MAX_EMBEDDED_PAGES_PER_SCOPE,
+            )
+            .await?
+        }
+        _ => {
+            return Err(ApiError::BadRequest(
+                "embedded page scope must be global or user",
+            ));
+        }
+    };
+    match outcome {
+        db::queries::EmbeddedPageMoveOutcome::Moved(page) => Ok(web::Json(*page)),
+        db::queries::EmbeddedPageMoveOutcome::NotFound => {
+            Err(ApiError::NotFound("embedded page not found"))
+        }
+        db::queries::EmbeddedPageMoveOutcome::TargetFull => Err(ApiError::Conflict(
+            "the destination can contain at most 32 embedded pages",
+        )),
     }
 }
 
@@ -249,9 +347,7 @@ async fn reorder_global_pages(
         ))
 }
 
-fn validate_input(
-    payload: &EmbeddedPageInput,
-) -> Result<(String, String, String, Option<String>, i64), ApiError> {
+fn validate_input(payload: &EmbeddedPageInput) -> Result<ValidatedEmbeddedPageInput, ApiError> {
     let title = payload.title.trim();
     if title.is_empty() {
         return Err(ApiError::BadRequest("embedded page title is required"));
@@ -289,15 +385,59 @@ fn validate_input(
             "embedded page height must be between 320 and 2400 pixels",
         ));
     }
-    let icon_url = validate_icon_url(payload.icon_url.as_deref())?;
+    let (icon_kind, icon_value) = validate_icon(payload)?;
 
-    Ok((
-        title.to_owned(),
-        description.to_owned(),
-        parsed.to_string(),
-        icon_url,
-        payload.iframe_height,
-    ))
+    Ok(ValidatedEmbeddedPageInput {
+        title: title.to_owned(),
+        description: description.to_owned(),
+        url: parsed.to_string(),
+        icon_kind,
+        icon_value,
+        iframe_height: payload.iframe_height,
+    })
+}
+
+fn validate_icon(payload: &EmbeddedPageInput) -> Result<(String, Option<String>), ApiError> {
+    let explicit_kind = payload
+        .icon_kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let legacy_icon_url = payload
+        .icon_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let kind = explicit_kind.unwrap_or(if legacy_icon_url.is_some() {
+        "custom"
+    } else {
+        "favicon"
+    });
+    let value = if explicit_kind.is_some() {
+        payload.icon_value.as_deref()
+    } else {
+        legacy_icon_url
+    };
+
+    match kind {
+        "favicon" => Ok(("favicon".to_owned(), None)),
+        "lucide" => {
+            let name = value.unwrap_or("").trim().to_ascii_lowercase();
+            if !SUPPORTED_LUCIDE_ICONS.contains(&name.as_str()) {
+                return Err(ApiError::BadRequest("Lucide icon name is unsupported"));
+            }
+            Ok(("lucide".to_owned(), Some(name)))
+        }
+        "custom" => {
+            let url = validate_icon_url(value)?.ok_or(ApiError::BadRequest(
+                "custom embedded page icons require an HTTPS URL",
+            ))?;
+            Ok(("custom".to_owned(), Some(url)))
+        }
+        _ => Err(ApiError::BadRequest(
+            "embedded page icon kind must be favicon, lucide, or custom",
+        )),
+    }
 }
 
 fn validate_icon_url(icon_url: Option<&str>) -> Result<Option<String>, ApiError> {
@@ -371,6 +511,8 @@ mod tests {
             title: "Status".to_owned(),
             description: String::new(),
             url: "https://example.com/embed?view=compact".to_owned(),
+            icon_kind: None,
+            icon_value: None,
             icon_url: Some("https://cdn.example.com/status.svg".to_owned()),
             allow_scripts: true,
             allow_same_origin: true,
@@ -389,6 +531,8 @@ mod tests {
                 title: "Status".to_owned(),
                 description: String::new(),
                 url: url.to_owned(),
+                icon_kind: None,
+                icon_value: None,
                 icon_url: None,
                 allow_scripts: false,
                 allow_same_origin: false,
@@ -407,12 +551,18 @@ mod tests {
 
         assert!(!input.allow_scripts);
         assert!(!input.allow_same_origin);
+        assert_eq!(input.icon_kind, None);
+        assert_eq!(input.icon_value, None);
         assert_eq!(input.icon_url, None);
         assert_eq!(input.iframe_height, DEFAULT_IFRAME_HEIGHT);
+        assert_eq!(
+            validate_icon(&input).expect("older input receives an icon default"),
+            ("favicon".to_owned(), None)
+        );
     }
 
     #[test]
-    fn embedded_page_icon_urls_are_optional_https_and_credential_free() {
+    fn embedded_page_icon_sources_are_validated() {
         assert_eq!(
             validate_icon_url(None).expect("missing icon is valid"),
             None
@@ -439,6 +589,27 @@ mod tests {
                 "{icon_url} is rejected"
             );
         }
+
+        for (kind, value, valid) in [
+            ("favicon", None, true),
+            ("lucide", Some("terminal"), true),
+            ("lucide", Some("not-a-real-icon"), false),
+            ("custom", Some("https://cdn.example.com/icon.png"), true),
+            ("custom", None, false),
+        ] {
+            let input = EmbeddedPageInput {
+                title: "Status".to_owned(),
+                description: String::new(),
+                url: "https://example.com/".to_owned(),
+                icon_kind: Some(kind.to_owned()),
+                icon_value: value.map(str::to_owned),
+                icon_url: None,
+                allow_scripts: false,
+                allow_same_origin: false,
+                iframe_height: DEFAULT_IFRAME_HEIGHT,
+            };
+            assert_eq!(validate_icon(&input).is_ok(), valid, "{kind} is checked");
+        }
     }
 
     #[test]
@@ -448,6 +619,8 @@ mod tests {
                 title: "Status".to_owned(),
                 description: String::new(),
                 url: "https://example.com/".to_owned(),
+                icon_kind: None,
+                icon_value: None,
                 icon_url: None,
                 allow_scripts: false,
                 allow_same_origin: false,

@@ -210,10 +210,14 @@
     object-fit: contain;
   }
 
-  .bookmark-launch:hover .bookmark-launch-square,
+  .bookmark-launch:hover .bookmark-launch-square {
+    border-color: var(--muted);
+    background: color-mix(in oklch, var(--surface) 88%, var(--bg));
+  }
+
   .bookmark-launch:focus-visible .bookmark-launch-square {
     border-color: var(--fg);
-    background: var(--fg-soft);
+    background: color-mix(in oklch, var(--surface) 88%, var(--bg));
   }
 
   .bookmark-launch:focus-visible {

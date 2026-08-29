@@ -24,6 +24,7 @@
   import X from "lucide-svelte/icons/x";
   import { onDestroy, onMount, untrack } from "svelte";
   import { MediaQuery } from "svelte/reactivity";
+  import PandanDatePicker from "$lib/components/PandanDatePicker.svelte";
   import { createViewSwap } from "$lib/viewSwap.svelte";
   import KanbanCardSortable from "$lib/KanbanCardSortable.svelte";
   import TypedHeading from "$lib/TypedHeading.svelte";
@@ -2131,10 +2132,13 @@
         <aside>
           <section>
             <h4>Due date</h4>
-            <input
-              type="date"
+            <PandanDatePicker
+              id="kanban-card-due-date"
+              ariaLabel="Card due date"
               bind:value={cardDueDate}
               disabled={!canEditCard}
+              compact
+              odId="kanban-card-due-date"
               onchange={() => void saveCard()}
             />
           </section>
