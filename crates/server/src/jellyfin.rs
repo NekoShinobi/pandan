@@ -7,7 +7,10 @@ use super::{
 };
 use actix_web::{
     HttpRequest, HttpResponse,
-    http::{StatusCode, header},
+    http::{
+        StatusCode,
+        header::{self, ContentDisposition, DispositionParam, DispositionType},
+    },
     web,
 };
 use db::entities::{JellyfinServerSettings, JellyfinUserConnection, SessionAccount};
@@ -310,6 +313,10 @@ pub fn configure(config: &mut web::ServiceConfig) {
             .route("/music/items/{item_id}", web::get().to(music_item))
             .route("/music/items/{item_id}/image", web::get().to(music_image))
             .route("/music/items/{item_id}/audio", web::get().to(music_audio))
+            .route(
+                "/music/items/{item_id}/download",
+                web::get().to(music_download),
+            )
             .route("/music/playback/start", web::post().to(playback_start))
             .route("/music/playback/progress", web::put().to(playback_progress))
             .route("/music/playback/stop", web::post().to(playback_stop)),
@@ -573,11 +580,18 @@ async fn unlink(
 ) -> Result<HttpResponse, ApiError> {
     let account = authenticated_account(&state, &request).await?;
     if let Ok(context) = state.jellyfin.connection(&state, &account.id).await {
-        let _ = state
+        if let Err(error) = state
             .jellyfin
             .client
             .logout(&context.server.base_url, &context.auth)
-            .await;
+            .await
+        {
+            tracing::warn!(
+                user_id = %account.id,
+                %error,
+                "Jellyfin logout failed during unlink; removing the local connection"
+            );
+        }
     }
     db::jellyfin_queries::delete_jellyfin_user_connection(&state.pool, &account.id).await?;
     state
@@ -750,10 +764,10 @@ async fn music_items(
                 search_term: search,
                 start_index: start,
                 limit,
-                // Albums can contain disc folders and artists can contain albums.
-                // A track request must search below the authorized parent, then
-                // independently re-authorize every returned audio item.
-                recursive: kind == "tracks",
+                // Music libraries commonly nest albums below artist or folder levels.
+                // Keep every collection query inside the authorized parent while searching
+                // all of its descendants; tracks are still independently re-authorized below.
+                recursive: true,
                 sort_by: sort_by.to_owned(),
                 sort_order: sort_order.to_owned(),
                 ids: None,
@@ -856,11 +870,31 @@ async fn music_audio(
     path: web::Path<String>,
     query: web::Query<LibraryQuery>,
 ) -> Result<HttpResponse, ApiError> {
+    serve_music_audio(state, request, path.into_inner(), query.into_inner(), false).await
+}
+
+/// Downloads one track through the same live, authorized music proxy as playback.
+async fn music_download(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    path: web::Path<String>,
+    query: web::Query<LibraryQuery>,
+) -> Result<HttpResponse, ApiError> {
+    serve_music_audio(state, request, path.into_inner(), query.into_inner(), true).await
+}
+
+async fn serve_music_audio(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    item_id: String,
+    query: LibraryQuery,
+    attachment: bool,
+) -> Result<HttpResponse, ApiError> {
     let account = authenticated_account(&state, &request).await?;
     let context = state.jellyfin.connection(&state, &account.id).await?;
-    state
+    let item = state
         .jellyfin
-        .authorize_item(&context, &path, &query.library_id, true)
+        .authorize_item(&context, &item_id, &query.library_id, true)
         .await?;
     let response = state
         .jellyfin
@@ -868,7 +902,7 @@ async fn music_audio(
         .audio(
             &context.server.base_url,
             &context.connection.jellyfin_user_id,
-            &path,
+            &item_id,
             &context.auth,
             safe_forwarded_request_headers(&request),
         )
@@ -892,10 +926,46 @@ async fn music_audio(
         }
     }
     downstream.insert_header((header::CACHE_CONTROL, "private, no-store"));
+    downstream.insert_header(ContentDisposition {
+        disposition: if attachment {
+            DispositionType::Attachment
+        } else {
+            DispositionType::Inline
+        },
+        parameters: attachment
+            .then(|| {
+                DispositionParam::Filename(media_attachment_name(
+                    &item.name,
+                    "mp3",
+                    "jellyfin-track",
+                ))
+            })
+            .into_iter()
+            .collect(),
+    });
     let body = response
         .bytes_stream()
         .map(|chunk| chunk.map_err(actix_web::error::ErrorBadGateway));
     Ok(downstream.streaming(body))
+}
+
+fn media_attachment_name(title: &str, extension: &str, fallback: &str) -> String {
+    let mut stem = title
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, ' ' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    stem = stem.trim_matches([' ', '_']).trim().to_owned();
+    stem.truncate(120);
+    if stem.is_empty() {
+        stem = fallback.to_owned();
+    }
+    format!("{stem}.{extension}")
 }
 
 async fn playback_start(
@@ -1200,6 +1270,15 @@ mod tests {
         item.media_type = Some("Audio".to_owned());
         item.item_type = "MusicVideo".to_owned();
         assert!(!is_audio(&item));
+    }
+
+    #[test]
+    fn jellyfin_attachment_names_are_readable_and_header_safe() {
+        assert_eq!(
+            media_attachment_name("A track: live", "mp3", "track"),
+            "A track_ live.mp3"
+        );
+        assert_eq!(media_attachment_name("東京", "mp3", "track"), "track.mp3");
     }
 
     #[test]

@@ -7,6 +7,7 @@
     type DragDropEventHandlers,
   } from "@dnd-kit/svelte";
   import CirclePlay from "lucide-svelte/icons/circle-play";
+  import Download from "lucide-svelte/icons/download";
   import Bookmark from "lucide-svelte/icons/bookmark";
   import Check from "lucide-svelte/icons/check";
   import ExternalLink from "lucide-svelte/icons/external-link";
@@ -42,6 +43,8 @@
   } from "$lib/api";
 
   type YoutubeView = "latest" | "watch-later";
+
+  let { ondownload = () => {} }: { ondownload?: (url: string) => void } = $props();
   type YoutubeDragHandlers = DragDropEventHandlers;
   type YoutubeDragStartEvent = Parameters<
     NonNullable<YoutubeDragHandlers["onDragStart"]>
@@ -726,27 +729,39 @@
                     aria-hidden="true"
                   /></a
                 >
-                <button
-                  class={[
-                    "youtube-watch-later-button",
-                    video.watch_later_at !== null && "active",
-                  ]}
-                  type="button"
-                  disabled={busyVideoId !== ""}
-                  aria-label={video.watch_later_at
-                    ? `Remove ${video.title} from Watch Later`
-                    : `Save ${video.title} to Watch Later`}
-                  title={video.watch_later_at ? "Remove from Watch Later" : "Save to Watch Later"}
-                  onclick={() => toggleWatchLater(video)}
-                  data-od-id={`youtube-save-later-${video.id}`}
-                >
-                  <Bookmark
-                    size={16}
-                    strokeWidth={1.8}
-                    fill={video.watch_later_at ? "currentColor" : "none"}
-                    aria-hidden="true"
-                  />
-                </button>
+                <span class="youtube-video-actions">
+                  <button
+                    class="youtube-download-button"
+                    type="button"
+                    aria-label={`Download ${video.title}`}
+                    title="Open in Downloads"
+                    onclick={() => ondownload(video.url)}
+                    data-od-id={`youtube-download-${video.id}`}
+                  >
+                    <Download size={16} strokeWidth={1.8} aria-hidden="true" />
+                  </button>
+                  <button
+                    class={[
+                      "youtube-watch-later-button",
+                      video.watch_later_at !== null && "active",
+                    ]}
+                    type="button"
+                    disabled={busyVideoId !== ""}
+                    aria-label={video.watch_later_at
+                      ? `Remove ${video.title} from Watch Later`
+                      : `Save ${video.title} to Watch Later`}
+                    title={video.watch_later_at ? "Remove from Watch Later" : "Save to Watch Later"}
+                    onclick={() => toggleWatchLater(video)}
+                    data-od-id={`youtube-save-later-${video.id}`}
+                  >
+                    <Bookmark
+                      size={16}
+                      strokeWidth={1.8}
+                      fill={video.watch_later_at ? "currentColor" : "none"}
+                      aria-hidden="true"
+                    />
+                  </button>
+                </span>
               </div>
               <div class="youtube-video-meta">
                 <a
@@ -1254,6 +1269,25 @@
     border: 1px solid transparent;
     border-radius: 5px;
     color: var(--muted);
+  }
+  .youtube-video-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .youtube-download-button {
+    width: 44px;
+    min-height: 44px;
+    display: grid;
+    place-items: center;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    color: var(--muted);
+  }
+  .youtube-download-button:hover {
+    border-color: var(--fg);
+    background: var(--fg-soft);
+    color: var(--fg);
   }
   .youtube-watch-later-button:hover,
   .youtube-watch-later-button.active {

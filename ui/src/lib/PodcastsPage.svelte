@@ -30,6 +30,7 @@
     fetchPodcastSettings,
     fetchPodcasts,
     podcastArtworkUrl,
+    podcastEpisodeDownloadUrl,
     rejectPodcastRequest,
     removeFromPodcastQueue,
     removePodcastDownload,
@@ -673,6 +674,18 @@
             <Play size={14} strokeWidth={2} aria-hidden="true" /> Play
           {/if}
         </button>
+        <!-- eslint-disable svelte/no-navigation-without-resolve -- authenticated API attachment -->
+        <a
+          class="ui-button ui-button--secondary"
+          href={podcastEpisodeDownloadUrl(episode.id)}
+          download
+          aria-label={`Download ${episode.title}`}
+          data-od-id={`podcast-download-${episode.id}`}
+        >
+          <Download size={14} strokeWidth={1.9} aria-hidden="true" />
+          Download file
+        </a>
+        <!-- eslint-enable svelte/no-navigation-without-resolve -->
       {:else if episode.download_status === "downloading"}
         <span class="podcast-status">
           {Math.round(episode.download_progress * 100)}%

@@ -22,7 +22,7 @@ db = { path = "../db" }
 actix-web = "4.13.0"
 actix-files = "0.6.10"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 tracing-actix-web = "0.7"
 argon2 = { version = "0.5.3", features = ["rand"] }
 rand_core = { version = "0.6.4", features = ["getrandom"] }
@@ -35,7 +35,9 @@ futures-util = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "avif-native", "rayon"] }
 quick-xml = { version = "0.38", features = ["serialize"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+resvg = { version = "0.48.1", default-features = false }
 url = "2.5"
+nix = { version = "0.30", features = ["process", "signal"] }
 
 [lints]
 workspace = true

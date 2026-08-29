@@ -5,16 +5,53 @@ FROM rust:1-slim-trixie
 
 ARG DEV_UID=1000
 ARG DEV_GID=1000
+ARG TARGETARCH
+ARG YT_DLP_VERSION=2026.08.19
+ARG DENO_VERSION=2.9.6
 
 ENV DEV_UID=${DEV_UID} \
     DEV_GID=${DEV_GID} \
-    CARGO_TARGET_DIR=/app/target
+    CARGO_TARGET_DIR=/app/target \
+    PANDAN_YTDLP_BIN=/usr/local/bin/yt-dlp \
+    PANDAN_FFMPEG_BIN=/usr/bin/ffmpeg \
+    PANDAN_DENO_BIN=/usr/local/bin/deno \
+    PANDAN_DOWNLOADS_ENABLED=true
 
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gosu pkg-config libdav1d-dev \
+    && apt-get install -y --no-install-recommends \
+      ca-certificates curl ffmpeg=7:7.1.5-0+deb13u1 gosu libdav1d-dev pkg-config unzip \
     && rm -rf /var/lib/apt/lists/* \
+    && case "${TARGETARCH}" in \
+        amd64) \
+          YT_DLP_ASSET=yt-dlp_linux; \
+          YT_DLP_SHA256=58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a; \
+          DENO_ASSET=deno-x86_64-unknown-linux-gnu.zip; \
+          DENO_SHA256=394f07f4da2bebe6ce6f1e7ce0fa16429b29b08c35e3fac3fe25972676dff4b2 ;; \
+        arm64) \
+          YT_DLP_ASSET=yt-dlp_linux_aarch64; \
+          YT_DLP_SHA256=b16e4dab368a816cd05d477d698a605a6ae87ccee1c8ffd38fa21d7254141fcc; \
+          DENO_ASSET=deno-aarch64-unknown-linux-gnu.zip; \
+          DENO_SHA256=9a46afc6c392c7cd2ff71a31558935545b46408d0e87f7a86908c712721c046e ;; \
+        *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+      esac \
+    && curl --fail --location --silent --show-error \
+      "https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}/${YT_DLP_ASSET}" \
+      --output /usr/local/bin/yt-dlp \
+    && printf '%s  %s\n' "${YT_DLP_SHA256}" /usr/local/bin/yt-dlp | sha256sum --check --strict \
+    && chmod 0755 /usr/local/bin/yt-dlp \
+    && curl --fail --location --silent --show-error \
+      "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/${DENO_ASSET}" \
+      --output /tmp/deno.zip \
+    && printf '%s  %s\n' "${DENO_SHA256}" /tmp/deno.zip | sha256sum --check --strict \
+    && unzip -q /tmp/deno.zip -d /usr/local/bin \
+    && rm /tmp/deno.zip \
+    && chmod 0755 /usr/local/bin/deno \
+    && /usr/local/bin/yt-dlp --version \
+    && /usr/local/bin/deno --version \
+    && /usr/bin/ffmpeg -version \
+    && /usr/bin/ffprobe -version \
     && cargo install --locked bacon \
     && if ! getent group "${DEV_GID}" >/dev/null; then groupadd --gid "${DEV_GID}" app; fi \
     && useradd --uid "${DEV_UID}" --gid "${DEV_GID}" --create-home --non-unique app \

@@ -22,7 +22,10 @@ use db::entities::{
 use quick_xml::{Reader, events::Event};
 use reqwest::{Client, ClientBuilder, Response, StatusCode, header};
 use sqlx::SqlitePool;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Instant,
+};
 use tokio::io::AsyncWriteExt;
 use tokio::time::{Duration, sleep};
 use tracing::{info, warn};
@@ -417,20 +420,56 @@ impl PodcastMedia {
         kind: PodcastClientKind,
     ) -> Result<Response, String> {
         let mut current = source.to_owned();
-        for _ in 0..MAX_REDIRECTS {
+        let request_kind = match kind {
+            PodcastClientKind::Feed => "feed",
+            PodcastClientKind::Audio => "audio",
+        };
+        let started = Instant::now();
+        for redirect_count in 0..MAX_REDIRECTS {
             let target = self
                 .network_policy
                 .validate(&current, NetworkAccessScope::Podcasts)
                 .await?;
             let client = target.build_client(podcast_client_builder(kind))?;
             let current_url = target.into_url();
+            let origin = current_url.origin().ascii_serialization();
             let response = client
                 .get(current_url.clone())
                 .send()
                 .await
-                .map_err(|error| request_message(&error))?;
+                .map_err(|error| {
+                    warn!(
+                        %origin,
+                        request_kind,
+                        redirect_count,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        timed_out = error.is_timeout(),
+                        connect_error = error.is_connect(),
+                        "podcast upstream transport failed"
+                    );
+                    request_message(&error)
+                })?;
             let status = response.status();
             if !status.is_redirection() {
+                if status.is_success() {
+                    tracing::debug!(
+                        %origin,
+                        request_kind,
+                        status = status.as_u16(),
+                        redirect_count,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "podcast upstream request completed"
+                    );
+                    return Ok(response);
+                }
+                warn!(
+                    %origin,
+                    request_kind,
+                    status = status.as_u16(),
+                    redirect_count,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "podcast upstream request was rejected"
+                );
                 return response
                     .error_for_status()
                     .map_err(|error| request_message(&error));
@@ -443,8 +482,20 @@ impl PodcastMedia {
             let next = current_url
                 .join(location)
                 .map_err(|_| "redirect destination is invalid".to_owned())?;
+            tracing::debug!(
+                %origin,
+                request_kind,
+                status = status.as_u16(),
+                redirect_count,
+                "following podcast upstream redirect"
+            );
             current = next.into();
         }
+        warn!(
+            request_kind,
+            redirects = MAX_REDIRECTS,
+            "podcast upstream exceeded the redirect limit"
+        );
         Err("too many redirects".to_owned())
     }
 }

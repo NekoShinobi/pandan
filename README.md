@@ -47,8 +47,9 @@ Pandan brings planning, reading, contacts, calendars, notes, lightweight instanc
 | **Lines**          | A Markdown timeline with account avatars, public or private posts, threaded replies composed in a modal, thread and author screens, hashtag discovery, search, file attachments, reactions, and administrator moderation of public posts.                                                                                                                                                                                                                                                                                                                                    |
 | **Walls**          | A shared wallpaper collection. Anyone can submit an image with a title, description, and tags; an administrator approves or rejects it with an optional note. Approved walls can be applied as your own background, or set by an administrator as the instance login screen. Submitters see their own pending and rejected entries with the reason, and can correct a wall's title, description, and tags at any time — before or after review. The search and tag filters sit with the view tabs and apply to the collection, your submissions, and the review queue alike. |
 | **YouTube**        | Channel subscriptions with optional category assignment, drag-reorderable categories, a fixed all-channels directory, a private Watch Later queue, thumbnail or compact layouts, manual refresh, and server-side shared metadata caching.                                                                                                                                                                                                                                                                                                                                    |
-| **Podcasts**       | An administrator-curated show catalogue for the whole instance, member requests with approve/reject review, per-account subscriptions, a play queue, saved episodes, expandable show notes on every episode, and episodes downloaded once and then streamed from this server. Playback follows you across sections with skip-to-episode, rewind and forward, volume, and speed controls, and resumes where you left off. Volume starts at 80% and can be pushed to 200% for a quietly mastered show. Administrators can queue a show's whole back catalogue in one action.   |
-| **Music**          | Per-account Jellyfin linking with Quick Connect or a one-time password exchange, music-library browsing and search, albums, artists, playlists, artwork, queues, Media Session controls, and playback that follows you across sections. Jellyfin credentials remain encrypted on the Pandan server; the browser receives only same-origin Pandan URLs. |
+| **Downloads**      | Account-private YouTube video and audio downloads with source inspection, safe MP4/MKV/WebM and M4A/MP3/Opus profiles, bounded batches, a persistent fair queue, live progress, shared audio playback, private inline video viewing, retries, and administrator-managed storage and concurrency limits. |
+| **Podcasts**       | An administrator-curated show catalogue for the whole instance, member requests with approve/reject review, per-account subscriptions, a play queue, saved episodes, expandable show notes on every episode, and episodes downloaded once and then streamed from this server. Ready episodes can also be downloaded to the listener's device. Playback follows you across sections with skip-to-episode, rewind and forward, volume, and speed controls, and resumes where you left off. Volume starts at 80% and can be pushed to 200% for a quietly mastered show. Administrators can queue a show's whole back catalogue in one action.   |
+| **Music**          | Per-account Jellyfin linking with Quick Connect or a one-time password exchange, music-library browsing and search, albums, artists, playlists, artwork, queues, authenticated MP3 downloads, Media Session controls, and playback that follows you across sections. Jellyfin credentials remain encrypted on the Pandan server; the browser receives only same-origin Pandan URLs. |
 | **Coding**         | Releases from GitHub, GitLab, Codeberg, Gitea, and Forgejo; connected accounts can also show owned repositories, open pull requests, and GitLab pipelines. Provider data is cached for one hour by default, with manual refresh available.                                                                                                                                                                                                                                                                                                                                   |
 | **Subscriptions**  | Recurring service costs, first-payment dates, filtering, and separate daily, weekly, monthly, and yearly totals for each currency.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | **Notifications**  | An ntfy-powered header inbox backed by a persistent Rust subscription, so messages are retained even when no browser is open. It includes realtime Bell counts, fixed-size bottom-right delivery toasts, swipeable previews, a full topic view with expandable fixed-size cards and topic-scoped bulk deletion, manual topic subscriptions, clickable ntfy links and actions, and permanent upstream deletion. ntfy.sh and administrator-authorized self-hosted servers are supported.                                                                                       |
@@ -57,7 +58,7 @@ Pandan brings planning, reading, contacts, calendars, notes, lightweight instanc
 
 A global command palette is available from every page with `Ctrl`/`Cmd` + `K`, the `/` key, or the header search control. It jumps to any product page or Kanban section, runs quick actions such as New task, Start focus session, and Account settings, and falls through to a web search on DuckDuckGo, Google, Bing, or Brave when the query matches nothing local.
 
-Settings opens as a full product page with a second category rail instead of a modal. Preferences contains regional defaults, installation guidance, and the personal Main background; Security contains profile identity, the current browser session, and account data deletion; administrators also see instance, network, and user-management categories. Sidebar Monitor timezones are selected from the standardized IANA list, and every saved timezone appears in the dashboard Local.Time list. A background can be an image you upload or one you pick from Walls; picking a wall stores it once for the whole instance rather than a copy per account. The public Login background and its independent processing controls live under Instance Settings, separate from every member's Main background. Custom sidebar pages always follow the built-in navigation, grouped under Global custom and then Personal custom.
+Settings opens as a full product page with a second category rail instead of a modal. Preferences contains regional defaults, installation guidance, and the personal Main background; Security contains profile identity, an active-session inventory with forced sign-out, and account data deletion; administrators also see instance, network, and user-management categories. Sidebar Monitor timezones are selected from the standardized IANA list, and every saved timezone appears in the dashboard Local.Time list. A background can be an image you upload or one you pick from Walls; picking a wall stores it once for the whole instance rather than a copy per account. The public Login background and its independent processing controls live under Instance Settings, separate from every member's Main background. Custom sidebar pages always follow the built-in navigation, grouped under Global custom and then Personal custom.
 
 ## Dashboard widgets
 
@@ -127,6 +128,7 @@ After setup, administrators can use the Administration group in **Settings** to:
 
 - enable or disable password login, password registration, and registration of new OIDC identities;
 - allow or deny exact server-side network destinations, including explicitly trusted private or HTTP origins;
+- inspect recent structured logs and adjust file logging, level, rotation, and retention;
 - promote or demote other accounts; and
 - remove other accounts.
 
@@ -157,12 +159,18 @@ When a new deployment is ready, the running app shows an **Update ready** notice
 | `DATABASE_URL`                    | `sqlite://data/pandan.db` | SQLx SQLite URL. Production Compose overrides this with `sqlite:///app/data/pandan.db`.                                                                                                                                                                                    |
 | `PORT`                            | `9651`                    | Server port when running directly; in production Compose it selects the published host port while the container continues to listen on `9651`.                                                                                                                             |
 | `RUST_LOG`                        | `info`                    | Rust tracing filter, such as `info`, `debug`, or a crate-specific filter.                                                                                                                                                                                                  |
+| `PANDAN_LOG_DIR`                  | `data/logs`               | Directory for persistent structured JSONL logs. Production Compose sets `/app/data/logs`; container development sets `/app/.devdata/logs`. The path is operator-controlled, while file enablement, level, rotation, and retention are managed in **Settings → Logs**. |
 | `COOKIE_SECURE`                   | `false`                   | Accepts `1`, `true`, or `yes` (case-insensitive) to mark session and OIDC state cookies as HTTPS-only.                                                                                                                                                                     |
 | `PANDAN_BASE_URL`                 | unset in the server       | Public absolute HTTP(S) application URL. Required when OIDC is enabled, where it derives the callback URL, and used for link-preview URLs. Without it, previews fall back to the address each request arrived on.                                                          |
 | `PANDAN_SECRET_KEY`               | unset                     | Base64 text that decodes to exactly 32 bytes. Enables encrypted provider-credential storage, including ntfy access tokens.                                                                                                                                                 |
 | `INVIDIOUS_BASE_URL`              | unset                     | Optional HTTPS Invidious base URL used before YouTube's public uploads feed.                                                                                                                                                                                               |
 | `INVIDIOUS_ALLOW_PRIVATE_NETWORK` | `false`                   | Accepts `1`, `true`, or `yes` (case-insensitive). Exempts the `INVIDIOUS_BASE_URL` host from the private-network guard, for a self-hosted instance that resolves to a private address. Scoped to that exact host and port; every other outbound URL stays fully validated. |
 | `PANDAN_MEDIA_DIR`                | `data/podcasts`           | Directory for downloaded podcast episodes. Must be writable and on a volume with room for the storage budget. Production Compose sets `/app/data/podcasts`.                                                                                                                |
+| `PANDAN_DOWNLOAD_DIR`             | `data/downloads`          | Private yt-dlp staging and completed-file root. Production Compose sets `/app/data/downloads`; container development sets `/app/.devdata/downloads`. Never expose this directory through a static-file server. |
+| `PANDAN_DOWNLOADS_ENABLED`        | `true`                    | Operator kill switch for new YouTube downloads. The application still starts and existing records remain visible when disabled. |
+| `PANDAN_YTDLP_BIN`                | `yt-dlp` from `PATH`      | Optional explicit yt-dlp executable for host development. Both container images use their verified pinned binary. |
+| `PANDAN_FFMPEG_BIN`               | `ffmpeg` from `PATH`      | Optional explicit FFmpeg executable for host development; `ffprobe` must be installed beside it. Both container images include the pinned Debian package. |
+| `PANDAN_DENO_BIN`                 | `deno` from `PATH`        | Optional explicit Deno executable used by yt-dlp's bundled EJS challenge solver. Both container images use their verified pinned binary. |
 
 ### Production container settings
 
@@ -236,6 +244,8 @@ OIDC can sign in an existing linked identity or link a verified email to an exis
 
 All account records, cached remote content, avatars, wallpapers, contact photos, task and Kanban attachments, and encrypted provider credentials live in SQLite. Pending migrations are embedded in the server and applied automatically at startup. SQLite uses WAL mode, a five-second busy timeout, and an eight-connection pool.
 
+Persistent application logs live under `PANDAN_LOG_DIR` as newline-delimited JSON. They are written by a bounded background writer, rotated before the configured size is exceeded, and pruned by both age and rotated-file count. Administrators can inspect the 200 most recent readable events and change the policy in **Settings → Logs**. Back up this directory only when operational history is required; it is separate from SQLite and may contain account and record identifiers, but never provider credentials, authorization headers, request bodies, query strings, or complete source URLs.
+
 | Run mode                        | Database location                                       |
 | ------------------------------- | ------------------------------------------------------- |
 | Production Compose              | `/app/data/pandan.db` in the `pandan-data` named volume |
@@ -278,9 +288,12 @@ The `just db-reset` recipe permanently deletes the host and container-developmen
 | Contact JSON import                         | Pandan or Monica JSON                                       | 64 MB and at most 10,000 records                              |
 | Podcast episodes (downloaded, not uploaded) | Audio media types from a server-side allowlist              | 500 MB per episode by default, within a 20 GB instance budget |
 
-Podcast episode limits are administrator-configurable from the Podcasts page. Episode audio is the
-only content Pandan stores outside SQLite: files are written under `PANDAN_MEDIA_DIR` so playback can
-be streamed and seeked, and access still goes through an authenticated handler.
+Podcast episode limits are administrator-configurable from the Podcasts page. Podcast audio and
+completed YouTube downloads are the two media types Pandan stores outside SQLite. They live under
+`PANDAN_MEDIA_DIR` and `PANDAN_DOWNLOAD_DIR` respectively, and both remain behind authenticated,
+account-scoped handlers rather than static mounts. Downloads default to a 20 GiB instance budget,
+10 GiB per account, and 2 GiB per output; administrators can change these limits from Downloads →
+Policy.
 
 Wall submissions are decoded on the server to build a gallery thumbnail, so the accepted-format list
 is enforced by actually reading the image rather than trusting its declared type. Decoding is bounded
@@ -294,6 +307,7 @@ large amount of pixel data.
 - DNS answers are checked and pinned to the request client, including IPv4-mapped IPv6 and reserved ranges, so a hostname cannot pass validation and then resolve somewhere else for the connection. Widget redirects are disabled; podcast redirects are bounded and evaluated again at every hop. Remote requests also retain connection and request timeouts, response-size limits, and isolated provider errors.
 - Network access rules apply only when Pandan is the HTTP client. Embedded custom pages and ordinary external links are loaded directly by the browser and keep their separate HTTPS, iframe sandbox, and referrer controls.
 - YouTube channel metadata refreshes every two hours. Pandan tries configured Invidious first and YouTube's public uploads feed second. Shared channel portraits are stored in SQLite and refreshed at most every 24 hours; invalid or failed portrait responses are not cached.
+- YouTube downloads accept only credential-free HTTPS video, Shorts, and `youtu.be` URLs. Every yt-dlp connection passes through Pandan's loopback policy proxy, which resolves, validates, and pins each discovered media destination independently; cookies, playlists, live streams, arbitrary options, external downloaders, remote components, and private-network bypasses are not exposed.
 - Podcast feeds and episode enclosures use dedicated HTTP clients because enclosures routinely redirect through tracking prefixes and run to hundreds of megabytes. Redirects are followed manually and revalidated against the same public-destination policy at every hop, and the size ceiling is enforced both on the declared length and while streaming.
 - Pandan never proxies remote podcast audio to a browser. An episode is downloaded once to this server and then served from local disk, so nothing plays until the instance holds its own copy.
 - The daily Bible Verse widget selects locally and deterministically from the packaged English Revised Version data; it makes no runtime verse request.
@@ -307,8 +321,14 @@ large amount of pixel data.
 - Administrator authorization is enforced by the server, including the invariant that at least one administrator remains.
 - Stored provider secrets use XChaCha20-Poly1305 when `PANDAN_SECRET_KEY` is configured. Secrets are neither included in API responses nor written to logs.
 - Outbound server requests use a deny-first, administrator-managed exact-origin policy. Private or HTTP allow rules deliberately grant Pandan—and therefore users of the selected integration—the server's network reach, so configure them as part of the instance trust boundary.
+- Download jobs, progress events, output files, retries, cancellation, and deletion are scoped to the owning account in both handlers and SQL. Administrators can set policy but cannot inspect or retrieve another account's media.
 - User Markdown is sanitized, while custom HTML and iframe widgets run in browser sandboxes.
 - The supplied production Compose configuration runs the container as an unprivileged user with a read-only root filesystem, a temporary `/tmp`, all Linux capabilities dropped, and `no-new-privileges` enabled.
+
+The production image supports Linux `amd64` and `arm64`. It verifies architecture-specific yt-dlp
+2026.08.19 and Deno 2.9.6 release checksums at build time, pins Debian FFmpeg 7.1.5, disables tool
+self-updates and remote components, and keeps the current unprivileged/read-only posture. See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the media-tool distribution notices.
 
 These controls reduce common self-hosting risks, but Pandan is not a substitute for TLS, network access controls, database backups, secret management, and timely dependency updates.
 
@@ -352,7 +372,9 @@ Host development requires:
 - [Just](https://just.systems/);
 - [Bacon](https://dystroy.org/bacon/) for Rust rebuild/restart behavior; and
 - libdav1d 1.3.0 or newer with its development headers (`libdav1d-dev` on Debian/Ubuntu), which the
-  server links against to decode AVIF wall submissions. The containers already include it.
+  server links against to decode AVIF wall submissions. The containers already include it; and
+- yt-dlp, FFmpeg with ffprobe, and Deno when running the Downloads feature directly on the host. The
+  containerized development stack includes the same pinned media toolchain as production.
 
 Install locked dependencies and start both development servers:
 
@@ -374,7 +396,7 @@ For a fully containerized development loop:
 just up-dev
 ```
 
-The development UI is published on `UI_PORT` (default `5173`) and the API on `PORT` (default `9651`). Source files are bind-mounted, while Rust targets, registries, frontend dependencies, Svelte output, and Bun downloads use named caches.
+The development UI is published on `UI_PORT` (default `5173`) and the API on `PORT` (default `9651`). Source files are bind-mounted, while Rust targets, registries, frontend dependencies, Svelte output, and Bun downloads use named caches. The API image includes verified yt-dlp and Deno binaries plus FFmpeg/ffprobe, and keeps private development outputs under `.devdata/downloads`.
 
 ### Quality and build commands
 

@@ -1,15 +1,16 @@
 use crate::entities::{
-    AppMetadata, AuthenticationSettings, Bookmark, BookmarkFavicon, CalendarEvent,
+    AccountSession, AppMetadata, AuthenticationSettings, Bookmark, BookmarkFavicon, CalendarEvent,
     CalendarEventDraft, CalendarSubscription, CodingCredential, CodingProject, DashboardWidget,
     EmbeddedPage, FeedItem, JournalNode, KanbanActivity, KanbanAttachment, KanbanBoard,
     KanbanBoardSummary, KanbanCard, KanbanCardDraft, KanbanChecklist, KanbanChecklistItem,
     KanbanColumn, KanbanComment, KanbanDirectoryUser, KanbanInvitation, KanbanLabel, KanbanMember,
     KanbanMemberPermission, KanbanOverview, KanbanRolePermission, KanbanWorkspace,
     KanbanWorkspaceSettings, LineAuthorProfile, LinePost, LinePostAttachment, LinePostDraft,
-    LinePostReaction, LoginAppearance, ManagedUser, NetworkAccessRule, OidcAuthorization,
-    PaymentSubscription, RssItem, RssItemDraft, RssRefreshTarget, RssSubscription,
-    RssSubscriptionDraft, SessionAccount, Task, TaskAttachment, TaskDraft, TaskSubtask, User,
-    UserAppearance, UserAvatar, UserBackground, UserCredentials, UserSettings, Workspace,
+    LinePostReaction, LoggingSettings, LoginAppearance, ManagedUser, NetworkAccessRule,
+    OidcAuthorization, PaymentSubscription, RssItem, RssItemDraft, RssRefreshTarget,
+    RssSubscription, RssSubscriptionDraft, SessionAccount, Task, TaskAttachment, TaskDraft,
+    TaskSubtask, User, UserAppearance, UserAvatar, UserBackground, UserCredentials, UserSettings,
+    Workspace,
 };
 pub use crate::podcast_queries::*;
 pub use crate::youtube_queries::*;
@@ -1381,6 +1382,11 @@ pub async fn delete_user_content(
             }
             removed
         }
+        "downloads" => sqlx::query("DELETE FROM youtube_download_jobs WHERE user_id = ?")
+            .bind(user_id)
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected(),
         "subscriptions" => sqlx::query("DELETE FROM payment_subscriptions WHERE user_id = ?")
             .bind(user_id)
             .execute(&mut *transaction)
@@ -3116,7 +3122,7 @@ pub async fn list_global_embedded_pages(
     pool: &SqlitePool,
 ) -> Result<Vec<EmbeddedPage>, sqlx::Error> {
     sqlx::query_as::<_, EmbeddedPage>(
-        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
+        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, icon_url, \
          allow_scripts, allow_same_origin, iframe_height, position, created_at, updated_at \
          FROM embedded_pages \
          WHERE scope = 'global' AND owner_user_id IS NULL \
@@ -3136,7 +3142,7 @@ pub async fn list_personal_embedded_pages(
     user_id: &str,
 ) -> Result<Vec<EmbeddedPage>, sqlx::Error> {
     sqlx::query_as::<_, EmbeddedPage>(
-        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
+        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, icon_url, \
          allow_scripts, allow_same_origin, iframe_height, position, created_at, updated_at \
          FROM embedded_pages \
          WHERE scope = 'user' AND owner_user_id = ? \
@@ -3190,6 +3196,7 @@ pub async fn create_personal_embedded_page(
     title: &str,
     description: &str,
     url: &str,
+    icon_url: Option<&str>,
     allow_scripts: bool,
     allow_same_origin: bool,
     iframe_height: i64,
@@ -3202,6 +3209,7 @@ pub async fn create_personal_embedded_page(
         title,
         description,
         url,
+        icon_url,
         allow_scripts,
         allow_same_origin,
         iframe_height,
@@ -3220,6 +3228,7 @@ pub async fn create_global_embedded_page(
     title: &str,
     description: &str,
     url: &str,
+    icon_url: Option<&str>,
     allow_scripts: bool,
     allow_same_origin: bool,
     iframe_height: i64,
@@ -3232,6 +3241,7 @@ pub async fn create_global_embedded_page(
         title,
         description,
         url,
+        icon_url,
         allow_scripts,
         allow_same_origin,
         iframe_height,
@@ -3247,6 +3257,7 @@ async fn create_embedded_page(
     title: &str,
     description: &str,
     url: &str,
+    icon_url: Option<&str>,
     allow_scripts: bool,
     allow_same_origin: bool,
     iframe_height: i64,
@@ -3273,9 +3284,9 @@ async fn create_embedded_page(
 
     sqlx::query(
         "INSERT INTO embedded_pages \
-         (id, scope, owner_user_id, created_by_user_id, title, description, url, \
+         (id, scope, owner_user_id, created_by_user_id, title, description, url, icon_url, \
           allow_scripts, allow_same_origin, iframe_height, position, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(scope)
@@ -3284,6 +3295,7 @@ async fn create_embedded_page(
     .bind(title)
     .bind(description)
     .bind(url)
+    .bind(icon_url)
     .bind(allow_scripts)
     .bind(allow_same_origin)
     .bind(iframe_height)
@@ -3302,6 +3314,7 @@ async fn create_embedded_page(
         title: title.to_owned(),
         description: description.to_owned(),
         url: url.to_owned(),
+        icon_url: icon_url.map(str::to_owned),
         allow_scripts,
         allow_same_origin,
         iframe_height,
@@ -3323,19 +3336,21 @@ pub async fn update_personal_embedded_page(
     title: &str,
     description: &str,
     url: &str,
+    icon_url: Option<&str>,
     allow_scripts: bool,
     allow_same_origin: bool,
     iframe_height: i64,
 ) -> Result<Option<EmbeddedPage>, sqlx::Error> {
     let updated_at = chrono::Utc::now().to_rfc3339();
     let result = sqlx::query(
-        "UPDATE embedded_pages SET title = ?, description = ?, url = ?, \
+        "UPDATE embedded_pages SET title = ?, description = ?, url = ?, icon_url = ?, \
          allow_scripts = ?, allow_same_origin = ?, iframe_height = ?, updated_at = ? \
          WHERE id = ? AND scope = 'user' AND owner_user_id = ?",
     )
     .bind(title)
     .bind(description)
     .bind(url)
+    .bind(icon_url)
     .bind(allow_scripts)
     .bind(allow_same_origin)
     .bind(iframe_height)
@@ -3349,7 +3364,7 @@ pub async fn update_personal_embedded_page(
     }
 
     sqlx::query_as::<_, EmbeddedPage>(
-        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
+        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, icon_url, \
          allow_scripts, allow_same_origin, iframe_height, position, created_at, updated_at \
          FROM embedded_pages WHERE id = ?",
     )
@@ -3369,19 +3384,21 @@ pub async fn update_global_embedded_page(
     title: &str,
     description: &str,
     url: &str,
+    icon_url: Option<&str>,
     allow_scripts: bool,
     allow_same_origin: bool,
     iframe_height: i64,
 ) -> Result<Option<EmbeddedPage>, sqlx::Error> {
     let updated_at = chrono::Utc::now().to_rfc3339();
     let result = sqlx::query(
-        "UPDATE embedded_pages SET title = ?, description = ?, url = ?, \
+        "UPDATE embedded_pages SET title = ?, description = ?, url = ?, icon_url = ?, \
          allow_scripts = ?, allow_same_origin = ?, iframe_height = ?, updated_at = ? \
          WHERE id = ? AND scope = 'global' AND owner_user_id IS NULL",
     )
     .bind(title)
     .bind(description)
     .bind(url)
+    .bind(icon_url)
     .bind(allow_scripts)
     .bind(allow_same_origin)
     .bind(iframe_height)
@@ -3394,7 +3411,7 @@ pub async fn update_global_embedded_page(
     }
 
     sqlx::query_as::<_, EmbeddedPage>(
-        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, \
+        "SELECT id, scope, owner_user_id, created_by_user_id, title, description, url, icon_url, \
          allow_scripts, allow_same_origin, iframe_height, position, created_at, updated_at \
          FROM embedded_pages WHERE id = ?",
     )
@@ -3712,16 +3729,24 @@ pub async fn create_session(
     pool: &SqlitePool,
     token: &str,
     user_id: &str,
+    user_agent: &str,
+    ip_address: &str,
     expires_at: &str,
 ) -> Result<(), sqlx::Error> {
     let now = chrono::Utc::now().to_rfc3339();
+    let id = uuid::Uuid::new_v4().to_string();
     let mut transaction = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO sessions (token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO sessions (token, id, user_id, user_agent, ip_address, expires_at, created_at, last_seen_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(token)
+    .bind(id)
     .bind(user_id)
+    .bind(user_agent)
+    .bind(ip_address)
     .bind(expires_at)
+    .bind(&now)
     .bind(&now)
     .execute(&mut *transaction)
     .await?;
@@ -3732,6 +3757,79 @@ pub async fn create_session(
         .await?;
     transaction.commit().await?;
     Ok(())
+}
+
+/// Refreshes the last observed metadata for one session.
+///
+/// Repeated requests from an unchanged client update the timestamp at most once every five
+/// minutes, while a changed user agent or address is recorded immediately.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the update cannot be completed.
+pub async fn touch_session(
+    pool: &SqlitePool,
+    token: &str,
+    user_agent: &str,
+    ip_address: &str,
+) -> Result<(), sqlx::Error> {
+    let now = chrono::Utc::now();
+    let refresh_before = (now - chrono::Duration::minutes(5)).to_rfc3339();
+    let now = now.to_rfc3339();
+    sqlx::query(
+        "UPDATE sessions \
+         SET user_agent = ?, ip_address = ?, last_seen_at = ? \
+         WHERE token = ? AND (user_agent != ? OR ip_address != ? OR last_seen_at < ?)",
+    )
+    .bind(user_agent)
+    .bind(ip_address)
+    .bind(now)
+    .bind(token)
+    .bind(user_agent)
+    .bind(ip_address)
+    .bind(refresh_before)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Lists the unexpired sessions owned by one account, newest activity first.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the query cannot be completed.
+pub async fn list_account_sessions(
+    pool: &SqlitePool,
+    user_id: &str,
+) -> Result<Vec<AccountSession>, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query_as::<_, AccountSession>(
+        "SELECT id, token, user_agent, ip_address \
+         FROM sessions \
+         WHERE user_id = ? AND expires_at > ? \
+         ORDER BY last_seen_at DESC, created_at DESC",
+    )
+    .bind(user_id)
+    .bind(now)
+    .fetch_all(pool)
+    .await
+}
+
+/// Deletes one account-owned session by its public identifier and returns its private token.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the delete cannot be completed.
+pub async fn delete_account_session(
+    pool: &SqlitePool,
+    user_id: &str,
+    session_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("DELETE FROM sessions WHERE id = ? AND user_id = ? RETURNING token")
+        .bind(session_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
 }
 
 /// Resolves an unexpired session to the owning account and its settings.
@@ -4370,6 +4468,51 @@ pub async fn update_authentication_settings(
     .execute(pool)
     .await?;
     get_authentication_settings(pool).await
+}
+
+/// Loads the singleton administrator-controlled file logging policy.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the settings cannot be loaded.
+pub async fn get_logging_settings(pool: &SqlitePool) -> Result<LoggingSettings, sqlx::Error> {
+    sqlx::query_as::<_, LoggingSettings>(
+        "SELECT file_enabled, log_level, retention_days, max_file_size_mb, max_files, updated_at \
+         FROM logging_settings WHERE id = 1",
+    )
+    .fetch_one(pool)
+    .await
+}
+
+/// Replaces the singleton administrator-controlled file logging policy.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the settings cannot be updated or reloaded.
+pub async fn update_logging_settings(
+    pool: &SqlitePool,
+    file_enabled: bool,
+    log_level: &str,
+    retention_days: i64,
+    max_file_size_mb: i64,
+    max_files: i64,
+) -> Result<LoggingSettings, sqlx::Error> {
+    let updated_at = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE logging_settings \
+         SET file_enabled = ?, log_level = ?, retention_days = ?, max_file_size_mb = ?, \
+             max_files = ?, updated_at = ? \
+         WHERE id = 1",
+    )
+    .bind(file_enabled)
+    .bind(log_level)
+    .bind(retention_days)
+    .bind(max_file_size_mb)
+    .bind(max_files)
+    .bind(updated_at)
+    .execute(pool)
+    .await?;
+    get_logging_settings(pool).await
 }
 
 /// Lists the administrator-managed outbound network rules in deterministic order.

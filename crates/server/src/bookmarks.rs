@@ -63,15 +63,42 @@ async fn create_bookmark(
     }
 
     let favicon_url = favicon_url(&url)?;
-    let favicon = timeout(
+    let favicon_origin = favicon_url.origin().ascii_serialization();
+    let favicon = match timeout(
         Duration::from_secs(4),
         state
             .widget_integrations
             .fetch_favicon(favicon_url.as_str(), MAX_FAVICON_BYTES),
     )
     .await
-    .ok()
-    .and_then(Result::ok);
+    {
+        Ok(Ok(favicon)) => {
+            tracing::debug!(
+                user_id = %account.id,
+                origin = %favicon_origin,
+                "bookmark favicon fetched"
+            );
+            Some(favicon)
+        }
+        Ok(Err(message)) => {
+            tracing::warn!(
+                user_id = %account.id,
+                origin = %favicon_origin,
+                %message,
+                "bookmark favicon fetch failed; saving bookmark without it"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                user_id = %account.id,
+                origin = %favicon_origin,
+                timeout_seconds = 4,
+                "bookmark favicon fetch timed out; saving bookmark without it"
+            );
+            None
+        }
+    };
     let favicon_ref = favicon
         .as_ref()
         .map(|(content_type, data)| (content_type.as_str(), data.as_slice()));

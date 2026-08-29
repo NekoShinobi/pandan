@@ -5,6 +5,7 @@ use openidconnect::{
     core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
     reqwest,
 };
+use std::time::Instant;
 use thiserror::Error;
 
 const OIDC_CALLBACK_PATH: &str = "api/auth/oidc/callback";
@@ -77,13 +78,31 @@ impl OidcProvider {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| OidcError(format!("failed to build OIDC HTTP client: {error}")))?;
+        let issuer_origin = safe_issuer_origin(&issuer);
+        let discovery_started = Instant::now();
+        tracing::info!(
+            origin = %issuer_origin,
+            "OIDC provider discovery started"
+        );
         let provider_metadata = CoreProviderMetadata::discover_async(
             IssuerUrl::new(issuer.clone())
                 .map_err(|error| OidcError(format!("invalid OIDC issuer: {error}")))?,
             &http_client,
         )
         .await
-        .map_err(|error| OidcError(format!("OIDC discovery failed: {error}")))?;
+        .map_err(|error| {
+            tracing::warn!(
+                origin = %issuer_origin,
+                elapsed_ms = discovery_started.elapsed().as_millis(),
+                "OIDC provider discovery failed"
+            );
+            OidcError(format!("OIDC discovery failed: {error}"))
+        })?;
+        tracing::info!(
+            origin = %issuer_origin,
+            elapsed_ms = discovery_started.elapsed().as_millis(),
+            "OIDC provider discovery completed"
+        );
         let client = CoreClient::from_provider_metadata(
             provider_metadata,
             ClientId::new(client_id),
@@ -134,6 +153,8 @@ impl OidcProvider {
         pkce_verifier: String,
         nonce: String,
     ) -> Result<VerifiedIdentity, OidcError> {
+        let origin = safe_issuer_origin(&self.issuer);
+        let exchange_started = Instant::now();
         let token_response = self
             .client
             .exchange_code(AuthorizationCode::new(code))
@@ -141,7 +162,14 @@ impl OidcProvider {
             .set_pkce_verifier(PkceCodeVerifier::new(pkce_verifier))
             .request_async(&self.http_client)
             .await
-            .map_err(|error| OidcError(format!("OIDC code exchange failed: {error}")))?;
+            .map_err(|error| {
+                tracing::warn!(
+                    %origin,
+                    elapsed_ms = exchange_started.elapsed().as_millis(),
+                    "OIDC token exchange failed"
+                );
+                OidcError(format!("OIDC code exchange failed: {error}"))
+            })?;
         let id_token = token_response
             .id_token()
             .ok_or_else(|| OidcError("OIDC provider omitted the ID token".to_owned()))?;
@@ -193,6 +221,11 @@ impl OidcProvider {
             .map(|picture| picture.as_str().trim().to_owned())
             .filter(|picture| !picture.is_empty());
 
+        tracing::debug!(
+            %origin,
+            elapsed_ms = exchange_started.elapsed().as_millis(),
+            "OIDC token exchange and identity validation completed"
+        );
         Ok(VerifiedIdentity {
             issuer: self.issuer.clone(),
             subject: claims.subject().as_str().to_owned(),
@@ -201,6 +234,12 @@ impl OidcProvider {
             picture_url,
         })
     }
+}
+
+fn safe_issuer_origin(value: &str) -> String {
+    url::Url::parse(value)
+        .map(|url| url.origin().ascii_serialization())
+        .unwrap_or_else(|_| "invalid".to_owned())
 }
 
 fn optional_env(name: &str) -> Option<String> {

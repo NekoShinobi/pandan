@@ -5,10 +5,12 @@ mod jellyfin;
 mod kanban;
 mod podcasts;
 mod walls;
+mod youtube_downloads;
 pub use jellyfin::*;
 pub use kanban::*;
 pub use podcasts::*;
 pub use walls::*;
+pub use youtube_downloads::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
 pub struct AppMetadata {
@@ -166,6 +168,16 @@ pub struct AuthenticationSettings {
     pub updated_at: String,
 }
 
+#[derive(Clone, Debug, FromRow, Serialize)]
+pub struct LoggingSettings {
+    pub file_enabled: bool,
+    pub log_level: String,
+    pub retention_days: i64,
+    pub max_file_size_mb: i64,
+    pub max_files: i64,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
 pub struct LoginAppearance {
     pub background_blur: i64,
@@ -266,6 +278,14 @@ pub struct SessionAccount {
     pub settings_updated_at: String,
 }
 
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
+pub struct AccountSession {
+    pub id: String,
+    pub token: String,
+    pub user_agent: String,
+    pub ip_address: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
 pub struct EmbeddedPage {
     pub id: String,
@@ -275,6 +295,7 @@ pub struct EmbeddedPage {
     pub title: String,
     pub description: String,
     pub url: String,
+    pub icon_url: Option<String>,
     pub allow_scripts: bool,
     pub allow_same_origin: bool,
     pub iframe_height: i64,
@@ -654,6 +675,34 @@ pub struct Bookmark {
 
 #[derive(Debug, Clone, FromRow, PartialEq, Eq)]
 pub struct BookmarkFavicon {
+    pub content_type: String,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct BookmarkLibraryCategory {
+    pub id: String,
+    pub scope: String,
+    pub name: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct BookmarkLibraryItem {
+    pub id: String,
+    pub category_id: String,
+    pub title: String,
+    pub url: String,
+    pub icon_kind: String,
+    pub icon_value: Option<String>,
+    pub has_icon: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
+pub struct BookmarkLibraryIcon {
     pub content_type: String,
     pub data: Vec<u8>,
 }

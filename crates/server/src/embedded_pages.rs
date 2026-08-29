@@ -10,6 +10,7 @@ const MAX_EMBEDDED_PAGES_PER_SCOPE: i64 = 32;
 const MAX_TITLE_CHARACTERS: usize = 80;
 const MAX_DESCRIPTION_CHARACTERS: usize = 280;
 const MAX_URL_CHARACTERS: usize = 2_000;
+const MAX_ICON_URL_CHARACTERS: usize = 2_000;
 const DEFAULT_IFRAME_HEIGHT: i64 = 720;
 const MIN_IFRAME_HEIGHT: i64 = 320;
 const MAX_IFRAME_HEIGHT: i64 = 2_400;
@@ -30,6 +31,8 @@ struct EmbeddedPageInput {
     #[serde(default)]
     description: String,
     url: String,
+    #[serde(default)]
+    icon_url: Option<String>,
     #[serde(default)]
     allow_scripts: bool,
     #[serde(default)]
@@ -102,13 +105,14 @@ async fn create_personal_page(
 ) -> Result<(web::Json<EmbeddedPage>, StatusCode), ApiError> {
     let account = authenticated_account(&state, &request).await?;
     enforce_personal_page_limit(&state.pool, &account.id).await?;
-    let (title, description, url, iframe_height) = validate_input(&payload)?;
+    let (title, description, url, icon_url, iframe_height) = validate_input(&payload)?;
     let page = db::queries::create_personal_embedded_page(
         &state.pool,
         &account.id,
         &title,
         &description,
         &url,
+        icon_url.as_deref(),
         payload.allow_scripts,
         payload.allow_same_origin,
         iframe_height,
@@ -124,13 +128,14 @@ async fn create_global_page(
 ) -> Result<(web::Json<EmbeddedPage>, StatusCode), ApiError> {
     let administrator = authenticated_administrator(&state, &request).await?;
     enforce_global_page_limit(&state.pool).await?;
-    let (title, description, url, iframe_height) = validate_input(&payload)?;
+    let (title, description, url, icon_url, iframe_height) = validate_input(&payload)?;
     let page = db::queries::create_global_embedded_page(
         &state.pool,
         &administrator.id,
         &title,
         &description,
         &url,
+        icon_url.as_deref(),
         payload.allow_scripts,
         payload.allow_same_origin,
         iframe_height,
@@ -146,7 +151,7 @@ async fn update_personal_page(
     payload: web::Json<EmbeddedPageInput>,
 ) -> Result<web::Json<EmbeddedPage>, ApiError> {
     let account = authenticated_account(&state, &request).await?;
-    let (title, description, url, iframe_height) = validate_input(&payload)?;
+    let (title, description, url, icon_url, iframe_height) = validate_input(&payload)?;
     db::queries::update_personal_embedded_page(
         &state.pool,
         &account.id,
@@ -154,6 +159,7 @@ async fn update_personal_page(
         &title,
         &description,
         &url,
+        icon_url.as_deref(),
         payload.allow_scripts,
         payload.allow_same_origin,
         iframe_height,
@@ -170,13 +176,14 @@ async fn update_global_page(
     payload: web::Json<EmbeddedPageInput>,
 ) -> Result<web::Json<EmbeddedPage>, ApiError> {
     authenticated_administrator(&state, &request).await?;
-    let (title, description, url, iframe_height) = validate_input(&payload)?;
+    let (title, description, url, icon_url, iframe_height) = validate_input(&payload)?;
     db::queries::update_global_embedded_page(
         &state.pool,
         &page_id,
         &title,
         &description,
         &url,
+        icon_url.as_deref(),
         payload.allow_scripts,
         payload.allow_same_origin,
         iframe_height,
@@ -242,7 +249,9 @@ async fn reorder_global_pages(
         ))
 }
 
-fn validate_input(payload: &EmbeddedPageInput) -> Result<(String, String, String, i64), ApiError> {
+fn validate_input(
+    payload: &EmbeddedPageInput,
+) -> Result<(String, String, String, Option<String>, i64), ApiError> {
     let title = payload.title.trim();
     if title.is_empty() {
         return Err(ApiError::BadRequest("embedded page title is required"));
@@ -280,13 +289,38 @@ fn validate_input(payload: &EmbeddedPageInput) -> Result<(String, String, String
             "embedded page height must be between 320 and 2400 pixels",
         ));
     }
+    let icon_url = validate_icon_url(payload.icon_url.as_deref())?;
 
     Ok((
         title.to_owned(),
         description.to_owned(),
         parsed.to_string(),
+        icon_url,
         payload.iframe_height,
     ))
+}
+
+fn validate_icon_url(icon_url: Option<&str>) -> Result<Option<String>, ApiError> {
+    let Some(icon_url) = icon_url.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if icon_url.chars().count() > MAX_ICON_URL_CHARACTERS {
+        return Err(ApiError::BadRequest(
+            "embedded page icon URL must be 2000 characters or fewer",
+        ));
+    }
+    let parsed = Url::parse(icon_url)
+        .map_err(|_| ApiError::BadRequest("embedded page icon URL must be a valid HTTPS URL"))?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err(ApiError::BadRequest(
+            "embedded page icon URL must be credential-free HTTPS",
+        ));
+    }
+    Ok(Some(parsed.to_string()))
 }
 
 fn validate_order(page_ids: &[String]) -> Result<(), ApiError> {
@@ -337,6 +371,7 @@ mod tests {
             title: "Status".to_owned(),
             description: String::new(),
             url: "https://example.com/embed?view=compact".to_owned(),
+            icon_url: Some("https://cdn.example.com/status.svg".to_owned()),
             allow_scripts: true,
             allow_same_origin: true,
             iframe_height: DEFAULT_IFRAME_HEIGHT,
@@ -354,6 +389,7 @@ mod tests {
                 title: "Status".to_owned(),
                 description: String::new(),
                 url: url.to_owned(),
+                icon_url: None,
                 allow_scripts: false,
                 allow_same_origin: false,
                 iframe_height: DEFAULT_IFRAME_HEIGHT,
@@ -371,7 +407,38 @@ mod tests {
 
         assert!(!input.allow_scripts);
         assert!(!input.allow_same_origin);
+        assert_eq!(input.icon_url, None);
         assert_eq!(input.iframe_height, DEFAULT_IFRAME_HEIGHT);
+    }
+
+    #[test]
+    fn embedded_page_icon_urls_are_optional_https_and_credential_free() {
+        assert_eq!(
+            validate_icon_url(None).expect("missing icon is valid"),
+            None
+        );
+        assert_eq!(
+            validate_icon_url(Some("  ")).expect("blank icon is removed"),
+            None
+        );
+        assert_eq!(
+            validate_icon_url(Some("https://cdn.example.com/icon.svg"))
+                .expect("HTTPS icon is valid")
+                .as_deref(),
+            Some("https://cdn.example.com/icon.svg")
+        );
+
+        for icon_url in [
+            "http://cdn.example.com/icon.svg",
+            "data:image/svg+xml,hello",
+            "https://user:secret@cdn.example.com/icon.svg",
+            "not a url",
+        ] {
+            assert!(
+                validate_icon_url(Some(icon_url)).is_err(),
+                "{icon_url} is rejected"
+            );
+        }
     }
 
     #[test]
@@ -381,6 +448,7 @@ mod tests {
                 title: "Status".to_owned(),
                 description: String::new(),
                 url: "https://example.com/".to_owned(),
+                icon_url: None,
                 allow_scripts: false,
                 allow_same_origin: false,
                 iframe_height,

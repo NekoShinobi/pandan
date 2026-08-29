@@ -7,7 +7,11 @@ use reqwest::{
     },
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::sync::Semaphore;
 
 const MAX_JSON_BYTES: usize = 2 * 1024 * 1024;
@@ -482,12 +486,28 @@ impl JellyfinClient {
         metadata_timeout: bool,
     ) -> Result<Response, JellyfinClientError> {
         let initial_origin = origin(&url);
+        let initial_origin_label = url.origin().ascii_serialization();
+        let operation = url
+            .path_segments()
+            .and_then(|mut segments| segments.next())
+            .filter(|segment| !segment.is_empty())
+            .unwrap_or("root")
+            .to_owned();
+        let started = Instant::now();
         for redirect_count in 0..=MAX_REDIRECTS {
             let validated = self
                 .network_policy
                 .validate(url.as_str(), NetworkAccessScope::Jellyfin)
                 .await
-                .map_err(|_| {
+                .map_err(|error| {
+                    tracing::warn!(
+                        method = %method,
+                        %operation,
+                        origin = %initial_origin_label,
+                        redirect_count,
+                        %error,
+                        "Jellyfin request was blocked before transport"
+                    );
                     JellyfinClientError::Rejected(
                         "Jellyfin destination is blocked by the network policy",
                     )
@@ -498,9 +518,17 @@ impl JellyfinClient {
             if metadata_timeout {
                 builder = builder.timeout(Duration::from_secs(20));
             }
-            let client = validated
-                .build_client(builder)
-                .map_err(|_| JellyfinClientError::Unavailable("Jellyfin is unavailable"))?;
+            let client = validated.build_client(builder).map_err(|error| {
+                tracing::warn!(
+                    method = %method,
+                    %operation,
+                    origin = %initial_origin_label,
+                    redirect_count,
+                    %error,
+                    "Jellyfin HTTP client could not be built"
+                );
+                JellyfinClientError::Unavailable("Jellyfin is unavailable")
+            })?;
             let mut request = client
                 .request(method.clone(), validated.into_url())
                 .header(AUTHORIZATION, authorization_header(device_id, auth)?)
@@ -510,14 +538,53 @@ impl JellyfinClient {
                     .header(CONTENT_TYPE, "application/json")
                     .body(body.clone());
             }
-            let response = request
-                .send()
-                .await
-                .map_err(|_| JellyfinClientError::Unavailable("Jellyfin is unavailable"))?;
+            let response = request.send().await.map_err(|error| {
+                tracing::warn!(
+                    method = %method,
+                    %operation,
+                    origin = %initial_origin_label,
+                    redirect_count,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    timed_out = error.is_timeout(),
+                    connect_error = error.is_connect(),
+                    "Jellyfin transport failed"
+                );
+                JellyfinClientError::Unavailable("Jellyfin is unavailable")
+            })?;
             if !response.status().is_redirection() {
-                return accepted_response(response);
+                let status = response.status().as_u16();
+                let accepted = accepted_response(response);
+                if accepted.is_ok() {
+                    tracing::debug!(
+                        method = %method,
+                        %operation,
+                        origin = %initial_origin_label,
+                        status,
+                        redirect_count,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "Jellyfin request completed"
+                    );
+                } else {
+                    tracing::warn!(
+                        method = %method,
+                        %operation,
+                        origin = %initial_origin_label,
+                        status,
+                        redirect_count,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "Jellyfin request was rejected upstream"
+                    );
+                }
+                return accepted;
             }
             if redirect_count == MAX_REDIRECTS {
+                tracing::warn!(
+                    method = %method,
+                    %operation,
+                    origin = %initial_origin_label,
+                    redirect_count,
+                    "Jellyfin exceeded the redirect limit"
+                );
                 return Err(JellyfinClientError::Unavailable(
                     "Jellyfin redirected too many times",
                 ));
@@ -530,13 +597,34 @@ impl JellyfinClient {
                     "Jellyfin returned an invalid redirect",
                 ))?;
             let next = url.join(location).map_err(|_| {
+                tracing::warn!(
+                    method = %method,
+                    %operation,
+                    origin = %initial_origin_label,
+                    redirect_count,
+                    "Jellyfin returned an invalid redirect"
+                );
                 JellyfinClientError::Unavailable("Jellyfin returned an invalid redirect")
             })?;
             if origin(&next) != initial_origin {
+                tracing::warn!(
+                    method = %method,
+                    %operation,
+                    origin = %initial_origin_label,
+                    redirect_count,
+                    "Jellyfin redirect left the configured origin"
+                );
                 return Err(JellyfinClientError::Rejected(
                     "Jellyfin redirected outside its configured origin",
                 ));
             }
+            tracing::debug!(
+                method = %method,
+                %operation,
+                origin = %initial_origin_label,
+                redirect_count,
+                "following Jellyfin redirect"
+            );
             url = next;
         }
         Err(JellyfinClientError::Unavailable("Jellyfin is unavailable"))

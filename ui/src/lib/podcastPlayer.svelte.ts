@@ -6,9 +6,17 @@ import {
   startJellyfinPlayback,
   stopJellyfinPlayback,
   updateJellyfinPlayback,
+  youtubeDownloadPreviewUrl,
   type JellyfinMusicItem,
   type PodcastEpisode,
+  type YoutubeDownloadJob,
 } from "$lib/api";
+import {
+  isAudioVisualizationMode,
+  type AudioVisualizationMode,
+} from "$lib/audioVisualizationCatalog";
+
+export type { AudioVisualizationMode } from "$lib/audioVisualizationCatalog";
 
 /**
  * Playback state for the Podcasts page.
@@ -30,6 +38,16 @@ const COMPLETION_TAIL_SECONDS = 15;
 const RESTART_THRESHOLD_SECONDS = 5;
 /** Volume is a device preference rather than account state, so it lives in storage. */
 const VOLUME_STORAGE_KEY = "pandan:podcast-volume";
+/** The ambient visualizer is also a device preference and defaults to no motion. */
+const VISUALIZATION_STORAGE_KEY = "pandan:audio-visualization";
+const DEFAULT_VISUALIZATION_VISIBILITY = 0.34;
+const DEFAULT_VISUALIZATION_INTENSITY = 1;
+const DEFAULT_VISUALIZATION_BRIGHTNESS = 1;
+const DEFAULT_VISUALIZATION_CONTRAST = 1;
+const DEFAULT_VISUALIZATION_HUE = 145;
+const DEFAULT_VISUALIZATION_PALETTE = "mono";
+const DEFAULT_VISUALIZATION_RESPONSE = "balanced";
+const VISUALIZATION_FFT_SIZE = 512;
 /** Where the slider starts, leaving headroom above unity for a quiet recording. */
 const DEFAULT_VOLUME = 0.8;
 /** The ceiling, as a multiple of the source level. Above 1 the boost needs a gain node. */
@@ -42,10 +60,33 @@ export const SKIP_FORWARD_SECONDS = 30;
 
 /** The volume ceiling, exported so the slider cannot drift from what the player accepts. */
 export const MAX_PLAYBACK_VOLUME = MAX_VOLUME;
+export const MIN_VISUALIZATION_VISIBILITY = 0.1;
+export const MAX_VISUALIZATION_VISIBILITY = 0.9;
+export const MIN_VISUALIZATION_INTENSITY = 0.5;
+export const MAX_VISUALIZATION_INTENSITY = 2.5;
+export const MIN_VISUALIZATION_BRIGHTNESS = 0.5;
+export const MAX_VISUALIZATION_BRIGHTNESS = 2;
+export const MIN_VISUALIZATION_CONTRAST = 0.5;
+export const MAX_VISUALIZATION_CONTRAST = 2;
+
+export type AudioVisualizationPalette = "mono" | "pandan" | "signal" | "prism";
+export type AudioVisualizationResponse = "calm" | "balanced" | "reactive";
+
+type AudioVisualizationSettings = {
+  mode: AudioVisualizationMode;
+  visibility: number;
+  intensity: number;
+  brightness: number;
+  contrast: number;
+  hue: number;
+  palette: AudioVisualizationPalette;
+  response: AudioVisualizationResponse;
+};
 
 class PodcastPlayer {
   episode = $state<PodcastEpisode | null>(null);
   track = $state<JellyfinMusicItem | null>(null);
+  downloadedAudio = $state<YoutubeDownloadJob | null>(null);
   playing = $state(false);
   currentTime = $state(0);
   duration = $state(0);
@@ -54,6 +95,18 @@ class PodcastPlayer {
   muted = $state(false);
   buffering = $state(false);
   error = $state("");
+  visualizationMode = $state<AudioVisualizationMode>("off");
+  visualizationVisibility = $state(DEFAULT_VISUALIZATION_VISIBILITY);
+  visualizationIntensity = $state(DEFAULT_VISUALIZATION_INTENSITY);
+  visualizationBrightness = $state(DEFAULT_VISUALIZATION_BRIGHTNESS);
+  visualizationContrast = $state(DEFAULT_VISUALIZATION_CONTRAST);
+  visualizationHue = $state(DEFAULT_VISUALIZATION_HUE);
+  visualizationPalette = $state<AudioVisualizationPalette>(
+    DEFAULT_VISUALIZATION_PALETTE,
+  );
+  visualizationResponse = $state<AudioVisualizationResponse>(
+    DEFAULT_VISUALIZATION_RESPONSE,
+  );
   /** Episodes to advance through when the current one ends. */
   upNext = $state<PodcastEpisode[]>([]);
   /** Episodes already stepped past in this run, oldest first, so playback can go back. */
@@ -80,15 +133,21 @@ class PodcastPlayer {
    */
   #loadedEpisodeId = "";
   #loadedMusicKey = "";
+  #loadedDownloadId = "";
   #musicPlaySessionId = "";
   /**
-   * The boost graph, built only once a level above 100% is asked for.
+   * One shared Web Audio graph for amplification and the optional visualizer.
    *
-   * `HTMLMediaElement.volume` is capped at 1, so amplification has to run through Web
-   * Audio. The context is created from the slider interaction itself, which is a user
-   * gesture, so it starts running rather than suspended.
+   * A media element can only be wrapped in one `MediaElementAudioSourceNode`, so the
+   * analyser sits in the same graph as the existing 200% gain control. The context is
+   * still created only from a play, volume, or visualizer interaction — never at mount.
    */
   #audioContext: AudioContext | null = null;
+  #mediaSource: MediaElementAudioSourceNode | null = null;
+  #analyser: AnalyserNode | null = null;
+  #splitter: ChannelSplitterNode | null = null;
+  #leftAnalyser: AnalyserNode | null = null;
+  #rightAnalyser: AnalyserNode | null = null;
   #gain: GainNode | null = null;
 
   /** Binds the shell's audio element. Called once, when the shell mounts. */
@@ -96,6 +155,15 @@ class PodcastPlayer {
     this.#element = element;
     element.playbackRate = this.playbackRate;
     this.volume = readStoredVolume();
+    const visualization = readStoredVisualizationSettings();
+    this.visualizationMode = visualization.mode;
+    this.visualizationVisibility = visualization.visibility;
+    this.visualizationIntensity = visualization.intensity;
+    this.visualizationBrightness = visualization.brightness;
+    this.visualizationContrast = visualization.contrast;
+    this.visualizationHue = visualization.hue;
+    this.visualizationPalette = visualization.palette;
+    this.visualizationResponse = visualization.response;
     // Mount is not a user gesture. A stored boost waits for the first play rather than
     // opening an AudioContext here, which would start suspended and play silently.
     this.#applyVolume(false);
@@ -106,36 +174,57 @@ class PodcastPlayer {
   }
 
   get isReady(): boolean {
-    return this.track !== null || this.episode?.download_status === "ready";
+    return (
+      this.track !== null ||
+      this.downloadedAudio?.status === "complete" ||
+      this.episode?.download_status === "ready"
+    );
   }
 
   /** True when the element's source matches the current episode, so `toggle()` resumes it. */
   get isLoaded(): boolean {
     if (this.track) return this.#loadedMusicKey === musicKey(this.track);
+    if (this.downloadedAudio) {
+      return this.#loadedDownloadId === this.downloadedAudio.id;
+    }
     return this.episode !== null && this.#loadedEpisodeId === this.episode.id;
   }
 
   get hasNext(): boolean {
+    if (this.downloadedAudio) return false;
     return this.track ? this.musicUpNext.length > 0 : this.upNext.length > 0;
   }
 
   get hasPrevious(): boolean {
+    if (this.downloadedAudio) return false;
     return this.track ? this.musicPlayed.length > 0 : this.played.length > 0;
   }
 
-  get source(): "podcast" | "jellyfin" | null {
+  get source(): "podcast" | "jellyfin" | "download" | null {
     if (this.track) return "jellyfin";
+    if (this.downloadedAudio) return "download";
     if (this.episode) return "podcast";
     return null;
   }
 
   get title(): string {
-    return this.track?.name ?? this.episode?.title ?? "";
+    return (
+      this.track?.name ??
+      this.downloadedAudio?.title ??
+      this.episode?.title ??
+      ""
+    );
   }
 
   get subtitle(): string {
     if (this.track) {
       return [this.track.artist, this.track.album].filter(Boolean).join(" · ");
+    }
+    if (this.downloadedAudio) {
+      return [
+        this.downloadedAudio.channel_name || "YouTube",
+        this.downloadedAudio.output_format.toUpperCase(),
+      ].join(" · ");
     }
     return this.episode?.podcast_title ?? "";
   }
@@ -148,12 +237,185 @@ class PodcastPlayer {
         this.track.image_tag,
       );
     }
-    return this.episode ? `/api/podcasts/${this.episode.podcast_id}/artwork` : "";
+    return this.episode
+      ? `/api/podcasts/${this.episode.podcast_id}/artwork`
+      : "";
   }
 
   /** The level the listener actually hears, for the slider and the volume icon. */
   get effectiveVolume(): number {
     return this.muted ? 0 : this.volume;
+  }
+
+  /** The analyser's stable sample count, even before its graph is created. */
+  get visualizationBinCount(): number {
+    return VISUALIZATION_FFT_SIZE / 2;
+  }
+
+  get visualizationSampleRate(): number {
+    return this.#audioContext?.sampleRate ?? 48_000;
+  }
+
+  /**
+   * Selects the visual treatment and builds the graph from the user's control gesture.
+   * Returns false when the browser cannot expose Web Audio, leaving the visualizer off.
+   */
+  setVisualizationMode(mode: AudioVisualizationMode): boolean {
+    if (mode !== "off" && !this.#ensureAudioGraph()) {
+      this.visualizationMode = "off";
+      this.#storeVisualizationSettings();
+      return false;
+    }
+    this.visualizationMode = mode;
+    // Creating the shared analyser graph changes the element's audio route. Reapply the
+    // listener's level immediately so enabling it never leaves element and gain out of sync.
+    this.#applyVolume();
+    this.#storeVisualizationSettings();
+    if (mode !== "off") {
+      void this.#audioContext?.resume().catch(() => undefined);
+    }
+    return true;
+  }
+
+  setVisualizationVisibility(value: number) {
+    this.visualizationVisibility = clamp(
+      value,
+      MIN_VISUALIZATION_VISIBILITY,
+      MAX_VISUALIZATION_VISIBILITY,
+    );
+    this.#storeVisualizationSettings();
+  }
+
+  setVisualizationIntensity(value: number) {
+    this.visualizationIntensity = clamp(
+      value,
+      MIN_VISUALIZATION_INTENSITY,
+      MAX_VISUALIZATION_INTENSITY,
+    );
+    this.#storeVisualizationSettings();
+  }
+
+  setVisualizationBrightness(value: number) {
+    this.visualizationBrightness = clamp(
+      value,
+      MIN_VISUALIZATION_BRIGHTNESS,
+      MAX_VISUALIZATION_BRIGHTNESS,
+    );
+    this.#storeVisualizationSettings();
+  }
+
+  setVisualizationContrast(value: number) {
+    this.visualizationContrast = clamp(
+      value,
+      MIN_VISUALIZATION_CONTRAST,
+      MAX_VISUALIZATION_CONTRAST,
+    );
+    this.#storeVisualizationSettings();
+  }
+
+  setVisualizationHue(value: number) {
+    this.visualizationHue = clamp(value, 0, 360);
+    this.#storeVisualizationSettings();
+  }
+
+  setVisualizationPalette(palette: AudioVisualizationPalette) {
+    this.visualizationPalette = palette;
+    this.#storeVisualizationSettings();
+  }
+
+  setVisualizationResponse(response: AudioVisualizationResponse) {
+    this.visualizationResponse = response;
+    for (const analyser of [
+      this.#analyser,
+      this.#leftAnalyser,
+      this.#rightAnalyser,
+    ]) {
+      if (analyser) {
+        analyser.smoothingTimeConstant = visualizationSmoothing(response);
+      }
+    }
+    this.#storeVisualizationSettings();
+  }
+
+  resetVisualizationSettings() {
+    this.visualizationMode = "off";
+    this.visualizationVisibility = DEFAULT_VISUALIZATION_VISIBILITY;
+    this.visualizationIntensity = DEFAULT_VISUALIZATION_INTENSITY;
+    this.visualizationBrightness = DEFAULT_VISUALIZATION_BRIGHTNESS;
+    this.visualizationContrast = DEFAULT_VISUALIZATION_CONTRAST;
+    this.visualizationHue = DEFAULT_VISUALIZATION_HUE;
+    this.visualizationPalette = DEFAULT_VISUALIZATION_PALETTE;
+    this.visualizationResponse = DEFAULT_VISUALIZATION_RESPONSE;
+    for (const analyser of [
+      this.#analyser,
+      this.#leftAnalyser,
+      this.#rightAnalyser,
+    ]) {
+      if (analyser) {
+        analyser.smoothingTimeConstant = visualizationSmoothing(
+          DEFAULT_VISUALIZATION_RESPONSE,
+        );
+      }
+    }
+    this.#storeVisualizationSettings();
+  }
+
+  /** Copies the current frequency bins for the shell canvas without exposing the node. */
+  readVisualizationFrequency(target: Uint8Array<ArrayBuffer>): boolean {
+    const analyser = this.#analyser;
+    if (!analyser || target.length !== analyser.frequencyBinCount) return false;
+    analyser.getByteFrequencyData(target);
+    return true;
+  }
+
+  /** Copies the current waveform samples for the shell canvas. */
+  readVisualizationWaveform(target: Uint8Array<ArrayBuffer>): boolean {
+    const analyser = this.#analyser;
+    if (!analyser || target.length !== analyser.frequencyBinCount) return false;
+    analyser.getByteTimeDomainData(target);
+    return true;
+  }
+
+  readVisualizationStereoFrequency(
+    left: Uint8Array<ArrayBuffer>,
+    right: Uint8Array<ArrayBuffer>,
+  ): boolean {
+    if (!this.#ensureStereoAnalysers()) return false;
+    const leftAnalyser = this.#leftAnalyser;
+    const rightAnalyser = this.#rightAnalyser;
+    if (
+      !leftAnalyser ||
+      !rightAnalyser ||
+      left.length !== leftAnalyser.frequencyBinCount ||
+      right.length !== rightAnalyser.frequencyBinCount
+    ) {
+      return false;
+    }
+    leftAnalyser.getByteFrequencyData(left);
+    rightAnalyser.getByteFrequencyData(right);
+    if (!hasAnalyserSignal(right)) right.set(left);
+    return true;
+  }
+
+  readVisualizationStereoWaveform(
+    left: Uint8Array<ArrayBuffer>,
+    right: Uint8Array<ArrayBuffer>,
+  ): boolean {
+    if (!this.#ensureStereoAnalysers()) return false;
+    const leftAnalyser = this.#leftAnalyser;
+    const rightAnalyser = this.#rightAnalyser;
+    if (
+      !leftAnalyser ||
+      !rightAnalyser ||
+      left.length !== leftAnalyser.frequencyBinCount ||
+      right.length !== rightAnalyser.frequencyBinCount
+    ) {
+      return false;
+    }
+    leftAnalyser.getByteTimeDomainData(left);
+    rightAnalyser.getByteTimeDomainData(right);
+    if (!hasWaveformSignal(right)) right.set(left);
+    return true;
   }
 
   /**
@@ -173,7 +435,10 @@ class PodcastPlayer {
     this.upNext = upNext.filter((item) => item.id !== episode.id);
     this.played = played.filter((item) => item.id !== episode.id);
 
-    const switching = this.episode?.id !== episode.id || this.track !== null;
+    const switching =
+      this.episode?.id !== episode.id ||
+      this.track !== null ||
+      this.downloadedAudio !== null;
     if (switching) {
       await this.#flush(true);
       await this.#stopMusic();
@@ -184,9 +449,11 @@ class PodcastPlayer {
     // copy captured before the transfer does not.
     this.episode = episode;
     this.track = null;
+    this.downloadedAudio = null;
     this.musicUpNext = [];
     this.musicPlayed = [];
     this.#loadedMusicKey = "";
+    this.#loadedDownloadId = "";
 
     if (switching || this.#loadedEpisodeId !== episode.id) {
       // Reloading the episode already on screen keeps whatever is known live. An error
@@ -233,7 +500,10 @@ class PodcastPlayer {
     const element = this.#element;
     if (!element) return;
     const key = musicKey(track);
-    const switching = this.#loadedMusicKey !== key || this.episode !== null;
+    const switching =
+      this.#loadedMusicKey !== key ||
+      this.episode !== null ||
+      this.downloadedAudio !== null;
     this.error = "";
     this.musicUpNext = upNext.filter((item) => musicKey(item) !== key);
     this.musicPlayed = played.filter((item) => musicKey(item) !== key);
@@ -245,6 +515,7 @@ class PodcastPlayer {
 
     this.track = track;
     this.episode = null;
+    this.downloadedAudio = null;
     this.upNext = [];
     this.played = [];
     this.playbackRate = 1;
@@ -257,6 +528,7 @@ class PodcastPlayer {
       this.#resumeTo = 0;
       this.#restoring = false;
       this.#loadedEpisodeId = "";
+      this.#loadedDownloadId = "";
       this.#loadedMusicKey = key;
       this.#musicPlaySessionId = "";
       element.src = jellyfinMusicAudioUrl(track.id, track.library_id);
@@ -271,6 +543,62 @@ class PodcastPlayer {
       if (!this.#musicPlaySessionId) void this.#startMusicReport(track, key);
     } catch {
       this.error = "This track could not be played.";
+      this.playing = false;
+    } finally {
+      this.buffering = false;
+    }
+  }
+
+  /** Plays a completed audio file from the private Downloads library. */
+  async playDownload(job: YoutubeDownloadJob) {
+    const element = this.#element;
+    if (!element) return;
+    if (job.status !== "complete" || job.media_kind !== "audio") {
+      this.error = "Only completed audio downloads can be played.";
+      return;
+    }
+
+    const switching =
+      this.#loadedDownloadId !== job.id ||
+      this.episode !== null ||
+      this.track !== null;
+    this.error = "";
+    if (switching) {
+      await this.#flush(true);
+      await this.#stopMusic();
+    }
+
+    this.downloadedAudio = job;
+    this.episode = null;
+    this.track = null;
+    this.upNext = [];
+    this.played = [];
+    this.musicUpNext = [];
+    this.musicPlayed = [];
+    this.playbackRate = 1;
+    element.playbackRate = 1;
+
+    if (switching) {
+      this.currentTime = 0;
+      this.duration = job.duration_seconds ?? 0;
+      this.#lastWrittenPosition = -1;
+      this.#resumeTo = 0;
+      this.#restoring = false;
+      this.#loadedEpisodeId = "";
+      this.#loadedMusicKey = "";
+      this.#loadedDownloadId = job.id;
+      this.#musicPlaySessionId = "";
+      element.src = youtubeDownloadPreviewUrl(job.id);
+      element.load();
+    }
+
+    try {
+      this.buffering = true;
+      this.#applyVolume();
+      await element.play();
+      this.#setMediaSession();
+    } catch {
+      this.error = "This downloaded audio could not be played.";
       this.playing = false;
     } finally {
       this.buffering = false;
@@ -334,7 +662,9 @@ class PodcastPlayer {
 
   async toggle() {
     const element = this.#element;
-    if (!element || (!this.episode && !this.track)) return;
+    if (!element || (!this.episode && !this.track && !this.downloadedAudio)) {
+      return;
+    }
     if (element.paused) {
       try {
         await element.play();
@@ -342,7 +672,9 @@ class PodcastPlayer {
       } catch {
         this.error = this.track
           ? "This track could not be played."
-          : "This episode could not be played.";
+          : this.downloadedAudio
+            ? "This downloaded audio could not be played."
+            : "This episode could not be played.";
       }
     } else {
       element.pause();
@@ -352,6 +684,7 @@ class PodcastPlayer {
 
   /** Advances to the next queued episode, keeping the current one reachable by going back. */
   async playNext() {
+    if (this.downloadedAudio) return;
     if (this.track) {
       const [next, ...rest] = this.musicUpNext;
       if (!next) return;
@@ -376,6 +709,10 @@ class PodcastPlayer {
    * and it keeps a mis-tapped control from losing the listener's place.
    */
   async playPrevious() {
+    if (this.downloadedAudio) {
+      this.seek(0);
+      return;
+    }
     if (this.currentTime > RESTART_THRESHOLD_SECONDS) {
       this.seek(0);
       return;
@@ -407,7 +744,9 @@ class PodcastPlayer {
 
   seek(seconds: number) {
     const element = this.#element;
-    if (!element || (!this.episode && !this.track)) return;
+    if (!element || (!this.episode && !this.track && !this.downloadedAudio)) {
+      return;
+    }
     const bounded = Math.min(Math.max(seconds, 0), this.duration || seconds);
     element.currentTime = bounded;
     this.currentTime = bounded;
@@ -451,6 +790,7 @@ class PodcastPlayer {
     }
     this.episode = null;
     this.track = null;
+    this.downloadedAudio = null;
     this.playing = false;
     this.currentTime = 0;
     this.duration = 0;
@@ -460,6 +800,7 @@ class PodcastPlayer {
     this.musicPlayed = [];
     this.#loadedEpisodeId = "";
     this.#loadedMusicKey = "";
+    this.#loadedDownloadId = "";
     if ("mediaSession" in navigator) navigator.mediaSession.metadata = null;
   }
 
@@ -481,6 +822,9 @@ class PodcastPlayer {
     if (!element) return;
     this.handleDurationChange();
     element.playbackRate = this.playbackRate;
+    // A live streamed source can publish fresh media state after `load()`. Keep the
+    // element/gain pair aligned for Jellyfin as soon as its metadata becomes available.
+    this.#applyVolume(false);
     // Restore the resume point only once metadata is known, or the seek is ignored.
     if (this.#restoring) {
       element.currentTime = Math.min(
@@ -530,6 +874,9 @@ class PodcastPlayer {
     if (this.track) {
       this.#loadedMusicKey = "";
       this.error = "This track could not be streamed from Jellyfin.";
+    } else if (this.downloadedAudio) {
+      this.#loadedDownloadId = "";
+      this.error = "This downloaded audio is no longer available.";
     } else {
       this.#loadedEpisodeId = "";
       this.error =
@@ -539,6 +886,10 @@ class PodcastPlayer {
 
   /** Marks the episode finished and advances to whatever is queued behind it. */
   async handleEnded() {
+    if (this.downloadedAudio) {
+      this.playing = false;
+      return;
+    }
     if (this.track) {
       this.playing = false;
       await this.#stopMusic();
@@ -571,10 +922,15 @@ class PodcastPlayer {
     const element = this.#element;
     if (!element) return;
     const level = this.muted ? 0 : this.volume;
-    // Build the graph the first time the level goes past unity, then keep using it: the
-    // element sits at 1 and the gain node carries the whole level, so the two never
-    // multiply together.
-    const gain = level > 1 && allowGraph ? this.#ensureGain() : this.#gain;
+    // Build the graph for amplification or visualization, then keep using it: the element
+    // sits at 1 and the gain node carries the whole level, so the two never multiply.
+    const needsGraph = level > 1 || this.visualizationMode !== "off";
+    const gain =
+      needsGraph && allowGraph
+        ? this.#ensureAudioGraph()
+          ? this.#gain
+          : null
+        : this.#gain;
     element.muted = this.muted;
     if (gain) {
       element.volume = 1;
@@ -585,26 +941,90 @@ class PodcastPlayer {
     element.volume = Math.min(level, 1);
   }
 
-  /** Routes the element through a gain node, or returns null where Web Audio is absent. */
-  #ensureGain(): GainNode | null {
-    if (this.#gain) return this.#gain;
+  /** Routes the element through analyser and gain nodes exactly once. */
+  #ensureAudioGraph(): boolean {
+    if (this.#gain && this.#analyser && this.#mediaSource) return true;
     const element = this.#element;
-    if (!element || typeof AudioContext !== "function") return null;
+    if (!element || typeof AudioContext !== "function") return false;
+    let context: AudioContext | null = null;
     try {
-      const context = new AudioContext();
+      context = new AudioContext();
+      const source = context.createMediaElementSource(element);
+      const analyser = context.createAnalyser();
       const gain = context.createGain();
-      context.createMediaElementSource(element).connect(gain);
+      analyser.fftSize = VISUALIZATION_FFT_SIZE;
+      analyser.minDecibels = -90;
+      analyser.maxDecibels = -18;
+      analyser.smoothingTimeConstant = visualizationSmoothing(
+        this.visualizationResponse,
+      );
+      source.connect(analyser);
+      analyser.connect(gain);
       gain.connect(context.destination);
+      // Once a MediaElementSource exists the graph owns the complete level. Initialize
+      // both sides together so the previous element volume cannot attenuate it twice.
+      element.volume = 1;
+      element.muted = this.muted;
+      gain.gain.value = this.muted ? 0 : this.volume;
       this.#audioContext = context;
+      this.#mediaSource = source;
+      this.#analyser = analyser;
       this.#gain = gain;
-      return gain;
+      return true;
     } catch {
-      // Without the graph the element still plays; it just cannot go above 100%.
-      return null;
+      void context?.close().catch(() => undefined);
+      // Without the graph the element still plays; it just cannot boost or visualize.
+      return false;
     }
   }
 
+  /** Adds analysis-only stereo branches to the existing media source. */
+  #ensureStereoAnalysers(): boolean {
+    if (this.#splitter && this.#leftAnalyser && this.#rightAnalyser)
+      return true;
+    if (!this.#ensureAudioGraph()) return false;
+    const context = this.#audioContext;
+    const source = this.#mediaSource;
+    if (!context || !source) return false;
+    try {
+      const splitter = context.createChannelSplitter(2);
+      const leftAnalyser = context.createAnalyser();
+      const rightAnalyser = context.createAnalyser();
+      for (const analyser of [leftAnalyser, rightAnalyser]) {
+        analyser.fftSize = VISUALIZATION_FFT_SIZE;
+        analyser.minDecibels = -90;
+        analyser.maxDecibels = -18;
+        analyser.smoothingTimeConstant = visualizationSmoothing(
+          this.visualizationResponse,
+        );
+      }
+      source.connect(splitter);
+      splitter.connect(leftAnalyser, 0);
+      splitter.connect(rightAnalyser, 1);
+      this.#splitter = splitter;
+      this.#leftAnalyser = leftAnalyser;
+      this.#rightAnalyser = rightAnalyser;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  #storeVisualizationSettings() {
+    storeVisualizationSettings({
+      mode: this.visualizationMode,
+      visibility: this.visualizationVisibility,
+      intensity: this.visualizationIntensity,
+      brightness: this.visualizationBrightness,
+      contrast: this.visualizationContrast,
+      hue: this.visualizationHue,
+      palette: this.visualizationPalette,
+      response: this.visualizationResponse,
+    });
+  }
+
   async #flush(force = false) {
+    if (this.downloadedAudio) return;
     if (this.track) {
       await this.#writeMusic("progress", force);
       return;
@@ -684,7 +1104,11 @@ class PodcastPlayer {
     navigator.mediaSession.metadata = new MediaMetadata({
       title: this.title,
       artist: this.subtitle,
-      album: this.track?.album ?? this.episode?.podcast_title ?? "",
+      album:
+        this.track?.album ??
+        this.episode?.podcast_title ??
+        this.downloadedAudio?.channel_name ??
+        "",
       artwork: artwork ? [{ src: artwork }] : [],
     });
     const handlers: Array<[MediaSessionAction, MediaSessionActionHandler]> = [
@@ -740,6 +1164,159 @@ function storeVolume(value: number) {
   } catch {
     // Blocked storage is not worth interrupting playback for; the level still applies.
   }
+}
+
+function readStoredVisualizationSettings(): AudioVisualizationSettings {
+  const defaults: AudioVisualizationSettings = {
+    mode: "off",
+    visibility: DEFAULT_VISUALIZATION_VISIBILITY,
+    intensity: DEFAULT_VISUALIZATION_INTENSITY,
+    brightness: DEFAULT_VISUALIZATION_BRIGHTNESS,
+    contrast: DEFAULT_VISUALIZATION_CONTRAST,
+    hue: DEFAULT_VISUALIZATION_HUE,
+    palette: DEFAULT_VISUALIZATION_PALETTE,
+    response: DEFAULT_VISUALIZATION_RESPONSE,
+  };
+  try {
+    const stored = localStorage.getItem(VISUALIZATION_STORAGE_KEY);
+    if (isAudioVisualizationMode(stored)) return { ...defaults, mode: stored };
+    if (!stored) return defaults;
+    const parsed: unknown = JSON.parse(stored);
+    if (!isRecord(parsed)) return defaults;
+    return {
+      mode: isAudioVisualizationMode(parsed.mode) ? parsed.mode : defaults.mode,
+      visibility: storedNumber(
+        parsed.visibility,
+        MIN_VISUALIZATION_VISIBILITY,
+        MAX_VISUALIZATION_VISIBILITY,
+        defaults.visibility,
+      ),
+      intensity: storedNumber(
+        parsed.intensity,
+        MIN_VISUALIZATION_INTENSITY,
+        MAX_VISUALIZATION_INTENSITY,
+        defaults.intensity,
+      ),
+      brightness: storedNumber(
+        parsed.brightness,
+        MIN_VISUALIZATION_BRIGHTNESS,
+        MAX_VISUALIZATION_BRIGHTNESS,
+        defaults.brightness,
+      ),
+      contrast: storedNumber(
+        parsed.contrast,
+        MIN_VISUALIZATION_CONTRAST,
+        MAX_VISUALIZATION_CONTRAST,
+        defaults.contrast,
+      ),
+      hue: storedNumber(parsed.hue, 0, 360, defaults.hue),
+      palette: isVisualizationPalette(parsed.palette)
+        ? parsed.palette
+        : defaults.palette,
+      response: isVisualizationResponse(parsed.response)
+        ? parsed.response
+        : defaults.response,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+function storeVisualizationSettings(settings: AudioVisualizationSettings) {
+  try {
+    localStorage.setItem(VISUALIZATION_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // The selected settings still apply for this session when storage is blocked.
+  }
+}
+
+function isVisualizationPalette(
+  value: unknown,
+): value is AudioVisualizationPalette {
+  return (
+    value === "mono" ||
+    value === "pandan" ||
+    value === "signal" ||
+    value === "prism"
+  );
+}
+
+function isVisualizationResponse(
+  value: unknown,
+): value is AudioVisualizationResponse {
+  return value === "calm" || value === "balanced" || value === "reactive";
+}
+
+function visualizationSmoothing(response: AudioVisualizationResponse): number {
+  if (response === "calm") return 0.9;
+  if (response === "reactive") return 0.56;
+  return 0.78;
+}
+
+function hasAnalyserSignal(values: Uint8Array<ArrayBuffer>): boolean {
+  for (let index = 0; index < values.length; index += 8) {
+    if ((values[index] ?? 0) > 0) return true;
+  }
+  return false;
+}
+
+function hasWaveformSignal(values: Uint8Array<ArrayBuffer>): boolean {
+  for (let index = 0; index < values.length; index += 8) {
+    if (Math.abs((values[index] ?? 128) - 128) > 1) return true;
+  }
+  return false;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function storedNumber(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+  fallback: number,
+): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? clamp(value, minimum, maximum)
+    : fallback;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  if (!Number.isFinite(value)) return minimum;
+  return Math.min(Math.max(value, minimum), maximum);
+}
+
+function rotatedHue(hue: number, offset: number): number {
+  return (Math.round(hue) + offset + 360) % 360;
+}
+
+/** Produces canvas-ready OKLch colors from the listener's base hue. */
+export function audioVisualizationPaletteColors(
+  palette: AudioVisualizationPalette,
+  hue: number,
+): string[] {
+  const base = clamp(hue, 0, 360);
+  if (palette === "mono") {
+    return [`oklch(79% 0.16 ${rotatedHue(base, 0)})`];
+  }
+  if (palette === "pandan") {
+    return [
+      `oklch(66% 0.12 ${rotatedHue(base, 0)})`,
+      `oklch(79% 0.16 ${rotatedHue(base, 0)})`,
+      `oklch(88% 0.1 ${rotatedHue(base, 0)})`,
+    ];
+  }
+  if (palette === "signal") {
+    return [
+      `oklch(79% 0.16 ${rotatedHue(base, 0)})`,
+      `oklch(82% 0.15 ${rotatedHue(base, 72)})`,
+      `oklch(72% 0.18 ${rotatedHue(base, 232)})`,
+    ];
+  }
+  return [0, 60, 120, 180, 240, 300].map(
+    (offset) => `oklch(78% 0.17 ${rotatedHue(base, offset)})`,
+  );
 }
 
 export const podcastPlayer = new PodcastPlayer();

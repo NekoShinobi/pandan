@@ -15,6 +15,7 @@ services:
       DATABASE_URL: sqlite:///app/data/pandan.db
       PORT: 9651
       RUST_LOG: ${RUST_LOG:-info}
+      PANDAN_LOG_DIR: /app/data/logs
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       PANDAN_BASE_URL: ${PANDAN_BASE_URL:-}
       OIDC_ISSUER: ${OIDC_ISSUER:-}
@@ -26,6 +27,12 @@ services:
       INVIDIOUS_ALLOW_PRIVATE_NETWORK: ${INVIDIOUS_ALLOW_PRIVATE_NETWORK:-}
       # Podcast audio lives beside the database, inside the writable data volume.
       PANDAN_MEDIA_DIR: /app/data/podcasts
+      # Account-private YouTube outputs share the data volume but are never mounted as static files.
+      PANDAN_DOWNLOAD_DIR: /app/data/downloads
+      PANDAN_DOWNLOADS_ENABLED: ${PANDAN_DOWNLOADS_ENABLED:-true}
+      PANDAN_YTDLP_BIN: /usr/local/bin/yt-dlp
+      PANDAN_FFMPEG_BIN: /usr/bin/ffmpeg
+      PANDAN_DENO_BIN: /usr/local/bin/deno
     restart: unless-stopped
     init: true
     read_only: true

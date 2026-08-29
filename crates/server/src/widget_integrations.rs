@@ -34,6 +34,8 @@ use crate::network_policy::{NetworkAccessScope, NetworkPolicy};
 const CACHE_DURATION: Duration = Duration::from_secs(15 * 60);
 const CODING_CACHE_DURATION: Duration = Duration::from_secs(60 * 60);
 const MAX_RESPONSE_BYTES: usize = 2_000_000;
+const MAX_FAVICON_DOCUMENT_BYTES: usize = 256 * 1024;
+const MAX_FAVICON_CANDIDATES: usize = 8;
 const MAX_YOUTUBE_CHANNEL_METADATA_BYTES: usize = 1_000_000;
 const MAX_OWNED_REPOSITORIES: usize = 500;
 const MAX_PROVIDER_PAGES: usize = 100;
@@ -282,6 +284,12 @@ impl WidgetIntegrationService {
         scope: NetworkAccessScope,
     ) -> Result<(Client, Url), String> {
         let target = self.network_policy.validate(source, scope).await?;
+        tracing::debug!(
+            integration = scope.as_str(),
+            origin = %target.url().origin().ascii_serialization(),
+            resolved_addresses = target.addresses().len(),
+            "outbound destination validated"
+        );
         let client = target.build_client(widget_client_builder())?;
         Ok((client, target.into_url()))
     }
@@ -537,8 +545,8 @@ impl WidgetIntegrationService {
 
     /// Fetches a small favicon while revalidating every redirect through the image policy.
     ///
-    /// Icon formats are intentionally narrower than arbitrary browser-supported images. In
-    /// particular, SVG is not cached because the bytes are served from Pandan's own origin.
+    /// SVG sources are rendered into a bounded PNG before storage so untrusted active image
+    /// content is never served from Pandan's own origin.
     ///
     /// # Errors
     ///
@@ -590,9 +598,111 @@ impl WidgetIntegrationService {
             if bytes.is_empty() {
                 return Err("provider favicon was empty".to_owned());
             }
+            if content_type == "image/svg+xml" {
+                let png = tokio::task::spawn_blocking(move || {
+                    rasterize_svg_icon(bytes.as_slice(), max_bytes)
+                })
+                .await
+                .map_err(|_| "provider SVG rendering failed".to_owned())??;
+                return Ok(("image/png".to_owned(), png));
+            }
             return Ok((content_type, bytes));
         }
         Err("favicon request failed".to_owned())
+    }
+
+    /// Discovers a site's favicon without trusting the browser to fetch remote bytes directly.
+    ///
+    /// The conventional origin favicon is tried first. When it is absent, the destination page
+    /// is fetched through the image network policy and its declared icon links are tried in order.
+    /// Every redirect and icon candidate is independently revalidated by the same policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe provider error when no supported, policy-approved favicon can be fetched.
+    pub async fn fetch_site_favicon(
+        &self,
+        destination: &str,
+        max_bytes: usize,
+    ) -> Result<(String, Vec<u8>), String> {
+        let destination_url =
+            Url::parse(destination).map_err(|_| "favicon destination was invalid".to_owned())?;
+        let mut origin_favicon = destination_url.clone();
+        origin_favicon.set_path("/favicon.ico");
+        origin_favicon.set_query(None);
+        origin_favicon.set_fragment(None);
+        if let Ok(icon) = self.fetch_favicon(origin_favicon.as_str(), max_bytes).await {
+            return Ok(icon);
+        }
+
+        let (document_url, document) = self.fetch_favicon_document(destination).await?;
+        let mut candidates = parse_declared_favicon_urls(&document_url, &document);
+        for path in ["/apple-touch-icon.png", "/favicon.png"] {
+            let mut candidate = document_url.clone();
+            candidate.set_path(path);
+            candidate.set_query(None);
+            candidate.set_fragment(None);
+            let candidate = candidate.to_string();
+            if !candidates.contains(&candidate) {
+                candidates.push(candidate);
+            }
+        }
+
+        for candidate in candidates.into_iter().take(MAX_FAVICON_CANDIDATES) {
+            if let Ok(icon) = self.fetch_favicon(&candidate, max_bytes).await {
+                return Ok(icon);
+            }
+        }
+        Err("site did not expose a supported favicon".to_owned())
+    }
+
+    async fn fetch_favicon_document(&self, source: &str) -> Result<(Url, String), String> {
+        const MAX_FAVICON_REDIRECTS: usize = 3;
+        let mut current = source.to_owned();
+        for redirect_count in 0..=MAX_FAVICON_REDIRECTS {
+            let (client, url) = self
+                .client_for(&current, NetworkAccessScope::Images)
+                .await?;
+            let response = client
+                .get(url.clone())
+                .header(
+                    header::ACCEPT,
+                    "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
+                )
+                .send()
+                .await
+                .map_err(request_error)?;
+            if response.status().is_redirection() {
+                if redirect_count == MAX_FAVICON_REDIRECTS {
+                    return Err("favicon page redirected too many times".to_owned());
+                }
+                let location = response
+                    .headers()
+                    .get(header::LOCATION)
+                    .and_then(|value| value.to_str().ok())
+                    .ok_or_else(|| "favicon page redirect was missing a destination".to_owned())?;
+                current = url
+                    .join(location)
+                    .map_err(|_| "favicon page redirect destination was invalid".to_owned())?
+                    .to_string();
+                continue;
+            }
+            let supported_document = response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(';').next())
+                .map(|value| value.trim().to_ascii_lowercase())
+                .is_some_and(|value| {
+                    matches!(value.as_str(), "text/html" | "application/xhtml+xml")
+                });
+            if !supported_document {
+                return Err("favicon page type was unsupported".to_owned());
+            }
+            let document = response_prefix_text(response, MAX_FAVICON_DOCUMENT_BYTES).await?;
+            return Ok((url, document));
+        }
+        Err("favicon page request failed".to_owned())
     }
 
     async fn fetch_validated_image(
@@ -1492,7 +1602,125 @@ fn supported_favicon_content_type(value: &str) -> bool {
             | "image/webp"
             | "image/x-icon"
             | "image/vnd.microsoft.icon"
+            | "image/svg+xml"
     )
+}
+
+fn rasterize_svg_icon(bytes: &[u8], max_bytes: usize) -> Result<Vec<u8>, String> {
+    const ICON_SIZE: u32 = 128;
+    let mut options = resvg::usvg::Options::default();
+    options.resources_dir = None;
+    options.image_href_resolver = resvg::usvg::ImageHrefResolver {
+        resolve_data: Box::new(|_, _, _| None),
+        resolve_string: Box::new(|_, _| None),
+    };
+    let tree = resvg::usvg::Tree::from_data(bytes, &options)
+        .map_err(|_| "provider SVG icon was invalid".to_owned())?;
+    let size = tree.size();
+    let canvas = ICON_SIZE as f32;
+    let scale = (canvas / size.width()).min(canvas / size.height());
+    let translate_x = (canvas - size.width() * scale) / 2.0;
+    let translate_y = (canvas - size.height() * scale) / 2.0;
+    let transform =
+        resvg::tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, translate_x, translate_y);
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(ICON_SIZE, ICON_SIZE)
+        .ok_or_else(|| "provider SVG icon canvas was invalid".to_owned())?;
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    let png = pixmap
+        .encode_png()
+        .map_err(|_| "provider SVG icon could not be encoded".to_owned())?;
+    if png.len() > max_bytes {
+        return Err("provider SVG icon was too large after rendering".to_owned());
+    }
+    Ok(png)
+}
+
+fn parse_declared_favicon_urls(document_url: &Url, document: &str) -> Vec<String> {
+    let lowercase = document.to_ascii_lowercase();
+    let mut urls = Vec::new();
+    let mut offset = 0;
+    while urls.len() < MAX_FAVICON_CANDIDATES {
+        let Some(relative_start) = lowercase[offset..].find("<link") else {
+            break;
+        };
+        let start = offset + relative_start;
+        let Some(relative_end) = lowercase[start..].find('>') else {
+            break;
+        };
+        let end = start + relative_end;
+        let tag = &document[start..=end];
+        let is_icon = html_attribute_case_insensitive(tag, "rel").is_some_and(|rel| {
+            rel.split_ascii_whitespace().any(|value| {
+                value.eq_ignore_ascii_case("icon") || value.to_ascii_lowercase().ends_with("-icon")
+            })
+        });
+        if is_icon && let Some(href) = html_attribute_case_insensitive(tag, "href") {
+            let href = href.replace("&amp;", "&");
+            if let Ok(url) = document_url.join(&href)
+                && matches!(url.scheme(), "http" | "https")
+                && url.username().is_empty()
+                && url.password().is_none()
+            {
+                let url = url.to_string();
+                if !urls.contains(&url) {
+                    urls.push(url);
+                }
+            }
+        }
+        offset = end + 1;
+    }
+    urls
+}
+
+fn html_attribute_case_insensitive<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let lowercase = tag.to_ascii_lowercase();
+    let mut offset = 0;
+    while let Some(relative_start) = lowercase[offset..].find(name) {
+        let start = offset + relative_start;
+        let before_is_boundary = start == 0
+            || lowercase.as_bytes()[start - 1].is_ascii_whitespace()
+            || lowercase.as_bytes()[start - 1] == b'<';
+        let mut cursor = start + name.len();
+        let after_is_boundary = lowercase
+            .as_bytes()
+            .get(cursor)
+            .is_some_and(|value| value.is_ascii_whitespace() || *value == b'=');
+        if !before_is_boundary || !after_is_boundary {
+            offset = cursor;
+            continue;
+        }
+        while lowercase
+            .as_bytes()
+            .get(cursor)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            cursor += 1;
+        }
+        if lowercase.as_bytes().get(cursor) != Some(&b'=') {
+            offset = cursor;
+            continue;
+        }
+        cursor += 1;
+        while lowercase
+            .as_bytes()
+            .get(cursor)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            cursor += 1;
+        }
+        let quote = *lowercase.as_bytes().get(cursor)?;
+        if !matches!(quote, b'\'' | b'"') {
+            offset = cursor;
+            continue;
+        }
+        cursor += 1;
+        let end = lowercase.as_bytes()[cursor..]
+            .iter()
+            .position(|value| *value == quote)?
+            + cursor;
+        return Some(&tag[cursor..end]);
+    }
+    None
 }
 
 fn parse_rss_feed_snapshot(bytes: &[u8]) -> Result<RssFeedSnapshot, String> {
@@ -2832,7 +3060,27 @@ async fn response_bytes_with_limit(
 
 fn request_error(error: reqwest::Error) -> String {
     let timed_out = error.is_timeout();
-    drop(error);
+    let connect = error.is_connect();
+    let status = error.status().map(|status| status.as_u16());
+    let origin = error
+        .url()
+        .map(|url| url.origin().ascii_serialization())
+        .unwrap_or_else(|| "unknown".to_owned());
+    let error_kind = if timed_out {
+        "timeout"
+    } else if connect {
+        "connect"
+    } else if status.is_some() {
+        "http_status"
+    } else {
+        "transport"
+    };
+    tracing::warn!(
+        %origin,
+        ?status,
+        error_kind,
+        "outbound provider request failed"
+    );
     if timed_out {
         "provider request timed out".to_owned()
     } else {
@@ -3119,6 +3367,37 @@ mod tests {
             secret_storage_enabled: false,
             provider_errors: Vec::new(),
         }
+    }
+
+    #[test]
+    fn declared_favicons_resolve_relative_urls_and_ignore_unsafe_sources() {
+        let document_url = Url::parse("https://example.com/app/").expect("URL parses");
+        let document = r#"
+            <LINK REL="apple-touch-icon" HREF="icons/touch.png">
+            <link rel='shortcut icon' href='/assets/site.ico?version=2'>
+            <link rel="icon" href="https://user:secret@example.com/private.png">
+            <link rel="stylesheet" href="/assets/site.css">
+        "#;
+
+        assert_eq!(
+            parse_declared_favicon_urls(&document_url, document),
+            vec![
+                "https://example.com/app/icons/touch.png",
+                "https://example.com/assets/site.ico?version=2",
+            ]
+        );
+    }
+
+    #[test]
+    fn svg_icons_are_rasterized_to_bounded_png() {
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 16">
+            <rect width="32" height="16" rx="3" fill="#4caf72"/>
+        </svg>"##;
+
+        let png = rasterize_svg_icon(svg, 256 * 1024).expect("SVG rasterizes");
+
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(png.len() <= 256 * 1024);
     }
 
     #[tokio::test]

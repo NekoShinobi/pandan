@@ -26,6 +26,7 @@ use tokio::time::{Duration as TokioDuration, sleep};
 use tracing::{info, warn};
 
 mod bible;
+mod bookmark_library;
 mod bookmarks;
 pub mod calendar;
 mod contacts;
@@ -35,6 +36,7 @@ pub mod jellyfin;
 mod jellyfin_client;
 mod kanban;
 mod lines;
+pub mod logging;
 pub mod network_policy;
 pub mod ntfy;
 pub mod oidc;
@@ -42,11 +44,15 @@ pub mod podcast_media;
 mod podcasts;
 mod walls;
 pub mod widget_integrations;
+mod youtube_downloads;
 mod youtube_reader;
+mod ytdlp_proxy;
+mod ytdlp_runner;
 
 pub use document::{SiteOrigin, service_worker, spa_document, web_app_manifest};
 pub use embedded_pages::EmbeddedPagesResponse;
 pub use podcast_media::{PodcastMedia, spawn_podcast_workers};
+pub use youtube_downloads::{YoutubeDownloadService, spawn_youtube_download_workers};
 pub use youtube_reader::spawn_youtube_refresh_worker;
 
 pub const UI_BUILD_DIR: &str = "./ui/build";
@@ -70,9 +76,11 @@ pub struct AppState {
     pub oidc: Option<oidc::OidcProvider>,
     pub widget_integrations: widget_integrations::WidgetIntegrationService,
     pub jellyfin: jellyfin::JellyfinService,
+    pub youtube_downloads: youtube_downloads::YoutubeDownloadService,
     pub podcast_media: podcast_media::PodcastMedia,
     pub ntfy_events: ntfy::NtfyEventHub,
     pub site_origin: document::SiteOrigin,
+    pub logging: logging::LoggingController,
 }
 
 #[derive(Serialize)]
@@ -116,6 +124,14 @@ struct OidcCallbackQuery {
 pub struct AuthResponse {
     pub user: User,
     pub settings: UserSettings,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserSessionResponse {
+    pub id: String,
+    pub user_agent: String,
+    pub ip_address: String,
+    pub is_current: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -491,6 +507,8 @@ pub struct UpdateJournalNodeRequest {
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
     error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
 }
 
 #[derive(Debug, Error)]
@@ -511,6 +529,14 @@ pub enum ApiError {
     Database(#[from] sqlx::Error),
     #[error("{0}")]
     Internal(&'static str),
+    #[error("{0}")]
+    Unavailable(&'static str),
+    #[error("{message}")]
+    Coded {
+        status: StatusCode,
+        code: &'static str,
+        message: &'static str,
+    },
     #[error("single sign-on is not configured")]
     OidcUnavailable,
     #[error("{0}")]
@@ -532,6 +558,8 @@ impl ResponseError for ApiError {
             Self::Conflict(_) | Self::SetupRequired => StatusCode::CONFLICT,
             Self::NotFound(_) | Self::OidcUnavailable => StatusCode::NOT_FOUND,
             Self::Integration(_) => StatusCode::BAD_GATEWAY,
+            Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Coded { status, .. } => *status,
             Self::Database(_) | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -550,8 +578,13 @@ impl ResponseError for ApiError {
             _ => {}
         }
 
+        let code = match self {
+            Self::Coded { code, .. } => Some(*code),
+            _ => None,
+        };
         HttpResponse::build(self.status_code()).json(ErrorResponse {
             error: self.to_string(),
+            code,
         })
     }
 }
@@ -619,6 +652,7 @@ async fn setup_status(
 
 async fn setup(
     state: web::Data<AppState>,
+    request: HttpRequest,
     payload: web::Json<RegisterRequest>,
 ) -> Result<HttpResponse, ApiError> {
     let email = normalize_email(&payload.email)?;
@@ -639,7 +673,8 @@ async fn setup(
     .ok_or(ApiError::Conflict(
         "administrator setup is already complete",
     ))?;
-    let cookie = issue_session(&state, &user.id).await?;
+    let cookie = issue_session(&state, &request, &user.id).await?;
+    info!(user_id = %user.id, "initial administrator account created");
 
     Ok(HttpResponse::Created()
         .cookie(cookie)
@@ -752,6 +787,7 @@ async fn complete_oidc_callback(
     )
     .await
     .map_err(|error| format!("failed to create initial OIDC administrator: {error}"))?;
+    let initial_administrator = initial_user_id.is_some();
     let user_id = match initial_user_id {
         Some(user_id) => user_id,
         None => {
@@ -775,7 +811,12 @@ async fn complete_oidc_callback(
     if let Some(picture_url) = identity.picture_url.as_deref() {
         import_oidc_avatar_if_missing(state, &user_id, picture_url).await;
     }
-    issue_session(state, &user_id)
+    info!(
+        %user_id,
+        initial_administrator,
+        "OIDC authentication completed"
+    );
+    issue_session(state, request, &user_id)
         .await
         .map_err(|error| error.to_string())
 }
@@ -832,6 +873,7 @@ fn oidc_state_removal(cookie_secure: bool) -> Cookie<'static> {
 
 async fn register(
     state: web::Data<AppState>,
+    request: HttpRequest,
     payload: web::Json<RegisterRequest>,
 ) -> Result<HttpResponse, ApiError> {
     ensure_onboarding_complete(&state).await?;
@@ -865,7 +907,8 @@ async fn register(
                 ApiError::Database(error)
             }
         })?;
-    let cookie = issue_session(&state, &account.0.id).await?;
+    let cookie = issue_session(&state, &request, &account.0.id).await?;
+    info!(user_id = %account.0.id, "password account registered");
 
     Ok(HttpResponse::Created().cookie(cookie).json(AuthResponse {
         user: account.0,
@@ -875,6 +918,7 @@ async fn register(
 
 async fn login(
     state: web::Data<AppState>,
+    request: HttpRequest,
     payload: web::Json<LoginRequest>,
 ) -> Result<HttpResponse, ApiError> {
     let authentication_settings = db::queries::get_authentication_settings(&state.pool).await?;
@@ -884,20 +928,27 @@ async fn login(
         ));
     }
     let email = normalize_email(&payload.email)?;
-    let credentials = db::queries::find_user_credentials(&state.pool, &email)
-        .await?
-        .ok_or(ApiError::Unauthorized)?;
+    let Some(credentials) = db::queries::find_user_credentials(&state.pool, &email).await? else {
+        warn!(reason = "unknown_account", "password authentication failed");
+        return Err(ApiError::Unauthorized);
+    };
     let password = payload.password.clone();
     let password_hash = credentials.password_hash.clone();
     let valid = web::block(move || verify_password(&password, &password_hash))
         .await
         .map_err(|_| ApiError::Internal("password verification failed"))?;
     if !valid {
+        warn!(
+            user_id = %credentials.id,
+            reason = "invalid_password",
+            "password authentication failed"
+        );
         return Err(ApiError::Unauthorized);
     }
 
-    let cookie = issue_session(&state, &credentials.id).await?;
+    let cookie = issue_session(&state, &request, &credentials.id).await?;
     let account = account_from_cookie_value(&state, cookie.value()).await?;
+    info!(user_id = %credentials.id, "password authentication completed");
 
     Ok(HttpResponse::Ok()
         .cookie(cookie)
@@ -912,14 +963,9 @@ async fn logout(
         db::queries::delete_session(&state.pool, cookie.value()).await?;
     }
 
-    let removal = Cookie::build(SESSION_COOKIE, "")
-        .path("/")
-        .http_only(true)
-        .same_site(SameSite::Strict)
-        .secure(state.cookie_secure)
-        .max_age(CookieDuration::ZERO)
-        .finish();
-    Ok(HttpResponse::NoContent().cookie(removal).finish())
+    Ok(HttpResponse::NoContent()
+        .cookie(session_removal_cookie(state.cookie_secure))
+        .finish())
 }
 
 async fn session(
@@ -929,6 +975,42 @@ async fn session(
     Ok(web::Json(auth_response(
         authenticated_account(&state, &request).await?,
     )))
+}
+
+async fn list_sessions(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+) -> Result<web::Json<Vec<BrowserSessionResponse>>, ApiError> {
+    let current_token = session_token(&request)?;
+    let account = authenticated_account(&state, &request).await?;
+    let sessions = db::queries::list_account_sessions(&state.pool, &account.id)
+        .await?
+        .into_iter()
+        .map(|session| BrowserSessionResponse {
+            id: session.id,
+            is_current: session.token == current_token,
+            user_agent: session.user_agent,
+            ip_address: session.ip_address,
+        })
+        .collect();
+    Ok(web::Json(sessions))
+}
+
+async fn delete_session(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    session_id: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let current_token = session_token(&request)?;
+    let account = authenticated_account(&state, &request).await?;
+    let deleted_token = db::queries::delete_account_session(&state.pool, &account.id, &session_id)
+        .await?
+        .ok_or(ApiError::NotFound("session not found"))?;
+    let mut response = HttpResponse::NoContent();
+    if deleted_token == current_token {
+        response.cookie(session_removal_cookie(state.cookie_secure));
+    }
+    Ok(response.finish())
 }
 
 async fn dashboard(
@@ -1655,13 +1737,27 @@ async fn delete_user_content(
             | "rss"
             | "journal"
             | "youtube"
+            | "downloads"
             | "podcasts"
             | "coding"
             | "subscriptions"
     ) {
         return Err(ApiError::BadRequest("content scope is invalid"));
     }
+    if scope == "downloads" {
+        state
+            .youtube_downloads
+            .purge_user(&account.id)
+            .await
+            .map_err(|_| ApiError::Internal("download files could not be removed"))?;
+    }
     let deleted = db::queries::delete_user_content(&state.pool, &account.id, &scope).await?;
+    info!(
+        user_id = %account.id,
+        %scope,
+        deleted,
+        "account content deleted"
+    );
     Ok(web::Json(DeleteUserContentResponse { scope, deleted }))
 }
 
@@ -2306,7 +2402,7 @@ async fn update_authentication_settings(
     request: HttpRequest,
     payload: web::Json<UpdateAuthenticationSettingsRequest>,
 ) -> Result<web::Json<AuthenticationConfigResponse>, ApiError> {
-    authenticated_administrator(&state, &request).await?;
+    let administrator = authenticated_administrator(&state, &request).await?;
     if !payload.password_login_enabled && state.oidc.is_none() {
         return Err(ApiError::BadRequest(
             "password login cannot be disabled unless OIDC is configured",
@@ -2319,6 +2415,13 @@ async fn update_authentication_settings(
         payload.oidc_registration_enabled,
     )
     .await?;
+    info!(
+        actor_user_id = %administrator.id,
+        password_login_enabled = settings.password_login_enabled,
+        password_registration_enabled = settings.password_registration_enabled,
+        oidc_registration_enabled = settings.oidc_registration_enabled,
+        "administrator updated authentication policy"
+    );
     let appearance = db::queries::get_login_appearance(&state.pool).await?;
     Ok(web::Json(authentication_config_response(
         &state, settings, appearance,
@@ -2343,7 +2446,15 @@ async fn update_user_role(
     )
     .await?
     {
-        db::queries::UserMutationOutcome::Updated(user) => Ok(web::Json(user)),
+        db::queries::UserMutationOutcome::Updated(user) => {
+            info!(
+                actor_user_id = %administrator.id,
+                target_user_id = %user.id,
+                role = %user.role,
+                "administrator updated account role"
+            );
+            Ok(web::Json(user))
+        }
         outcome => Err(user_mutation_error(&outcome)),
     }
 }
@@ -2354,8 +2465,17 @@ async fn delete_user(
     user_id: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let administrator = authenticated_administrator(&state, &request).await?;
+    let user_id = user_id.into_inner();
     match db::queries::delete_managed_user(&state.pool, &administrator.id, &user_id).await? {
-        db::queries::UserMutationOutcome::Deleted => Ok(HttpResponse::NoContent().finish()),
+        db::queries::UserMutationOutcome::Deleted => {
+            state.youtube_downloads.purge_deleted_user(&user_id).await;
+            info!(
+                actor_user_id = %administrator.id,
+                target_user_id = %user_id,
+                "administrator deleted account"
+            );
+            Ok(HttpResponse::NoContent().finish())
+        }
         outcome => Err(user_mutation_error(&outcome)),
     }
 }
@@ -3206,10 +3326,12 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
                 web::get().to(get_login_wallpaper),
             )
             .route("/dashboard", web::get().to(dashboard))
+            .configure(bookmark_library::configure)
             .configure(bookmarks::configure)
             .configure(embedded_pages::configure)
             .configure(jellyfin::configure)
             .configure(network_policy::configure)
+            .configure(logging::configure)
             .route("/widgets", web::post().to(create_widget))
             .route("/widgets/capabilities", web::get().to(widget_capabilities))
             .route("/widgets/layout", web::put().to(update_widget_layout))
@@ -3227,6 +3349,11 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
                 web::put().to(update_coding_credential),
             )
             .route("/settings", web::put().to(update_settings))
+            .route("/settings/sessions", web::get().to(list_sessions))
+            .route(
+                "/settings/sessions/{session_id}",
+                web::delete().to(delete_session),
+            )
             .route(
                 "/settings/data/{scope}",
                 web::delete().to(delete_user_content),
@@ -3273,6 +3400,7 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
             .configure(ntfy::configure)
             .configure(walls::configure)
             .configure(podcasts::configure)
+            .configure(youtube_downloads::configure)
             .route("/rss", web::get().to(rss_reader))
             .route(
                 "/rss/subscriptions",
@@ -3357,11 +3485,20 @@ async fn authenticated_account(
     state: &AppState,
     request: &HttpRequest,
 ) -> Result<SessionAccount, ApiError> {
-    let token = request
-        .cookie(SESSION_COOKIE)
-        .map(|cookie| cookie.value().to_owned())
-        .ok_or(ApiError::Unauthorized)?;
-    account_from_cookie_value(state, &token).await
+    let token = session_token(request)?;
+    let account = account_from_cookie_value(state, &token).await?;
+    let metadata = session_metadata(request);
+    if let Err(error) = db::queries::touch_session(
+        &state.pool,
+        &token,
+        &metadata.user_agent,
+        &metadata.ip_address,
+    )
+    .await
+    {
+        warn!(%error, "failed to refresh session metadata");
+    }
+    Ok(account)
 }
 
 async fn authenticated_administrator(
@@ -3384,10 +3521,23 @@ async fn account_from_cookie_value(
         .ok_or(ApiError::Unauthorized)
 }
 
-async fn issue_session(state: &AppState, user_id: &str) -> Result<Cookie<'static>, ApiError> {
+async fn issue_session(
+    state: &AppState,
+    request: &HttpRequest,
+    user_id: &str,
+) -> Result<Cookie<'static>, ApiError> {
     let token = uuid::Uuid::new_v4().to_string();
     let expires_at = (chrono::Utc::now() + chrono::Duration::days(SESSION_DAYS)).to_rfc3339();
-    db::queries::create_session(&state.pool, &token, user_id, &expires_at).await?;
+    let metadata = session_metadata(request);
+    db::queries::create_session(
+        &state.pool,
+        &token,
+        user_id,
+        &metadata.user_agent,
+        &metadata.ip_address,
+        &expires_at,
+    )
+    .await?;
 
     Ok(Cookie::build(SESSION_COOKIE, token)
         .path("/")
@@ -3396,6 +3546,61 @@ async fn issue_session(state: &AppState, user_id: &str) -> Result<Cookie<'static
         .secure(state.cookie_secure)
         .max_age(CookieDuration::days(SESSION_DAYS))
         .finish())
+}
+
+struct SessionMetadata {
+    user_agent: String,
+    ip_address: String,
+}
+
+fn session_token(request: &HttpRequest) -> Result<String, ApiError> {
+    request
+        .cookie(SESSION_COOKIE)
+        .map(|cookie| cookie.value().to_owned())
+        .ok_or(ApiError::Unauthorized)
+}
+
+fn session_metadata(request: &HttpRequest) -> SessionMetadata {
+    let user_agent = request
+        .headers()
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(512).collect())
+        .unwrap_or_else(|| "Unavailable".to_owned());
+    let ip_address = request
+        .connection_info()
+        .realip_remote_addr()
+        .and_then(normalize_ip_address)
+        .or_else(|| request.peer_addr().map(|address| address.ip().to_string()))
+        .unwrap_or_else(|| "Unavailable".to_owned());
+    SessionMetadata {
+        user_agent,
+        ip_address,
+    }
+}
+
+fn normalize_ip_address(value: &str) -> Option<String> {
+    value
+        .parse::<std::net::IpAddr>()
+        .map(|address| address.to_string())
+        .or_else(|_| {
+            value
+                .parse::<std::net::SocketAddr>()
+                .map(|address| address.ip().to_string())
+        })
+        .ok()
+}
+
+fn session_removal_cookie(cookie_secure: bool) -> Cookie<'static> {
+    Cookie::build(SESSION_COOKIE, "")
+        .path("/")
+        .http_only(true)
+        .same_site(SameSite::Strict)
+        .secure(cookie_secure)
+        .max_age(CookieDuration::ZERO)
+        .finish()
 }
 
 fn auth_response(account: SessionAccount) -> AuthResponse {
@@ -3545,10 +3750,12 @@ mod tests {
             )
             .expect("test widget integrations initialize"),
             jellyfin: jellyfin::JellyfinService::new(pool.clone()),
+            youtube_downloads: youtube_downloads::YoutubeDownloadService::for_tests(pool.clone()),
             podcast_media: podcast_media::PodcastMedia::with_root_and_pool(media_root, pool)
                 .expect("test podcast media initializes"),
             ntfy_events: ntfy::NtfyEventHub::default(),
             site_origin: document::SiteOrigin::default(),
+            logging: logging::LoggingController::disabled_for_tests(),
         })
     }
 
@@ -3686,6 +3893,120 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[actix_web::test]
+    async fn sessions_can_be_listed_and_forced_to_sign_out() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state(test_pool().await))
+                .configure(configure_api),
+        )
+        .await;
+        let first_response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/setup")
+                .peer_addr("192.0.2.10:4100".parse().expect("valid peer address"))
+                .insert_header(("x-forwarded-for", "203.0.113.10"))
+                .insert_header((header::USER_AGENT, "First Browser/1.0"))
+                .set_json(RegisterRequest {
+                    email: "sessions@example.com".to_owned(),
+                    password: "correct horse battery staple".to_owned(),
+                    display_name: "Session Owner".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        let first_cookie = session_cookie(&first_response);
+
+        let second_response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/auth/login")
+                .peer_addr("198.51.100.8:4200".parse().expect("valid peer address"))
+                .insert_header(("x-forwarded-for", "203.0.113.20"))
+                .insert_header((header::USER_AGENT, "Second Browser/2.0"))
+                .set_json(LoginRequest {
+                    email: "sessions@example.com".to_owned(),
+                    password: "correct horse battery staple".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        let second_cookie = session_cookie(&second_response);
+
+        let sessions: Vec<BrowserSessionResponse> = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/settings/sessions")
+                .peer_addr("198.51.100.8:4200".parse().expect("valid peer address"))
+                .insert_header(("x-forwarded-for", "203.0.113.20"))
+                .insert_header((header::USER_AGENT, "Second Browser/2.0"))
+                .cookie(second_cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(sessions.len(), 2);
+        let current = sessions
+            .iter()
+            .find(|session| session.is_current)
+            .expect("current session is labeled");
+        assert_eq!(current.user_agent, "Second Browser/2.0");
+        assert_eq!(current.ip_address, "203.0.113.20");
+        let remote = sessions
+            .iter()
+            .find(|session| !session.is_current)
+            .expect("remote session is listed");
+        assert_eq!(remote.user_agent, "First Browser/1.0");
+        assert_eq!(remote.ip_address, "203.0.113.10");
+
+        let forced = test::call_service(
+            &app,
+            test::TestRequest::delete()
+                .uri(&format!("/api/settings/sessions/{}", remote.id))
+                .cookie(second_cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(forced.status(), StatusCode::NO_CONTENT);
+
+        let rejected = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/dashboard")
+                .cookie(first_cookie)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+
+        let current_id = current.id.clone();
+        let signed_out = test::call_service(
+            &app,
+            test::TestRequest::delete()
+                .uri(&format!("/api/settings/sessions/{current_id}"))
+                .cookie(second_cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(signed_out.status(), StatusCode::NO_CONTENT);
+        assert!(
+            signed_out
+                .response()
+                .cookies()
+                .any(|cookie| cookie.name() == SESSION_COOKIE)
+        );
+
+        let current_rejected = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/dashboard")
+                .cookie(second_cookie)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(current_rejected.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[actix_web::test]
@@ -4837,6 +5158,25 @@ mod tests {
         )
         .await;
         assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+        let forbidden_logs = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/admin/logs")
+                .cookie(member_cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(forbidden_logs.status(), StatusCode::FORBIDDEN);
+
+        let administrator_logs = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/admin/logs?limit=25")
+                .cookie(administrator_cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(administrator_logs.status(), StatusCode::OK);
 
         let users: Vec<ManagedUser> = test::call_and_read_body_json(
             &app,

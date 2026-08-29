@@ -44,6 +44,23 @@ is disabled while known identities and verified-email links to existing users re
 | `oidc_registration_enabled`     | INTEGER | Boolean `0` or `1`; defaults to `1`  |
 | `updated_at`                    | TEXT    | Required, RFC 3339 timestamp         |
 
+## `logging_settings`
+
+Singleton administrator-controlled policy for persistent structured application logs. The log
+directory itself remains an operator-controlled environment path; this table controls whether file
+events are written, the minimum level, size-based rotation, and both age- and count-based retention.
+The active file is never removed by retention. Console tracing continues to use `RUST_LOG`.
+
+| Column             | Type    | Constraints                                                               |
+| ------------------ | ------- | ------------------------------------------------------------------------- |
+| `id`               | INTEGER | Primary key; singleton value `1`                                          |
+| `file_enabled`     | INTEGER | Boolean `0` or `1`; defaults to `1`                                       |
+| `log_level`        | TEXT    | `error`, `warn`, `info`, `debug`, or `trace`; defaults to `info`           |
+| `retention_days`   | INTEGER | 1–365; defaults to `14`                                                    |
+| `max_file_size_mb` | INTEGER | 1–256 MiB per active file; defaults to `10`                                |
+| `max_files`        | INTEGER | 1–100 retained rotated files; defaults to `20`                             |
+| `updated_at`       | TEXT    | Required, RFC 3339 timestamp                                               |
+
 ## `network_access_rules`
 
 Administrator-managed exact-origin policy for requests made by the Pandan server. Public HTTPS is
@@ -288,6 +305,9 @@ together, with each opt-in reducing sandbox isolation.
 to 720 pixels, with API and database constraints limiting values to 320–2,400 pixels. The interface
 offers 480, 720, and 1,080 pixel presets plus a custom option; width remains responsive to the
 application canvas.
+`icon_url` optionally replaces the default custom-page symbol in expanded sidebar rows. It must be
+a credential-free HTTPS URL no longer than 2,000 characters. The browser loads the image without a
+referrer, and the interface falls back to the packaged panel icon when the image cannot load.
 
 | Column               | Type    | Constraints                                                        |
 | -------------------- | ------- | ------------------------------------------------------------------ |
@@ -298,6 +318,7 @@ application canvas.
 | `title`              | TEXT    | Required, trimmed length 1–80                                      |
 | `description`        | TEXT    | Required, maximum length 280                                       |
 | `url`                | TEXT    | Required absolute HTTPS URL, maximum length 2,000                   |
+| `icon_url`           | TEXT    | Optional credential-free HTTPS image URL, maximum length 2,000     |
 | `allow_scripts`      | INTEGER | Required boolean, defaults to `0`                                  |
 | `allow_same_origin`  | INTEGER | Required boolean, defaults to `0`                                  |
 | `iframe_height`      | INTEGER | Required, 320–2,400 pixels, defaults to `720`                       |
@@ -336,15 +357,20 @@ may update them. They are independent from every account's Main background proce
 
 ## `sessions`
 
-Opaque, revocable browser sessions. The cookie stores only the token; ownership and expiry live
-server-side.
+Opaque, revocable browser sessions. The cookie stores only the private token. The public ID is used
+for account-scoped session management, while the last observed user agent and client address help the
+owner identify each active browser without exposing its credential.
 
-| Column       | Type | Constraints                                      |
-| ------------ | ---- | ------------------------------------------------ |
-| `token`      | TEXT | Primary key                                      |
-| `user_id`    | TEXT | Required, references `users` with cascade delete |
-| `expires_at` | TEXT | Required, RFC 3339 timestamp                     |
-| `created_at` | TEXT | Required, RFC 3339 timestamp                     |
+| Column         | Type | Constraints                                      |
+| -------------- | ---- | ------------------------------------------------ |
+| `token`        | TEXT | Primary key; private cookie credential           |
+| `id`           | TEXT | Required, unique public session identifier       |
+| `user_id`      | TEXT | Required, references `users` with cascade delete |
+| `user_agent`   | TEXT | Required, at most 512 characters                 |
+| `ip_address`   | TEXT | Required, at most 64 characters                  |
+| `expires_at`   | TEXT | Required, RFC 3339 timestamp                     |
+| `created_at`   | TEXT | Required, RFC 3339 timestamp                     |
+| `last_seen_at` | TEXT | Required, RFC 3339 timestamp                     |
 
 ## `oidc_identities`
 
@@ -657,6 +683,67 @@ area is deleted.
 | `user_id`  | TEXT | Composite primary key, references `users` with cascade delete |
 | `video_id` | TEXT | Composite primary key, references `youtube_videos` with cascade delete |
 | `saved_at` | TEXT | Required, RFC 3339 timestamp                                  |
+
+## `youtube_download_jobs`
+
+Account-owned YouTube output jobs. Each row represents one individual video and one server-defined
+profile; playlists and arbitrary yt-dlp expressions are never stored. The partial and completed
+media bytes live beneath `PANDAN_DOWNLOAD_DIR`, while the database remains the authoritative
+lifecycle and ownership record. A partial unique index prevents duplicate active jobs for the same
+account, video, kind, format, and selected height. Administrators do not gain access to another
+account's rows or files.
+
+| Column | Type | Constraints |
+| ------ | ---- | ----------- |
+| `id` | TEXT | UUID primary key |
+| `user_id` | TEXT | Required reference to `users` with cascade delete |
+| `source_url` | TEXT | Normalized credential-free YouTube HTTPS URL, length 1–2048 |
+| `youtube_video_id` | TEXT | Required validated video ID, length 1–32 |
+| `title` | TEXT | Required bounded source title, length at most 500 |
+| `channel_name` | TEXT | Required bounded channel label, length at most 300 |
+| `duration_seconds` | INTEGER | Optional non-negative inspected duration |
+| `media_kind` | TEXT | `video` or `audio` |
+| `output_format` | TEXT | `mp4`, `mkv`, `webm`, `m4a`, `mp3`, or `opus` |
+| `max_height` | INTEGER | Optional positive video height; null for best or audio |
+| `status` | TEXT | `queued`, `inspecting`, `downloading`, `postprocessing`, `complete`, `failed`, or `cancelled` |
+| `progress_percent` | REAL | Optional real value from 0–100 |
+| `downloaded_bytes` | INTEGER | Non-negative observed transfer count |
+| `total_bytes` | INTEGER | Optional non-negative source total or estimate |
+| `speed_bytes_per_second` | REAL | Optional non-negative progress hint |
+| `eta_seconds` | INTEGER | Optional non-negative progress hint |
+| `storage_file_name` | TEXT | Server-generated filename only; empty before completion |
+| `display_file_name` | TEXT | Sanitized attachment filename; never used for path resolution |
+| `mime_type` | TEXT | Validated final MIME type; empty before completion |
+| `byte_size` | INTEGER | Non-negative final file size |
+| `attempts` | INTEGER | Claim count from 0–3 |
+| `error_code` | TEXT | Optional bounded internal failure category |
+| `last_error` | TEXT | Optional bounded user-safe message; no subprocess output |
+| `lease_started_at` | TEXT | Optional RFC 3339 worker lease |
+| `created_at` | TEXT | Required RFC 3339 timestamp |
+| `started_at` | TEXT | Optional RFC 3339 first-start timestamp |
+| `completed_at` | TEXT | Optional RFC 3339 completion timestamp |
+| `updated_at` | TEXT | Required RFC 3339 timestamp |
+
+## `youtube_download_settings`
+
+Administrator-managed singleton (`id = 1`) controlling member access, storage reservations, queue
+depth, batches, and fair worker concurrency. Defaults are 20 GiB instance storage, 10 GiB per
+account, 2 GiB per output, two global workers, one worker per account, 10 URLs per batch, and 50
+unsettled rows per account. Policy validation requires the worst-case concurrent reservation to fit
+both storage budgets.
+
+| Column | Type | Constraints |
+| ------ | ---- | ----------- |
+| `id` | INTEGER | Primary key constrained to `1` |
+| `member_downloads_enabled` | INTEGER | Boolean, default enabled |
+| `storage_budget_bytes` | INTEGER | Positive instance ceiling |
+| `per_user_budget_bytes` | INTEGER | Positive account ceiling no larger than instance storage |
+| `max_output_bytes` | INTEGER | Positive per-job ceiling no larger than account storage |
+| `global_concurrency` | INTEGER | 1–8 |
+| `per_user_concurrency` | INTEGER | 1–4 and no larger than global concurrency |
+| `max_batch_urls` | INTEGER | 1–50 |
+| `max_queued_per_user` | INTEGER | 1–200 |
+| `updated_at` | TEXT | Required RFC 3339 timestamp |
 
 ## `podcasts`
 
@@ -1086,6 +1173,43 @@ resolves through that row's `user_id`.
 | `favicon_fetched_at`   | TEXT | Nullable RFC 3339 timestamp; present exactly when cached favicon media type and bytes are present   |
 | `created_at`           | TEXT | Required, RFC 3339 timestamp                                                                        |
 | `updated_at`           | TEXT | Required, RFC 3339 timestamp                                                                        |
+
+## `bookmark_library_categories`
+
+Categories for the full Bookmarks product page. A global category is visible to every
+authenticated account and may be mutated only through administrator routes. A personal category
+belongs to one account.
+
+| Column               | Type | Constraints                                                                 |
+| -------------------- | ---- | --------------------------------------------------------------------------- |
+| `id`                 | TEXT | Primary key                                                                 |
+| `scope`              | TEXT | `global` or `personal`                                                     |
+| `user_id`            | TEXT | Null for global; required user reference with cascade delete for personal   |
+| `created_by_user_id` | TEXT | Optional creator reference with null-on-delete                              |
+| `name`               | TEXT | Required, trimmed length 1–80; case-insensitive unique within its scope     |
+| `created_at`         | TEXT | Required, RFC 3339 timestamp                                                 |
+| `updated_at`         | TEXT | Required, RFC 3339 timestamp                                                 |
+
+Deleting a category cascades all of its bookmark-library items.
+
+## `bookmark_library_items`
+
+Square bookmark tiles grouped by `bookmark_library_categories`. Destinations are credential-free
+HTTP or HTTPS URLs. Favicon and custom icon failures leave the item saved with a Lucide fallback.
+
+| Column              | Type | Constraints                                                                                         |
+| ------------------- | ---- | --------------------------------------------------------------------------------------------------- |
+| `id`                | TEXT | Primary key                                                                                         |
+| `category_id`       | TEXT | Required category reference with cascade delete                                                     |
+| `title`             | TEXT | Required, trimmed length 1–120                                                                      |
+| `url`               | TEXT | Required destination, up to 2,048 bytes; unique within one category                                |
+| `icon_kind`         | TEXT | `favicon`, `lucide`, or `custom`                                                                  |
+| `icon_value`        | TEXT | Null for favicon; supported Lucide name or credential-free HTTPS custom icon URL                   |
+| `icon_content_type` | TEXT | Nullable; AVIF, JPEG, PNG, WebP, ICO, or Microsoft icon media type                                  |
+| `icon_data`         | BLOB | Nullable cached remote icon bytes, 1 byte through 256 KiB                                           |
+| `icon_fetched_at`   | TEXT | Nullable RFC 3339 timestamp; present exactly with cached icon media type and bytes                  |
+| `created_at`        | TEXT | Required, RFC 3339 timestamp                                                                        |
+| `updated_at`        | TEXT | Required, RFC 3339 timestamp                                                                        |
 
 ## `dashboard_widgets`
 

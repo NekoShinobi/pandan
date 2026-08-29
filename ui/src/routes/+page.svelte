@@ -16,11 +16,12 @@
   import Columns3 from "lucide-svelte/icons/columns-3";
   import ContactRound from "lucide-svelte/icons/contact-round";
   import Ellipsis from "lucide-svelte/icons/ellipsis";
+  import DownloadIcon from "lucide-svelte/icons/download";
+  import ExternalLink from "lucide-svelte/icons/external-link";
   import Home from "lucide-svelte/icons/house";
   import Menu from "lucide-svelte/icons/menu";
   import MessageSquareText from "lucide-svelte/icons/message-square-text";
   import Music2 from "lucide-svelte/icons/music-2";
-  import PanelTop from "lucide-svelte/icons/panel-top";
   import Paperclip from "lucide-svelte/icons/paperclip";
   import Pause from "lucide-svelte/icons/pause";
   import Pencil from "lucide-svelte/icons/pencil";
@@ -51,19 +52,25 @@
   import { motionDisclosure, motionPopover } from "$lib/motion.svelte";
   import { MediaQuery, SvelteMap, SvelteSet } from "svelte/reactivity";
   import AnimatedList from "$lib/components/AnimatedList.svelte";
+  import AudioVisualization from "$lib/AudioVisualization.svelte";
+  import AudioVisualizationControl from "$lib/AudioVisualizationControl.svelte";
   import BackgroundSettings from "$lib/BackgroundSettings.svelte";
+  import BookmarksPage from "$lib/BookmarksPage.svelte";
   import PrismaticBurst from "$lib/components/PrismaticBurst.svelte";
   import CalendarPage from "$lib/CalendarPage.svelte";
   import CodingPage from "$lib/CodingPage.svelte";
   import ContactsPage from "$lib/ContactsPage.svelte";
   import DashboardWidgetCard from "$lib/DashboardWidgetCard.svelte";
+  import DownloadsPage from "$lib/DownloadsPage.svelte";
   import EmbeddedPage from "$lib/EmbeddedPage.svelte";
+  import EmbeddedPageIcon from "$lib/EmbeddedPageIcon.svelte";
   import EmbeddedPagesSettings from "$lib/EmbeddedPagesSettings.svelte";
   import IntegrationWidget from "$lib/IntegrationWidget.svelte";
   import JournalPage from "$lib/JournalPage.svelte";
   import JellyfinSettings from "$lib/JellyfinSettings.svelte";
   import KanbanPage from "$lib/KanbanPage.svelte";
   import LinesPage from "$lib/LinesPage.svelte";
+  import LogsSettings from "$lib/LogsSettings.svelte";
   import NtfyPage from "$lib/NtfyPage.svelte";
   import NtfyPopover from "$lib/NtfyPopover.svelte";
   import NtfyPriority from "$lib/NtfyPriority.svelte";
@@ -101,9 +108,11 @@
     deleteUserContent,
     fetchAuthenticationSettings,
     fetchArchivedTasks,
+    fetchBrowserSessions,
     fetchCalendar,
     fetchDashboard,
     fetchManagedUsers,
+    forceSignOutSession,
     loginAccount,
     logoutAccount,
     registerAccount,
@@ -119,6 +128,7 @@
     uploadTaskAttachment,
     type AuthenticationConfig,
     type Bookmark,
+    type BrowserSession,
     type CalendarEvent,
     type CalendarResponse,
     type DashboardWidget,
@@ -145,6 +155,7 @@
   type AuthMode = "login" | "register";
   type ProductPage =
     | "dashboard"
+    | "bookmarks"
     | "tasks"
     | "kanban"
     | "contacts"
@@ -154,6 +165,7 @@
     | "lines"
     | "walls"
     | "youtube"
+    | "downloads"
     | "podcasts"
     | "music"
     | "coding"
@@ -181,6 +193,7 @@
     | "data-management"
     | "instance-settings"
     | "network-settings"
+    | "logs"
     | "user-management";
   type SettingsGroup = {
     label: "General" | "Security" | "Administration";
@@ -239,7 +252,8 @@
         {
           id: "sessions",
           label: "Sessions",
-          description: "Review and end the secure session in this browser.",
+          description:
+            "Review active browsers and force a session to sign out.",
         },
         {
           id: "data-management",
@@ -261,6 +275,12 @@
           id: "network-settings",
           label: "Network Settings",
           description: "Exact server destinations allowed for managed fetches.",
+        },
+        {
+          id: "logs",
+          label: "Logs",
+          description:
+            "Persistent diagnostics, rotation, retention, and recent events.",
         },
         {
           id: "user-management",
@@ -312,6 +332,12 @@
       scope: "youtube",
       title: "All YouTube Data",
       description: "Your Channel Subscriptions, Groups, And Display Settings.",
+    },
+    {
+      scope: "downloads",
+      title: "All Downloads",
+      description:
+        "Queued Jobs, Download History, And Every Stored Media File.",
     },
     {
       scope: "podcasts",
@@ -487,17 +513,24 @@
       icon: Home,
     },
     {
+      id: "bookmarks",
+      label: "Bookmarks",
+      description: "Open shared links and keep personal shortcuts organized.",
+      code: "02",
+      icon: BookmarkIcon,
+    },
+    {
       id: "tasks",
       label: "Tasks",
       description: "Capture, organize, and complete personal to-dos.",
-      code: "02",
+      code: "03",
       icon: CheckSquare2,
     },
     {
       id: "kanban",
       label: "Kanban",
       description: "Plan shared work across boards, lists, and cards.",
-      code: "03",
+      code: "04",
       icon: Columns3,
     },
     {
@@ -505,42 +538,42 @@
       label: "Contacts",
       description:
         "Keep people, contact details, and important dates together.",
-      code: "04",
+      code: "05",
       icon: ContactRound,
     },
     {
       id: "calendar",
       label: "Calendar",
       description: "Review events and subscribed calendars in one schedule.",
-      code: "05",
+      code: "06",
       icon: CalendarDays,
     },
     {
       id: "rss",
       label: "RSS",
       description: "Read and manage posts from your subscribed feeds.",
-      code: "06",
+      code: "07",
       icon: Rss,
     },
     {
       id: "journal",
       label: "Journal",
       description: "Write private daily notes and longer entries.",
-      code: "07",
+      code: "08",
       icon: BookOpen,
     },
     {
       id: "lines",
       label: "Lines",
       description: "Share short posts with people on this Pandan instance.",
-      code: "08",
+      code: "09",
       icon: MessageSquareText,
     },
     {
       id: "walls",
       label: "Walls",
       description: "Browse shared wallpapers and submit your own.",
-      code: "09",
+      code: "10",
       icon: Wallpaper,
     },
     {
@@ -548,42 +581,49 @@
       label: "YouTube",
       description:
         "Follow channels and browse recent videos without distractions.",
-      code: "10",
+      code: "11",
       icon: Youtube,
+    },
+    {
+      id: "downloads",
+      label: "Downloads",
+      description: "Save YouTube videos or audio in a controlled local queue.",
+      code: "12",
+      icon: DownloadIcon,
     },
     {
       id: "podcasts",
       label: "Podcasts",
       description: "Listen to shows this instance hosts, and ask for new ones.",
-      code: "11",
+      code: "13",
       icon: Podcast,
     },
     {
       id: "music",
       label: "Music",
       description: "Browse and play the music libraries linked from Jellyfin.",
-      code: "12",
+      code: "14",
       icon: Music2,
     },
     {
       id: "coding",
       label: "Coding",
       description: "Track projects, repositories, and release activity.",
-      code: "13",
+      code: "15",
       icon: Code2,
     },
     {
       id: "subscriptions",
       label: "Subscriptions",
       description: "Monitor recurring services, costs, and renewal dates.",
-      code: "14",
+      code: "16",
       icon: ReceiptText,
     },
     {
       id: "trading",
       label: "Trading",
       description: "Plan watchlists, market notes, and trades.",
-      code: "15",
+      code: "17",
       icon: ChartCandlestick,
     },
   ] as const;
@@ -600,6 +640,7 @@
   } as const;
 
   let activePage = $state<ActivePage>({ kind: "builtin", id: "dashboard" });
+  let embeddedPageReloadToken = $state(0);
   let activeSection = $derived(
     activePage.kind === "builtin" ? activePage.id : null,
   );
@@ -607,6 +648,7 @@
   let linesHomeToken = $state(0);
   let contactDetailId = $state<string | null>(null);
   let calendarDetailDate = $state<string | null>(null);
+  let downloadsPrefillUrl = $state("");
   let kanbanSection = $state<KanbanSection>("boards");
   let settingsCategory = $state<SettingsCategory>("preferences");
   let kanbanMenuOpen = $state(false);
@@ -720,6 +762,11 @@
   let managedUsers = $state.raw<ManagedUser[]>([]);
   let loadingUsers = $state(false);
   let hasLoadedAdministration = false;
+  let accountSessions = $state.raw<BrowserSession[]>([]);
+  let loadingSessions = $state(false);
+  let hasLoadedSessions = false;
+  let endingSessionId = $state("");
+  let sessionsError = $state("");
   let mutatingUserId = $state("");
   let pendingRemovalId = $state("");
   let adminError = $state("");
@@ -1743,12 +1790,18 @@
     localStorage.setItem("pandan-active-section", `builtin:${page}`);
   }
 
+  function openDownload(url: string) {
+    downloadsPrefillUrl = url;
+    openProductPage("downloads");
+  }
+
   function openNotificationCenter(notificationId = "") {
     ntfyFocusedNotificationId = notificationId;
     openProductPage("notifications");
   }
 
   function openEmbeddedPage(pageId: string) {
+    embeddedPageReloadToken += 1;
     activePage = { kind: "embedded", id: pageId };
     contactDetailId = null;
     calendarDetailDate = null;
@@ -2146,7 +2199,7 @@
     const currentIndex = items.indexOf(
       document.activeElement as HTMLButtonElement,
     );
-    let nextIndex = currentIndex;
+    let nextIndex: number;
     if (event.key === "ArrowDown") {
       nextIndex = (currentIndex + 1) % items.length;
     } else if (event.key === "ArrowUp") {
@@ -2769,6 +2822,8 @@
       resetTaskArchiveView();
       hasLoadedAdministration = false;
       managedUsers = [];
+      hasLoadedSessions = false;
+      accountSessions = [];
       avatarRevision = Date.now();
       avatarAvailable = true;
       authPassword = "";
@@ -2818,6 +2873,8 @@
       resetTaskArchiveView();
       hasLoadedAdministration = false;
       managedUsers = [];
+      hasLoadedSessions = false;
+      accountSessions = [];
       avatarRevision = Date.now();
       avatarAvailable = true;
       setupRequired = false;
@@ -2851,6 +2908,9 @@
     pendingContentDeletion = null;
     settingsCategory = category;
     openProductPage("settings");
+    if (category === "sessions") {
+      void loadSessions();
+    }
     if (
       dashboard.user.role === "administrator" &&
       (category === "instance-settings" ||
@@ -2875,6 +2935,9 @@
     adminError = "";
     destructiveError = "";
     pendingContentDeletion = null;
+    if (category === "sessions") {
+      void loadSessions();
+    }
     if (
       category === "instance-settings" ||
       category === "network-settings" ||
@@ -3128,6 +3191,21 @@
     }
   }
 
+  async function loadSessions() {
+    if (loadingSessions || hasLoadedSessions) return;
+    loadingSessions = true;
+    sessionsError = "";
+    try {
+      accountSessions = await fetchBrowserSessions();
+      hasLoadedSessions = true;
+    } catch (reason: unknown) {
+      sessionsError =
+        reason instanceof Error ? reason.message : "Unable to load sessions";
+    } finally {
+      loadingSessions = false;
+    }
+  }
+
   function applyAuthenticationConfig(config: AuthenticationConfig) {
     authConfig = config;
     passwordLoginEnabled = config.password_login_enabled;
@@ -3239,26 +3317,56 @@
     }).format(date);
   }
 
+  function clearSignedInSession() {
+    dashboard = null;
+    clearDashboardCalendarState();
+    resetTaskArchiveView();
+    hasLoadedAdministration = false;
+    managedUsers = [];
+    hasLoadedSessions = false;
+    accountSessions = [];
+    endingSessionId = "";
+    sessionsError = "";
+    clearAvatarDraft();
+    avatarAvailable = true;
+    avatarRevision = Date.now();
+    activePage = { kind: "builtin", id: "dashboard" };
+    localStorage.setItem("pandan-active-section", "builtin:dashboard");
+    welcomeLeaving = false;
+    authPassword = "";
+    authError = "";
+  }
+
   async function signOut() {
     try {
       await logoutAccount();
-      dashboard = null;
-      clearDashboardCalendarState();
-      resetTaskArchiveView();
-      hasLoadedAdministration = false;
-      managedUsers = [];
-      clearAvatarDraft();
-      avatarAvailable = true;
-      avatarRevision = Date.now();
-      activePage = { kind: "builtin", id: "dashboard" };
-      localStorage.setItem("pandan-active-section", "builtin:dashboard");
-      welcomeLeaving = false;
-      authPassword = "";
-      authError = "";
+      clearSignedInSession();
     } catch (reason: unknown) {
       showToast(
         reason instanceof Error ? reason.message : "Unable to sign out",
       );
+    }
+  }
+
+  async function endBrowserSession(session: BrowserSession) {
+    if (endingSessionId) return;
+    endingSessionId = session.id;
+    sessionsError = "";
+    try {
+      await forceSignOutSession(session.id);
+      if (session.is_current) {
+        clearSignedInSession();
+        return;
+      }
+      accountSessions = accountSessions.filter(
+        (candidate) => candidate.id !== session.id,
+      );
+      showToast("Session forced to sign out");
+    } catch (reason: unknown) {
+      sessionsError =
+        reason instanceof Error ? reason.message : "Unable to end session";
+    } finally {
+      endingSessionId = "";
     }
   }
 
@@ -3748,6 +3856,10 @@
     style:--wallpaper-saturation={`${dashboard.appearance.background_saturation}%`}
     data-od-id="dashboard-shell"
   >
+    {#if podcastPlayer.source && podcastPlayer.visualizationMode !== "off"}
+      <AudioVisualization />
+    {/if}
+
     <aside
       id="primary-sidebar"
       class="dashboard-sidebar"
@@ -3867,23 +3979,49 @@
           >
             <span class="sidebar-custom-group-label">Global custom</span>
             {#each dashboard.embedded_pages.global as page (page.id)}
-              <button
-                class="sidebar-link sidebar-link--custom"
-                type="button"
-                aria-label={`${page.title}, global custom page`}
-                aria-current={activePage.kind === "embedded" &&
-                activePage.id === page.id
-                  ? "page"
-                  : undefined}
-                onclick={() => openEmbeddedPage(page.id)}
+              <div
+                class="sidebar-custom-entry"
                 data-sidebar-title={page.title}
                 data-sidebar-description={page.description}
-                data-od-id={`nav-global-custom-${page.id}`}
               >
-                <b class="sidebar-custom-marker" aria-hidden="true">G</b>
-                <PanelTop size={18} strokeWidth={1.7} aria-hidden="true" />
-                <span class="sidebar-custom-title">{page.title}</span>
-              </button>
+                <button
+                  class="sidebar-link sidebar-link--custom"
+                  type="button"
+                  aria-label={activePage.kind === "embedded" &&
+                  activePage.id === page.id
+                    ? `Reload ${page.title}`
+                    : `Open ${page.title}`}
+                  aria-current={activePage.kind === "embedded" &&
+                  activePage.id === page.id
+                    ? "page"
+                    : undefined}
+                  onclick={() => openEmbeddedPage(page.id)}
+                  data-od-id={`nav-global-custom-${page.id}`}
+                >
+                  <b class="sidebar-custom-marker" aria-hidden="true">G</b>
+                  <span class="sidebar-custom-icon" aria-hidden="true">
+                    <EmbeddedPageIcon iconUrl={page.icon_url} size={18} />
+                  </span>
+                  <span class="sidebar-custom-title">{page.title}</span>
+                </button>
+                <!-- eslint-disable svelte/no-navigation-without-resolve -- user-saved external destination -->
+                <a
+                  class="ui-button ui-button--ghost ui-button--icon sidebar-custom-external"
+                  href={page.url}
+                  target="_blank"
+                  rel="external noopener noreferrer"
+                  aria-label={`Open ${page.title} externally`}
+                  title="Open externally"
+                  data-od-id={`open-global-custom-${page.id}-externally`}
+                >
+                  <ExternalLink
+                    size={16}
+                    strokeWidth={1.8}
+                    aria-hidden="true"
+                  />
+                </a>
+                <!-- eslint-enable svelte/no-navigation-without-resolve -->
+              </div>
             {/each}
           </div>
         {/if}
@@ -3895,23 +4033,49 @@
           >
             <span class="sidebar-custom-group-label">Personal custom</span>
             {#each dashboard.embedded_pages.personal as page (page.id)}
-              <button
-                class="sidebar-link sidebar-link--custom"
-                type="button"
-                aria-label={`${page.title}, personal custom page`}
-                aria-current={activePage.kind === "embedded" &&
-                activePage.id === page.id
-                  ? "page"
-                  : undefined}
-                onclick={() => openEmbeddedPage(page.id)}
+              <div
+                class="sidebar-custom-entry"
                 data-sidebar-title={page.title}
                 data-sidebar-description={page.description}
-                data-od-id={`nav-personal-custom-${page.id}`}
               >
-                <b class="sidebar-custom-marker" aria-hidden="true">U</b>
-                <PanelTop size={18} strokeWidth={1.7} aria-hidden="true" />
-                <span class="sidebar-custom-title">{page.title}</span>
-              </button>
+                <button
+                  class="sidebar-link sidebar-link--custom"
+                  type="button"
+                  aria-label={activePage.kind === "embedded" &&
+                  activePage.id === page.id
+                    ? `Reload ${page.title}`
+                    : `Open ${page.title}`}
+                  aria-current={activePage.kind === "embedded" &&
+                  activePage.id === page.id
+                    ? "page"
+                    : undefined}
+                  onclick={() => openEmbeddedPage(page.id)}
+                  data-od-id={`nav-personal-custom-${page.id}`}
+                >
+                  <b class="sidebar-custom-marker" aria-hidden="true">U</b>
+                  <span class="sidebar-custom-icon" aria-hidden="true">
+                    <EmbeddedPageIcon iconUrl={page.icon_url} size={18} />
+                  </span>
+                  <span class="sidebar-custom-title">{page.title}</span>
+                </button>
+                <!-- eslint-disable svelte/no-navigation-without-resolve -- user-saved external destination -->
+                <a
+                  class="ui-button ui-button--ghost ui-button--icon sidebar-custom-external"
+                  href={page.url}
+                  target="_blank"
+                  rel="external noopener noreferrer"
+                  aria-label={`Open ${page.title} externally`}
+                  title="Open externally"
+                  data-od-id={`open-personal-custom-${page.id}-externally`}
+                >
+                  <ExternalLink
+                    size={16}
+                    strokeWidth={1.8}
+                    aria-hidden="true"
+                  />
+                </a>
+                <!-- eslint-enable svelte/no-navigation-without-resolve -->
+              </div>
             {/each}
           </div>
         {/if}
@@ -4361,6 +4525,7 @@
                         aria-label="Saved bookmarks"
                       >
                         {#each bookmarks as bookmark (bookmark.id)}
+                          <!-- eslint-disable svelte/no-navigation-without-resolve -- user-saved external destination -->
                           <a
                             class="utility-bookmark-row"
                             href={bookmark.url}
@@ -4388,6 +4553,7 @@
                               aria-hidden="true"
                             />
                           </a>
+                          <!-- eslint-enable svelte/no-navigation-without-resolve -->
                         {/each}
                       </div>
                     {:else}
@@ -4414,6 +4580,11 @@
                 </aside>
               </div>
             </section>
+          {:else if activeSection === "bookmarks"}
+            <BookmarksPage
+              administrator={dashboard.user.role === "administrator"}
+              onToast={showToast}
+            />
           {:else if activeSection === "tasks"}
             <section class="feature-page product-page" data-od-id="tasks-page">
               <div class="feature-page-intro task-page-intro page-header">
@@ -5096,7 +5267,13 @@
               onwallapplied={handleWallApplied}
             />
           {:else if activeSection === "youtube"}
-            <YoutubePage />
+            <YoutubePage ondownload={openDownload} />
+          {:else if activeSection === "downloads"}
+            <DownloadsPage
+              viewerRole={dashboard.user.role}
+              initialUrl={downloadsPrefillUrl}
+              onPrefillHandled={() => (downloadsPrefillUrl = "")}
+            />
           {:else if activeSection === "podcasts"}
             <PodcastsPage viewerRole={dashboard.user.role} />
           {:else if activeSection === "music"}
@@ -5388,196 +5565,287 @@
                             onsubmit={saveUserSettings}
                             data-od-id="user-settings-form"
                           >
-                          <section
-                            class="settings-surface"
-                            aria-labelledby="profile-identity-heading"
-                            data-od-id="profile-identity-settings"
-                          >
-                            <div class="settings-surface-heading">
-                              <div>
-                                <p class="widget-kicker">
-                                  [ ACCOUNT IDENTITY ]
-                                </p>
-                                <h4 id="profile-identity-heading">Profile</h4>
-                              </div>
-                              <span>
-                                {dashboard.user.role === "administrator"
-                                  ? "Administrator"
-                                  : "Member"}
-                              </span>
-                            </div>
-
-                            <div
-                              class="profile-avatar-editor"
-                              data-od-id="avatar-settings"
+                            <section
+                              class="settings-surface"
+                              aria-labelledby="profile-identity-heading"
+                              data-od-id="profile-identity-settings"
                             >
-                              <span class="settings-avatar" aria-hidden="true">
-                                {#if avatarPreviewSource()}
-                                  <img
-                                    src={avatarPreviewSource()}
-                                    alt=""
-                                    onerror={() => (avatarAvailable = false)}
-                                  />
-                                {:else}
-                                  {profileInitials}
-                                {/if}
-                              </span>
-                              <div class="profile-avatar-copy">
-                                <strong>Profile image</strong>
-                                <span
-                                  >JPEG, PNG, WebP, or AVIF up to 10 MB.</span
-                                >
+                              <div class="settings-surface-heading">
+                                <div>
+                                  <p class="widget-kicker">
+                                    [ ACCOUNT IDENTITY ]
+                                  </p>
+                                  <h4 id="profile-identity-heading">Profile</h4>
+                                </div>
+                                <span>
+                                  {dashboard.user.role === "administrator"
+                                    ? "Administrator"
+                                    : "Member"}
+                                </span>
                               </div>
-                              <div class="profile-avatar-actions">
-                                <label
-                                  class="ui-button ui-button--secondary secondary-btn avatar-upload"
+
+                              <div
+                                class="profile-avatar-editor"
+                                data-od-id="avatar-settings"
+                              >
+                                <span
+                                  class="settings-avatar"
+                                  aria-hidden="true"
                                 >
-                                  Choose image
+                                  {#if avatarPreviewSource()}
+                                    <img
+                                      src={avatarPreviewSource()}
+                                      alt=""
+                                      onerror={() => (avatarAvailable = false)}
+                                    />
+                                  {:else}
+                                    {profileInitials}
+                                  {/if}
+                                </span>
+                                <div class="profile-avatar-copy">
+                                  <strong>Profile image</strong>
+                                  <span
+                                    >JPEG, PNG, WebP, or AVIF up to 10 MB.</span
+                                  >
+                                </div>
+                                <div class="profile-avatar-actions">
+                                  <label
+                                    class="ui-button ui-button--secondary secondary-btn avatar-upload"
+                                  >
+                                    Choose image
+                                    <input
+                                      type="file"
+                                      accept="image/jpeg,image/png,image/webp,image/avif"
+                                      onchange={selectAvatar}
+                                      data-od-id="choose-user-avatar"
+                                    />
+                                  </label>
+                                  <button
+                                    class="ui-button ui-button--danger background-reset"
+                                    type="button"
+                                    onclick={resetAvatar}
+                                    data-od-id="remove-user-avatar"
+                                    >Remove</button
+                                  >
+                                </div>
+                              </div>
+
+                              <div class="settings-field-grid">
+                                <label
+                                  class="settings-field"
+                                  for="settings-name"
+                                >
+                                  <span>Display name</span>
                                   <input
-                                    type="file"
-                                    accept="image/jpeg,image/png,image/webp,image/avif"
-                                    onchange={selectAvatar}
-                                    data-od-id="choose-user-avatar"
+                                    id="settings-name"
+                                    class="text-input"
+                                    bind:value={settingsDisplayName}
+                                    maxlength="60"
+                                    required
                                   />
                                 </label>
-                                <button
-                                  class="ui-button ui-button--danger background-reset"
-                                  type="button"
-                                  onclick={resetAvatar}
-                                  data-od-id="remove-user-avatar">Remove</button
+                                <label
+                                  class="settings-field"
+                                  for="settings-email"
                                 >
+                                  <span>Email address</span>
+                                  <input
+                                    id="settings-email"
+                                    class="text-input"
+                                    type="email"
+                                    value={dashboard.user.email}
+                                    readonly
+                                    aria-describedby="settings-email-note"
+                                  />
+                                  <small id="settings-email-note">
+                                    This is the account identifier and cannot be
+                                    changed from Pandan.
+                                  </small>
+                                </label>
                               </div>
-                            </div>
 
-                            <div class="settings-field-grid">
-                              <label class="settings-field" for="settings-name">
-                                <span>Display name</span>
-                                <input
-                                  id="settings-name"
-                                  class="text-input"
-                                  bind:value={settingsDisplayName}
-                                  maxlength="60"
-                                  required
-                                />
-                              </label>
-                              <label
-                                class="settings-field"
-                                for="settings-email"
+                              <div
+                                class="settings-method-summary"
+                                data-od-id="account-sign-in-method"
                               >
-                                <span>Email address</span>
-                                <input
-                                  id="settings-email"
-                                  class="text-input"
-                                  type="email"
-                                  value={dashboard.user.email}
-                                  readonly
-                                  aria-describedby="settings-email-note"
-                                />
-                                <small id="settings-email-note">
-                                  This is the account identifier and cannot be
-                                  changed from Pandan.
-                                </small>
-                              </label>
-                            </div>
-
-                            <div
-                              class="settings-method-summary"
-                              data-od-id="account-sign-in-method"
-                            >
-                              <div>
-                                <p class="widget-kicker">[ SIGN-IN METHOD ]</p>
-                                <strong>
+                                <div>
+                                  <p class="widget-kicker">
+                                    [ SIGN-IN METHOD ]
+                                  </p>
+                                  <strong>
+                                    {#if !authConfig.password_login_enabled && authConfig.oidc_enabled}
+                                      {authConfig.oidc_provider_name ??
+                                        "Single sign-on"}
+                                    {:else if authConfig.oidc_enabled}
+                                      Password or {authConfig.oidc_provider_name ??
+                                        "single sign-on"}
+                                    {:else}
+                                      Email and password
+                                    {/if}
+                                  </strong>
+                                </div>
+                                <p>
                                   {#if !authConfig.password_login_enabled && authConfig.oidc_enabled}
-                                    {authConfig.oidc_provider_name ??
-                                      "Single sign-on"}
+                                    This instance uses OIDC. Password access is
+                                    disabled, so credentials are managed by the
+                                    identity provider.
                                   {:else if authConfig.oidc_enabled}
-                                    Password or {authConfig.oidc_provider_name ??
-                                      "single sign-on"}
+                                    This instance accepts password access and
+                                    OIDC. Your email remains the shared account
+                                    identifier.
                                   {:else}
-                                    Email and password
+                                    This instance uses password access.
+                                    Credentials are verified by the Pandan
+                                    server.
                                   {/if}
-                                </strong>
+                                </p>
                               </div>
-                              <p>
-                                {#if !authConfig.password_login_enabled && authConfig.oidc_enabled}
-                                  This instance uses OIDC. Password access is
-                                  disabled, so credentials are managed by the
-                                  identity provider.
-                                {:else if authConfig.oidc_enabled}
-                                  This instance accepts password access and
-                                  OIDC. Your email remains the shared account
-                                  identifier.
-                                {:else}
-                                  This instance uses password access.
-                                  Credentials are verified by the Pandan server.
-                                {/if}
-                              </p>
-                            </div>
 
-                            {#if settingsError}
-                              <p class="form-error" role="alert">
-                                {settingsError}
-                              </p>
-                            {/if}
+                              {#if settingsError}
+                                <p class="form-error" role="alert">
+                                  {settingsError}
+                                </p>
+                              {/if}
 
-                            <div class="settings-surface-actions">
-                              <button
-                                class="ui-button ui-button--primary"
-                                type="submit"
-                                disabled={savingSettings}
-                                data-od-id="save-user-settings"
-                              >
-                                {savingSettings
-                                  ? "Saving…"
-                                  : "Save user settings"}
-                              </button>
-                            </div>
-                          </section>
+                              <div class="settings-surface-actions">
+                                <button
+                                  class="ui-button ui-button--primary"
+                                  type="submit"
+                                  disabled={savingSettings}
+                                  data-od-id="save-user-settings"
+                                >
+                                  {savingSettings
+                                    ? "Saving…"
+                                    : "Save user settings"}
+                                </button>
+                              </div>
+                            </section>
                           </form>
                           <JellyfinSettings mode="account" />
                         </div>
                       {:else if settingsCategory === "sessions"}
                         <section
                           class="settings-surface session-settings"
-                          aria-labelledby="current-session-heading"
+                          aria-labelledby="active-sessions-heading"
                           data-od-id="sessions-settings"
                         >
                           <div class="settings-surface-heading">
                             <div>
-                              <p class="widget-kicker">[ ACTIVE SESSION ]</p>
-                              <h4 id="current-session-heading">This browser</h4>
+                              <p class="widget-kicker">[ ACCOUNT SESSIONS ]</p>
+                              <h4 id="active-sessions-heading">
+                                Active browser sessions
+                              </h4>
                             </div>
-                            <span class="session-status">Active</span>
+                            <span class="session-status">
+                              {accountSessions.length}
+                              {accountSessions.length === 1
+                                ? " session"
+                                : " sessions"}
+                            </span>
                           </div>
-                          <dl class="session-details">
-                            <div>
-                              <dt>Account</dt>
-                              <dd>{dashboard.user.email}</dd>
-                            </div>
-                            <div>
-                              <dt>Protection</dt>
-                              <dd>HTTP-only · SameSite Strict</dd>
-                            </div>
-                            <div>
-                              <dt>Scope</dt>
-                              <dd>Current browser session</dd>
-                            </div>
-                          </dl>
                           <p class="settings-supporting-copy">
-                            Pandan exposes only the session active in this
-                            browser. Signing out revokes its server-side token
-                            immediately.
+                            Each row uses the last user agent and client IP
+                            Pandan observed for that session. Ending one revokes
+                            its server-side token immediately.
                           </p>
-                          <div class="settings-surface-actions">
-                            <button
-                              class="ui-button ui-button--danger"
-                              type="button"
-                              onclick={signOut}
-                              data-od-id="sign-out-current-session"
+
+                          {#if sessionsError}
+                            <p class="form-error" role="alert">
+                              {sessionsError}
+                            </p>
+                          {/if}
+
+                          {#if loadingSessions}
+                            <p class="settings-supporting-copy" role="status">
+                              Loading active sessions…
+                            </p>
+                          {:else if sessionsError && accountSessions.length === 0}
+                            <div class="settings-surface-actions">
+                              <button
+                                class="ui-button ui-button--secondary"
+                                type="button"
+                                onclick={loadSessions}
+                                data-od-id="retry-session-list"
+                              >
+                                Retry
+                              </button>
+                            </div>
+                          {:else if accountSessions.length === 0}
+                            <p class="settings-supporting-copy">
+                              No active sessions were found for this account.
+                            </p>
+                          {:else}
+                            <div
+                              class="session-list"
+                              role="list"
+                              aria-label="Active sessions"
                             >
-                              Sign out this session
-                            </button>
-                          </div>
+                              {#each accountSessions as session (session.id)}
+                                <article
+                                  class="session-entry"
+                                  class:is-current={session.is_current}
+                                  role="listitem"
+                                  aria-labelledby={`session-heading-${session.id}`}
+                                  data-od-id={`session-${session.id}`}
+                                >
+                                  <header class="session-entry-heading">
+                                    <div>
+                                      <strong
+                                        id={`session-heading-${session.id}`}
+                                      >
+                                        {session.is_current
+                                          ? "Current session"
+                                          : "Active session"}
+                                      </strong>
+                                      <small>
+                                        {session.is_current
+                                          ? "This browser"
+                                          : "Recorded browser session"}
+                                      </small>
+                                    </div>
+                                    <span class="session-status">
+                                      {session.is_current
+                                        ? "Current"
+                                        : "Active"}
+                                    </span>
+                                  </header>
+
+                                  <dl class="session-details">
+                                    <div>
+                                      <dt>User agent</dt>
+                                      <dd>
+                                        {session.user_agent || "Unavailable"}
+                                      </dd>
+                                    </div>
+                                    <div>
+                                      <dt>IP address</dt>
+                                      <dd>
+                                        {session.ip_address || "Unavailable"}
+                                      </dd>
+                                    </div>
+                                  </dl>
+
+                                  <footer class="session-entry-footer">
+                                    <button
+                                      class="ui-button ui-button--danger"
+                                      type="button"
+                                      disabled={endingSessionId !== ""}
+                                      onclick={() => endBrowserSession(session)}
+                                      data-od-id={session.is_current
+                                        ? "sign-out-current-session"
+                                        : `force-sign-out-${session.id}`}
+                                    >
+                                      {endingSessionId === session.id
+                                        ? "Signing out…"
+                                        : session.is_current
+                                          ? "Sign out this session"
+                                          : "Force sign out"}
+                                    </button>
+                                  </footer>
+                                </article>
+                              {/each}
+                            </div>
+                          {/if}
                         </section>
                       {:else if settingsCategory === "data-management"}
                         <section
@@ -5821,6 +6089,8 @@
                           <JellyfinSettings mode="admin" />
                           <NetworkAccessSettings />
                         </div>
+                      {:else if settingsCategory === "logs" && dashboard.user.role === "administrator"}
+                        <LogsSettings />
                       {:else if settingsCategory === "user-management" && dashboard.user.role === "administrator"}
                         <section
                           class="settings-surface user-management-settings"
@@ -5897,21 +6167,24 @@
                                     >
                                       Role for {user.display_name}
                                     </label>
-                                    <select
-                                      id={`role-${user.id}`}
-                                      class="select-input role-select"
-                                      value={user.role}
-                                      disabled={user.id === dashboard.user.id ||
-                                        mutatingUserId !== ""}
-                                      onchange={(event) =>
-                                        handleRoleChange(event, user)}
-                                      data-od-id={`user-role-${user.id}`}
-                                    >
-                                      <option value="member">Member</option>
-                                      <option value="administrator">
-                                        Administrator
-                                      </option>
-                                    </select>
+                                    <div class="role-select-wrap">
+                                      <select
+                                        id={`role-${user.id}`}
+                                        class="select-input role-select"
+                                        value={user.role}
+                                        disabled={user.id ===
+                                          dashboard.user.id ||
+                                          mutatingUserId !== ""}
+                                        onchange={(event) =>
+                                          handleRoleChange(event, user)}
+                                        data-od-id={`user-role-${user.id}`}
+                                      >
+                                        <option value="member">Member</option>
+                                        <option value="administrator">
+                                          Admin
+                                        </option>
+                                      </select>
+                                    </div>
                                     <button
                                       class="ui-button ui-button--danger remove-user-btn"
                                       type="button"
@@ -5985,7 +6258,10 @@
               />
             {/key}
           {:else if activeEmbeddedPage}
-            <EmbeddedPage page={activeEmbeddedPage} />
+            <EmbeddedPage
+              page={activeEmbeddedPage}
+              reloadToken={embeddedPageReloadToken}
+            />
           {:else if placeholderPage}
             <section
               class="feature-page placeholder-page product-page"
@@ -6032,7 +6308,7 @@
   <!--
     The player lives in the shell, outside the `{#if activeSection}` chain above.
     An audio element owned by a product page would be destroyed the moment
-    someone navigated to another section, cutting playback off mid-sentence.
+    someone navigated to another section, cutting playback off mid-stream.
   -->
   <audio
     bind:this={podcastAudio}
@@ -6056,14 +6332,18 @@
           type="button"
           data-tip={podcastPlayer.source === "jellyfin"
             ? "Previous track"
-            : "Previous episode"}
+            : podcastPlayer.source === "download"
+              ? "Restart audio"
+              : "Previous episode"}
           aria-label={podcastPlayer.hasPrevious
             ? podcastPlayer.source === "jellyfin"
               ? "Play the previous track"
               : "Play the previous episode"
             : podcastPlayer.source === "jellyfin"
               ? "Restart this track"
-              : "Restart this episode"}
+              : podcastPlayer.source === "download"
+                ? "Restart this downloaded audio"
+                : "Restart this episode"}
           onclick={() => podcastPlayer.playPrevious()}
         >
           <SkipBack size={16} strokeWidth={1.9} />
@@ -6108,10 +6388,14 @@
           type="button"
           data-tip={podcastPlayer.source === "jellyfin"
             ? "Next track"
-            : "Next episode"}
+            : podcastPlayer.source === "download"
+              ? "No queued audio"
+              : "Next episode"}
           aria-label={podcastPlayer.source === "jellyfin"
             ? "Play the next queued track"
-            : "Play the next queued episode"}
+            : podcastPlayer.source === "download"
+              ? "No downloaded audio is queued"
+              : "Play the next queued episode"}
           disabled={!podcastPlayer.hasNext}
           onclick={() => podcastPlayer.playNext()}
         >
@@ -6142,7 +6426,9 @@
           value={podcastPlayer.currentTime}
           aria-label={podcastPlayer.source === "jellyfin"
             ? "Seek within the track"
-            : "Seek within the episode"}
+            : podcastPlayer.source === "download"
+              ? "Seek within the downloaded audio"
+              : "Seek within the episode"}
           oninput={(event) =>
             podcastPlayer.seek(Number(event.currentTarget.value))}
         />
@@ -6212,6 +6498,8 @@
           </span>
         </div>
       </div>
+
+      <AudioVisualizationControl />
 
       {#if podcastPlayer.source === "podcast"}
         <label class="podcast-player-rate" data-tip="Playback speed">
@@ -7006,10 +7294,12 @@
                     />
                   {/if}
                 </span>
+                <!-- eslint-disable svelte/no-navigation-without-resolve -- user-saved external destination -->
                 <a href={bookmark.url} target="_blank" rel="noreferrer">
                   <strong>{bookmark.title}</strong>
                   <small>{bookmarkHost(bookmark.url)}</small>
                 </a>
+                <!-- eslint-enable svelte/no-navigation-without-resolve -->
                 <button
                   class={pendingBookmarkDeleteId === bookmark.id
                     ? "ui-button ui-button--danger bookmark-delete-confirm"

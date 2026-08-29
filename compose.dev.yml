@@ -17,6 +17,7 @@ services:
       DATABASE_URL: sqlite:///app/.devdata/pandan.db
       PORT: 9651
       RUST_LOG: ${RUST_LOG:-info}
+      PANDAN_LOG_DIR: /app/.devdata/logs
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       PANDAN_BASE_URL: ${PANDAN_BASE_URL:-http://localhost:9651}
       OIDC_ISSUER: ${OIDC_ISSUER:-}
@@ -26,6 +27,12 @@ services:
       PANDAN_SECRET_KEY: ${PANDAN_SECRET_KEY:-}
       INVIDIOUS_BASE_URL: ${INVIDIOUS_BASE_URL:-}
       INVIDIOUS_ALLOW_PRIVATE_NETWORK: ${INVIDIOUS_ALLOW_PRIVATE_NETWORK:-}
+      # Keep development download state beside the development database.
+      PANDAN_DOWNLOAD_DIR: /app/.devdata/downloads
+      PANDAN_DOWNLOADS_ENABLED: ${PANDAN_DOWNLOADS_ENABLED:-true}
+      PANDAN_YTDLP_BIN: /usr/local/bin/yt-dlp
+      PANDAN_FFMPEG_BIN: /usr/bin/ffmpeg
+      PANDAN_DENO_BIN: /usr/local/bin/deno
       DEV_CHOWN_PATHS: >-
         /app/target /app/.devdata /usr/local/cargo/registry /usr/local/cargo/git
     command: bacon --headless run

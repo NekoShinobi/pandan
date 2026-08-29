@@ -630,12 +630,21 @@
     font-weight: 540;
   }
 
+  .sidebar-utility-dialog {
+    scrollbar-gutter: auto;
+  }
+
+  .sidebar-utility-dialog .settings-heading {
+    padding-inline: calc(24px + var(--scrollbar-size));
+  }
+
   .sidebar-utility-form {
     align-content: start;
     display: grid;
     gap: 10px;
     overflow-y: auto;
     padding: 22px 24px 24px;
+    scrollbar-gutter: stable both-edges;
   }
 
   .timezone-selection-list {
@@ -688,6 +697,12 @@
   .sidebar-utility-actions {
     justify-content: flex-end;
     margin-top: 8px;
+  }
+
+  @supports not (scrollbar-gutter: stable) {
+    .sidebar-utility-form {
+      padding-left: calc(24px + var(--scrollbar-size));
+    }
   }
 
   @media (max-width: 980px) and (min-width: 721px) {

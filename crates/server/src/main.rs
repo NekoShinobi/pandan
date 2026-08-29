@@ -6,16 +6,9 @@ use server::{
 };
 use tracing::{info, warn};
 use tracing_actix_web::TracingLogger;
-use tracing_subscriber::{EnvFilter, fmt};
 
 #[tokio::main]
 async fn main() -> miette::Result<()> {
-    fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
-
     std::fs::create_dir_all("data")
         .map_err(|error| miette::miette!("failed to create data directory: {error}"))?;
 
@@ -26,10 +19,20 @@ async fn main() -> miette::Result<()> {
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(9651);
 
-    info!(%database_url, "connecting to database");
     let pool = db::connect(&database_url)
         .await
         .map_err(|error| database_startup_error(&database_url, error))?;
+    let logging_settings = db::queries::get_logging_settings(&pool)
+        .await
+        .map_err(|error| miette::miette!("failed to load logging settings: {error}"))?;
+    let logging = server::logging::initialize(&logging_settings)
+        .map_err(|error| miette::miette!("logging configuration error: {error}"))?;
+    info!(
+        %database_url,
+        file_logging_enabled = logging_settings.file_enabled,
+        file_log_level = %logging_settings.log_level,
+        "database connected and logging configured"
+    );
     let cookie_secure = std::env::var("COOKIE_SECURE")
         .is_ok_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
     let oidc = server::oidc::OidcProvider::from_env()
@@ -55,18 +58,25 @@ async fn main() -> miette::Result<()> {
         media_dir = %podcast_media.root().display(),
         "podcast media storage configured"
     );
+    let youtube_downloads = server::YoutubeDownloadService::from_env(pool.clone())
+        .await
+        .map_err(|error| miette::miette!("YouTube download configuration error: {error}"))?;
+    log_youtube_download_capability(&youtube_downloads);
     let state = web::Data::new(AppState {
         pool: pool.clone(),
         cookie_secure,
         oidc,
         widget_integrations,
         jellyfin: server::jellyfin::JellyfinService::new(pool),
+        youtube_downloads,
         podcast_media,
         ntfy_events: server::ntfy::NtfyEventHub::default(),
         site_origin: SiteOrigin::from_env(),
+        logging,
     });
     server::spawn_youtube_refresh_worker(state.clone());
     server::spawn_podcast_workers(state.clone());
+    server::spawn_youtube_download_workers(state.clone());
     server::spawn_rss_refresh_worker(state.clone());
     server::ntfy::spawn_ntfy_worker(state.clone());
 
@@ -92,6 +102,28 @@ async fn main() -> miette::Result<()> {
     .run()
     .await
     .map_err(|error| miette::miette!("server error: {error}"))
+}
+
+fn log_youtube_download_capability(downloads: &server::YoutubeDownloadService) {
+    let capability = downloads.capability();
+    info!(
+        enabled = capability.enabled,
+        available = capability.available,
+        yt_dlp_version = capability
+            .yt_dlp_version
+            .as_deref()
+            .unwrap_or("unavailable"),
+        ffmpeg_version = capability
+            .ffmpeg_version
+            .as_deref()
+            .unwrap_or("unavailable"),
+        ffprobe_version = capability
+            .ffprobe_version
+            .as_deref()
+            .unwrap_or("unavailable"),
+        deno_version = capability.deno_version.as_deref().unwrap_or("unavailable"),
+        "YouTube downloads configured"
+    );
 }
 
 fn database_startup_error(database_url: &str, error: sqlx::Error) -> miette::Report {

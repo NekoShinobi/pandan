@@ -15,7 +15,7 @@ use super::{
 use actix_files::NamedFile;
 use actix_web::{
     HttpRequest, HttpResponse,
-    http::header::{self, ContentDisposition, DispositionType},
+    http::header::{self, ContentDisposition, DispositionParam, DispositionType},
     web,
 };
 use db::entities::{
@@ -23,6 +23,7 @@ use db::entities::{
     PodcastSummary,
 };
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use url::Url;
 
 /// The longest resume position worth storing, so a corrupt client cannot write nonsense.
@@ -174,6 +175,7 @@ pub fn configure(config: &mut web::ServiceConfig) {
             )
             .service(
                 web::resource("/episodes/{episode_id}/download")
+                    .route(web::get().to(episode_download))
                     .route(web::post().to(request_download))
                     .route(web::delete().to(remove_download)),
             )
@@ -582,8 +584,25 @@ async fn episode_audio(
     request: HttpRequest,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
+    serve_episode_audio(state, request, path.into_inner(), false).await
+}
+
+/// Downloads one cached episode through the same subscription guard as playback.
+async fn episode_download(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    path: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    serve_episode_audio(state, request, path.into_inner(), true).await
+}
+
+async fn serve_episode_audio(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    episode_id: String,
+    attachment: bool,
+) -> Result<HttpResponse, ApiError> {
     let account = authenticated_account(&state, &request).await?;
-    let episode_id = path.into_inner();
     require_episode_access(&state, &account.id, &episode_id).await?;
 
     let cached = db::queries::get_podcast_cached_file(&state.pool, &episode_id)
@@ -600,12 +619,57 @@ async fn episode_audio(
     // Eviction ranks on this, so playing an episode protects it from being reclaimed.
     let _ = db::queries::touch_podcast_download(&state.pool, &episode_id).await;
 
-    Ok(file
-        .set_content_disposition(ContentDisposition {
+    let disposition = if attachment {
+        let episode = db::queries::get_podcast_episode(&state.pool, &account.id, &episode_id)
+            .await?
+            .ok_or(ApiError::NotFound("episode not found"))?;
+        ContentDisposition {
+            disposition: DispositionType::Attachment,
+            parameters: vec![DispositionParam::Filename(media_download_name(
+                &episode.title,
+                &cached.file_name,
+                "podcast-episode",
+            ))],
+        }
+    } else {
+        ContentDisposition {
             disposition: DispositionType::Inline,
             parameters: Vec::new(),
-        })
+        }
+    };
+
+    Ok(file
+        .set_content_disposition(disposition)
         .into_response(&request))
+}
+
+fn media_download_name(title: &str, stored_name: &str, fallback: &str) -> String {
+    let mut stem = title
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, ' ' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    stem = stem.trim_matches([' ', '_']).trim().to_owned();
+    stem.truncate(120);
+    if stem.is_empty() {
+        stem = fallback.to_owned();
+    }
+    let extension = Path::new(stored_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 8
+                && value
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric())
+        });
+    extension.map_or(stem.clone(), |value| format!("{stem}.{value}"))
 }
 
 async fn save_progress(
@@ -900,7 +964,19 @@ async fn update_settings(
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_feed_url;
+    use super::{media_download_name, normalize_feed_url};
+
+    #[test]
+    fn attachment_names_are_readable_and_header_safe() {
+        assert_eq!(
+            media_download_name("An episode: part one", "opaque-id.mp3", "episode"),
+            "An episode_ part one.mp3"
+        );
+        assert_eq!(
+            media_download_name("東京", "opaque-id.m4a", "episode"),
+            "episode.m4a"
+        );
+    }
 
     #[test]
     fn feed_urls_normalize_to_one_comparable_form() {

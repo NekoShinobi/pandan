@@ -755,6 +755,47 @@ export interface Bookmark {
   updated_at: string;
 }
 
+export type BookmarkLibraryScope = "global" | "personal";
+export type BookmarkLibraryIconKind = "favicon" | "lucide" | "custom";
+
+export interface BookmarkLibraryItem {
+  id: string;
+  category_id: string;
+  title: string;
+  url: string;
+  icon_kind: BookmarkLibraryIconKind;
+  icon_value: string | null;
+  has_icon: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BookmarkLibraryCategoryRecord {
+  id: string;
+  scope: BookmarkLibraryScope;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BookmarkLibraryCategory
+  extends BookmarkLibraryCategoryRecord {
+  bookmarks: BookmarkLibraryItem[];
+}
+
+export interface BookmarkLibraryResponse {
+  global: BookmarkLibraryCategory[];
+  personal: BookmarkLibraryCategory[];
+}
+
+export interface BookmarkLibraryItemInput {
+  category_id: string;
+  title: string;
+  url: string;
+  icon_kind: BookmarkLibraryIconKind;
+  icon_value: string | null;
+}
+
 export interface WidgetCapabilities {
   secret_storage_enabled: boolean;
 }
@@ -893,6 +934,7 @@ export type UserContentScope =
   | "rss"
   | "journal"
   | "youtube"
+  | "downloads"
   | "podcasts"
   | "coding"
   | "subscriptions";
@@ -900,6 +942,117 @@ export type UserContentScope =
 export interface DeleteUserContentResult {
   scope: UserContentScope;
   deleted: number;
+}
+
+export type YoutubeDownloadStatus =
+  | "queued"
+  | "inspecting"
+  | "downloading"
+  | "postprocessing"
+  | "complete"
+  | "failed"
+  | "cancelled";
+
+export type YoutubeDownloadMediaKind = "video" | "audio";
+export type YoutubeDownloadFormat =
+  "mp4" | "mkv" | "webm" | "m4a" | "mp3" | "opus";
+
+export interface YoutubeDownloadJob {
+  id: string;
+  user_id: string;
+  source_url: string;
+  youtube_video_id: string;
+  title: string;
+  channel_name: string;
+  duration_seconds: number | null;
+  media_kind: YoutubeDownloadMediaKind;
+  output_format: YoutubeDownloadFormat;
+  max_height: number | null;
+  status: YoutubeDownloadStatus;
+  progress_percent: number | null;
+  downloaded_bytes: number;
+  total_bytes: number | null;
+  speed_bytes_per_second: number | null;
+  eta_seconds: number | null;
+  storage_file_name: string;
+  display_file_name: string;
+  mime_type: string;
+  byte_size: number;
+  attempts: number;
+  error_code: string | null;
+  last_error: string | null;
+  lease_started_at: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  updated_at: string;
+}
+
+export interface YoutubeDownloadCapability {
+  enabled: boolean;
+  available: boolean;
+  unavailable_reason: string | null;
+}
+
+export interface YoutubeDownloadMemberPolicy {
+  member_downloads_enabled: boolean;
+  per_user_budget_bytes: number;
+  max_output_bytes: number;
+  max_batch_urls: number;
+  max_queued_per_user: number;
+}
+
+export interface YoutubeDownloadOverview {
+  capability: YoutubeDownloadCapability;
+  policy: YoutubeDownloadMemberPolicy;
+  usage_bytes: number;
+  active_jobs: YoutubeDownloadJob[];
+  history: YoutubeDownloadJob[];
+}
+
+export interface YoutubeDownloadInspection {
+  source_url: string;
+  video_id: string;
+  title: string;
+  channel_name: string;
+  duration_seconds: number | null;
+  is_live: boolean;
+  available_heights: number[];
+  video_formats: YoutubeDownloadFormat[];
+  audio_formats: YoutubeDownloadFormat[];
+}
+
+export interface YoutubeDownloadRejection {
+  url: string;
+  code: string;
+  error: string;
+}
+
+export interface YoutubeDownloadCreateResult {
+  jobs: YoutubeDownloadJob[];
+  rejected: YoutubeDownloadRejection[];
+}
+
+export interface YoutubeDownloadSettings {
+  member_downloads_enabled: boolean;
+  storage_budget_bytes: number;
+  per_user_budget_bytes: number;
+  max_output_bytes: number;
+  global_concurrency: number;
+  per_user_concurrency: number;
+  max_batch_urls: number;
+  max_queued_per_user: number;
+  updated_at: string;
+}
+
+export interface YoutubeDownloadAdminPolicy extends YoutubeDownloadSettings {
+  storage_used_bytes: number;
+  capability: YoutubeDownloadCapability & {
+    yt_dlp_version: string | null;
+    ffmpeg_version: string | null;
+    ffprobe_version: string | null;
+    deno_version: string | null;
+  };
 }
 
 export interface UserAppearance {
@@ -931,6 +1084,13 @@ export interface AuthResponse {
   settings: UserSettings;
 }
 
+export interface BrowserSession {
+  id: string;
+  user_agent: string;
+  ip_address: string;
+  is_current: boolean;
+}
+
 export interface OidcConfig {
   enabled: boolean;
   provider_name: string | null;
@@ -954,6 +1114,43 @@ export interface LoginAppearance {
   background_contrast: number;
   background_saturation: number;
   updated_at: string;
+}
+
+export type LogLevel = "error" | "warn" | "info" | "debug" | "trace";
+
+export interface LoggingSettings {
+  file_enabled: boolean;
+  log_level: LogLevel;
+  retention_days: number;
+  max_file_size_mb: number;
+  max_files: number;
+  updated_at: string;
+}
+
+export interface LogStorageStatus {
+  directory: string;
+  active_file: string;
+  active_bytes: number;
+  rotated_files: number;
+  retained_bytes: number;
+  dropped_entries: number;
+  last_error: string | null;
+}
+
+export interface LogEntry {
+  id: string;
+  timestamp: string;
+  level: LogLevel;
+  target: string;
+  message: string;
+  fields: Record<string, unknown>;
+  file: string;
+}
+
+export interface LoggingSnapshot {
+  settings: LoggingSettings;
+  storage: LogStorageStatus;
+  entries: LogEntry[];
 }
 
 export type NetworkAccessAction = "allow" | "deny";
@@ -1080,6 +1277,7 @@ export interface EmbeddedPage {
   title: string;
   description: string;
   url: string;
+  icon_url: string | null;
   allow_scripts: boolean;
   allow_same_origin: boolean;
   iframe_height: number;
@@ -1097,6 +1295,7 @@ export interface EmbeddedPageInput {
   title: string;
   description: string;
   url: string;
+  icon_url: string | null;
   allow_scripts: boolean;
   allow_same_origin: boolean;
   iframe_height: number;
@@ -1188,6 +1387,117 @@ export function deleteBookmark(id: string): Promise<void> {
 
 export function bookmarkFaviconUrl(id: string): string {
   return `/api/bookmarks/${encodeURIComponent(id)}/favicon`;
+}
+
+export function fetchBookmarkLibrary(): Promise<BookmarkLibraryResponse> {
+  return requestJson<BookmarkLibraryResponse>("/api/bookmark-library");
+}
+
+export function createBookmarkLibraryCategory(
+  scope: BookmarkLibraryScope,
+  name: string,
+): Promise<BookmarkLibraryCategoryRecord> {
+  const path =
+    scope === "global"
+      ? "/api/admin/bookmark-library/categories"
+      : "/api/bookmark-library/categories";
+  return requestJson<BookmarkLibraryCategoryRecord>(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function updateBookmarkLibraryCategory(
+  scope: BookmarkLibraryScope,
+  id: string,
+  name: string,
+): Promise<BookmarkLibraryCategoryRecord> {
+  const prefix =
+    scope === "global"
+      ? "/api/admin/bookmark-library/categories"
+      : "/api/bookmark-library/categories";
+  return requestJson<BookmarkLibraryCategoryRecord>(
+    `${prefix}/${encodeURIComponent(id)}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ name }),
+    },
+  );
+}
+
+export function deleteBookmarkLibraryCategory(
+  scope: BookmarkLibraryScope,
+  id: string,
+): Promise<void> {
+  const prefix =
+    scope === "global"
+      ? "/api/admin/bookmark-library/categories"
+      : "/api/bookmark-library/categories";
+  return requestEmpty(`${prefix}/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+
+export function createBookmarkLibraryItem(
+  scope: BookmarkLibraryScope,
+  input: BookmarkLibraryItemInput,
+): Promise<BookmarkLibraryItem> {
+  const path =
+    scope === "global"
+      ? "/api/admin/bookmark-library/bookmarks"
+      : "/api/bookmark-library/bookmarks";
+  return requestJson<BookmarkLibraryItem>(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateBookmarkLibraryItem(
+  scope: BookmarkLibraryScope,
+  id: string,
+  input: BookmarkLibraryItemInput,
+): Promise<BookmarkLibraryItem> {
+  const prefix =
+    scope === "global"
+      ? "/api/admin/bookmark-library/bookmarks"
+      : "/api/bookmark-library/bookmarks";
+  return requestJson<BookmarkLibraryItem>(
+    `${prefix}/${encodeURIComponent(id)}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export function deleteBookmarkLibraryItem(
+  scope: BookmarkLibraryScope,
+  id: string,
+): Promise<void> {
+  const prefix =
+    scope === "global"
+      ? "/api/admin/bookmark-library/bookmarks"
+      : "/api/bookmark-library/bookmarks";
+  return requestEmpty(`${prefix}/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+
+export function bookmarkLibraryIconUrl(
+  id: string,
+  revision: string,
+): string {
+  return `/api/bookmark-library/bookmarks/${encodeURIComponent(id)}/icon?v=${encodeURIComponent(revision)}`;
 }
 
 export function fetchEmbeddedPages(): Promise<EmbeddedPagesResponse> {
@@ -1536,6 +1846,22 @@ export async function logoutAccount(): Promise<void> {
   }
 }
 
+export function fetchBrowserSessions(): Promise<BrowserSession[]> {
+  return requestJson<BrowserSession[]>("/api/settings/sessions", {
+    credentials: "same-origin",
+  });
+}
+
+export function forceSignOutSession(sessionId: string): Promise<void> {
+  return requestEmpty(
+    `/api/settings/sessions/${encodeURIComponent(sessionId)}`,
+    {
+      method: "DELETE",
+      credentials: "same-origin",
+    },
+  );
+}
+
 export function updateUserSettings(input: {
   display_name: string;
   location: string;
@@ -1687,6 +2013,23 @@ export function updateAuthenticationSettings(input: {
   });
 }
 
+export function fetchLogs(limit = 200): Promise<LoggingSnapshot> {
+  return requestJson<LoggingSnapshot>(`/api/admin/logs?limit=${limit}`, {
+    credentials: "same-origin",
+  });
+}
+
+export function updateLoggingSettings(
+  input: Omit<LoggingSettings, "updated_at">,
+): Promise<LoggingSettings> {
+  return requestJson<LoggingSettings>("/api/admin/logs", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+
 export function fetchNetworkAccessRules(): Promise<NetworkAccessRule[]> {
   return requestJson<NetworkAccessRule[]>("/api/admin/network-access", {
     credentials: "same-origin",
@@ -1815,6 +2158,14 @@ export function jellyfinMusicAudioUrl(
 ): string {
   const params = new URLSearchParams({ library_id: libraryId });
   return `/api/jellyfin/music/items/${encodeURIComponent(itemId)}/audio?${params.toString()}`;
+}
+
+export function jellyfinMusicDownloadUrl(
+  itemId: string,
+  libraryId: string,
+): string {
+  const params = new URLSearchParams({ library_id: libraryId });
+  return `/api/jellyfin/music/items/${encodeURIComponent(itemId)}/download?${params.toString()}`;
 }
 
 export function startJellyfinPlayback(
@@ -3101,6 +3452,104 @@ export function deleteKanbanAttachment(id: string): Promise<void> {
   });
 }
 
+// --- YouTube downloads ------------------------------------------------------
+
+export function fetchYoutubeDownloads(): Promise<YoutubeDownloadOverview> {
+  return requestJson<YoutubeDownloadOverview>("/api/downloads");
+}
+
+export function inspectYoutubeDownload(
+  url: string,
+): Promise<YoutubeDownloadInspection> {
+  return requestJson<YoutubeDownloadInspection>("/api/downloads/inspect", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ url }),
+  });
+}
+
+export function createYoutubeDownloadJobs(input: {
+  urls: string[];
+  media_kind: YoutubeDownloadMediaKind;
+  output_format: YoutubeDownloadFormat;
+  max_height: number | null;
+}): Promise<YoutubeDownloadCreateResult> {
+  return requestJson<YoutubeDownloadCreateResult>("/api/downloads/jobs", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+
+export function listYoutubeDownloadJobs(
+  options: {
+    status?: YoutubeDownloadStatus;
+    before?: string;
+    limit?: number;
+  } = {},
+): Promise<YoutubeDownloadJob[]> {
+  const query = new URLSearchParams();
+  if (options.status) query.set("status", options.status);
+  if (options.before) query.set("before", options.before);
+  if (options.limit) query.set("limit", String(options.limit));
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return requestJson<YoutubeDownloadJob[]>(`/api/downloads/jobs${suffix}`);
+}
+
+export function openYoutubeDownloadEventStream(): EventSource {
+  return new EventSource("/api/downloads/events");
+}
+
+export function cancelYoutubeDownload(
+  jobId: string,
+): Promise<YoutubeDownloadJob> {
+  return requestJson<YoutubeDownloadJob>(
+    `/api/downloads/jobs/${encodeURIComponent(jobId)}/cancel`,
+    { method: "POST", credentials: "same-origin" },
+  );
+}
+
+export function retryYoutubeDownload(
+  jobId: string,
+): Promise<YoutubeDownloadJob> {
+  return requestJson<YoutubeDownloadJob>(
+    `/api/downloads/jobs/${encodeURIComponent(jobId)}/retry`,
+    { method: "POST", credentials: "same-origin" },
+  );
+}
+
+export function deleteYoutubeDownload(jobId: string): Promise<void> {
+  return requestEmpty(`/api/downloads/jobs/${encodeURIComponent(jobId)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+
+export function youtubeDownloadFileUrl(jobId: string): string {
+  return `/api/downloads/jobs/${encodeURIComponent(jobId)}/file`;
+}
+
+export function youtubeDownloadPreviewUrl(jobId: string): string {
+  return `/api/downloads/jobs/${encodeURIComponent(jobId)}/preview`;
+}
+
+export function fetchYoutubeDownloadPolicy(): Promise<YoutubeDownloadAdminPolicy> {
+  return requestJson<YoutubeDownloadAdminPolicy>("/api/downloads/policy");
+}
+
+export function updateYoutubeDownloadPolicy(
+  input: Omit<YoutubeDownloadSettings, "updated_at">,
+): Promise<YoutubeDownloadAdminPolicy> {
+  return requestJson<YoutubeDownloadAdminPolicy>("/api/downloads/policy", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+
 // --- Podcasts ---------------------------------------------------------------
 //
 // The catalogue is administrator-curated. Members submit a feed for review and
@@ -3165,6 +3614,10 @@ export function podcastArtworkUrl(podcastId: string): string {
 /** The instance's own copy of the episode. Supports range requests, so seeking works. */
 export function podcastAudioUrl(episodeId: string): string {
   return `/api/podcasts/episodes/${encodeURIComponent(episodeId)}/audio`;
+}
+
+export function podcastEpisodeDownloadUrl(episodeId: string): string {
+  return `/api/podcasts/episodes/${encodeURIComponent(episodeId)}/download`;
 }
 
 export function requestPodcastDownload(episodeId: string): Promise<void> {

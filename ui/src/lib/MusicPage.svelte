@@ -2,6 +2,7 @@
   import { onDestroy } from "svelte";
   import ArrowLeft from "lucide-svelte/icons/arrow-left";
   import Disc3 from "lucide-svelte/icons/disc-3";
+  import Download from "lucide-svelte/icons/download";
   import ListMusic from "lucide-svelte/icons/list-music";
   import ListPlus from "lucide-svelte/icons/list-plus";
   import Music2 from "lucide-svelte/icons/music-2";
@@ -12,6 +13,7 @@
     fetchJellyfinMusicHome,
     fetchJellyfinMusicItems,
     fetchJellyfinStatus,
+    jellyfinMusicDownloadUrl,
     jellyfinMusicImageUrl,
     type JellyfinMusicHome,
     type JellyfinMusicItem,
@@ -53,12 +55,13 @@
   let reloadToken = $state(0);
   let hasLoaded = false;
   let collectionRequest = 0;
+  let detailReturnView: Exclude<MusicView, "detail"> = "home";
 
   const viewSwap = createViewSwap();
   const loadedSurfaceEnter = motionSurfaceEnter({ y: 8, duration: 0.22 });
-  const skeletonRows = Array.from({ length: 6 });
-  const skeletonHomeCards = Array.from({ length: 6 });
-  const skeletonCollectionCards = Array.from({ length: 10 });
+  const skeletonRows = [...Array(6).keys()];
+  const skeletonHomeCards = [...Array(6).keys()];
+  const skeletonCollectionCards = [...Array(10).keys()];
 
   onDestroy(() => viewSwap.cancel());
 
@@ -103,7 +106,7 @@
   );
 
   $effect(() => {
-    reloadToken;
+    void reloadToken;
     let cancelled = false;
     void (async () => {
       if (hasLoaded) refreshing = true;
@@ -213,6 +216,7 @@
 
   async function openDetail(item: JellyfinMusicItem) {
     const request = ++collectionRequest;
+    const returnView = view === "collection" ? "collection" : "home";
     let nextTracks: JellyfinMusicItem[] = [];
     let nextError = "";
     let settled = false;
@@ -242,6 +246,7 @@
       commit: () => {
         if (request !== collectionRequest) return;
         view = "detail";
+        detailReturnView = returnView;
         detailItem = item;
         detailTracks = settled ? nextTracks : [];
         loadingCollection = !settled;
@@ -314,7 +319,7 @@
     void viewSwap.run({
       forward: false,
       commit: () => {
-        if (view === "detail") view = "collection";
+        if (view === "detail") view = detailReturnView;
         else view = "home";
         loadingCollection = false;
         error = "";
@@ -325,7 +330,7 @@
 
 {#snippet trackSkeleton()}
   <div class="music-track-list music-skeleton-list" aria-hidden="true">
-    {#each skeletonRows as _, index (index)}
+    {#each skeletonRows as index (index)}
       <div class="music-skeleton-track">
         <span class="music-skeleton music-skeleton-square"></span>
         <span class="music-skeleton-copy">
@@ -335,7 +340,10 @@
           ></span>
         </span>
         <span class="music-skeleton music-skeleton-time"></span>
-        <span class="music-skeleton music-skeleton-square"></span>
+        <span class="music-skeleton-actions">
+          <span class="music-skeleton music-skeleton-square"></span>
+          <span class="music-skeleton music-skeleton-square"></span>
+        </span>
       </div>
     {/each}
   </div>
@@ -347,7 +355,7 @@
     class:music-card-grid--collection={collection}
     aria-hidden="true"
   >
-    {#each collection ? skeletonCollectionCards : skeletonHomeCards as _, index (index)}
+    {#each collection ? skeletonCollectionCards : skeletonHomeCards as index (index)}
       <div class="music-card music-skeleton-card">
         <span class="music-skeleton music-skeleton-art"></span>
         <span class="music-skeleton music-skeleton-line"></span>
@@ -636,7 +644,7 @@
                             aria-hidden="true"
                           />
                         </button>
-                        <div>
+                        <div class="music-track-copy">
                           <strong>{track.name}</strong>
                           <small
                             >{track.artist ??
@@ -649,22 +657,43 @@
                             track.duration_seconds ?? 0,
                           )}</span
                         >
-                        <button
-                          class="ui-button ui-button--ghost ui-button--icon"
-                          type="button"
-                          disabled={queued}
-                          aria-label={queued
-                            ? track.name + " is already queued"
-                            : "Add " + track.name + " to queue"}
-                          title={queued ? "Already queued" : "Add to queue"}
-                          onclick={() => podcastPlayer.queueMusic(track)}
-                        >
-                          <ListPlus
-                            size={17}
-                            strokeWidth={1.8}
-                            aria-hidden="true"
-                          />
-                        </button>
+                        <div class="music-track-actions">
+                          <!-- eslint-disable svelte/no-navigation-without-resolve -- authenticated API attachment -->
+                          <a
+                            class="ui-button ui-button--ghost ui-button--icon"
+                            href={jellyfinMusicDownloadUrl(
+                              track.id,
+                              track.library_id,
+                            )}
+                            download
+                            aria-label={`Download ${track.name}`}
+                            title="Download track"
+                            data-od-id={`music-download-${track.id}`}
+                          >
+                            <Download
+                              size={17}
+                              strokeWidth={1.8}
+                              aria-hidden="true"
+                            />
+                          </a>
+                          <!-- eslint-enable svelte/no-navigation-without-resolve -->
+                          <button
+                            class="ui-button ui-button--ghost ui-button--icon"
+                            type="button"
+                            disabled={queued}
+                            aria-label={queued
+                              ? track.name + " is already queued"
+                              : "Add " + track.name + " to queue"}
+                            title={queued ? "Already queued" : "Add to queue"}
+                            onclick={() => podcastPlayer.queueMusic(track)}
+                          >
+                            <ListPlus
+                              size={17}
+                              strokeWidth={1.8}
+                              aria-hidden="true"
+                            />
+                          </button>
+                        </div>
                       </article>
                     {/each}
                   </div>
@@ -755,7 +784,7 @@
                           aria-hidden="true"
                         />
                       </button>
-                      <div>
+                      <div class="music-track-copy">
                         <strong>{track.name}</strong>
                         <small
                           >{track.artist ??
@@ -766,22 +795,43 @@
                       <span
                         >{formatPlaybackTime(track.duration_seconds ?? 0)}</span
                       >
-                      <button
-                        class="ui-button ui-button--ghost ui-button--icon"
-                        type="button"
-                        disabled={queued}
-                        aria-label={queued
-                          ? track.name + " is already queued"
-                          : "Add " + track.name + " to queue"}
-                        title={queued ? "Already queued" : "Add to queue"}
-                        onclick={() => podcastPlayer.queueMusic(track)}
-                      >
-                        <ListPlus
-                          size={17}
-                          strokeWidth={1.8}
-                          aria-hidden="true"
-                        />
-                      </button>
+                      <div class="music-track-actions">
+                        <!-- eslint-disable svelte/no-navigation-without-resolve -- authenticated API attachment -->
+                        <a
+                          class="ui-button ui-button--ghost ui-button--icon"
+                          href={jellyfinMusicDownloadUrl(
+                            track.id,
+                            track.library_id,
+                          )}
+                          download
+                          aria-label={`Download ${track.name}`}
+                          title="Download track"
+                          data-od-id={`music-download-${track.id}`}
+                        >
+                          <Download
+                            size={17}
+                            strokeWidth={1.8}
+                            aria-hidden="true"
+                          />
+                        </a>
+                        <!-- eslint-enable svelte/no-navigation-without-resolve -->
+                        <button
+                          class="ui-button ui-button--ghost ui-button--icon"
+                          type="button"
+                          disabled={queued}
+                          aria-label={queued
+                            ? track.name + " is already queued"
+                            : "Add " + track.name + " to queue"}
+                          title={queued ? "Already queued" : "Add to queue"}
+                          onclick={() => podcastPlayer.queueMusic(track)}
+                        >
+                          <ListPlus
+                            size={17}
+                            strokeWidth={1.8}
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </div>
                     </article>
                   {/each}
                 </div>
@@ -866,29 +916,50 @@
                           aria-hidden="true"
                         />
                       </button>
-                      <div>
+                      <div class="music-track-copy">
                         <strong>{track.name}</strong>
                         <small>{track.artist ?? detailItem.name}</small>
                       </div>
                       <span
                         >{formatPlaybackTime(track.duration_seconds ?? 0)}</span
                       >
-                      <button
-                        class="ui-button ui-button--ghost ui-button--icon"
-                        type="button"
-                        disabled={queued}
-                        aria-label={queued
-                          ? track.name + " is already queued"
-                          : "Add " + track.name + " to queue"}
-                        title={queued ? "Already queued" : "Add to queue"}
-                        onclick={() => podcastPlayer.queueMusic(track)}
-                      >
-                        <ListPlus
-                          size={17}
-                          strokeWidth={1.8}
-                          aria-hidden="true"
-                        />
-                      </button>
+                      <div class="music-track-actions">
+                        <!-- eslint-disable svelte/no-navigation-without-resolve -- authenticated API attachment -->
+                        <a
+                          class="ui-button ui-button--ghost ui-button--icon"
+                          href={jellyfinMusicDownloadUrl(
+                            track.id,
+                            track.library_id,
+                          )}
+                          download
+                          aria-label={`Download ${track.name}`}
+                          title="Download track"
+                          data-od-id={`music-download-${track.id}`}
+                        >
+                          <Download
+                            size={17}
+                            strokeWidth={1.8}
+                            aria-hidden="true"
+                          />
+                        </a>
+                        <!-- eslint-enable svelte/no-navigation-without-resolve -->
+                        <button
+                          class="ui-button ui-button--ghost ui-button--icon"
+                          type="button"
+                          disabled={queued}
+                          aria-label={queued
+                            ? track.name + " is already queued"
+                            : "Add " + track.name + " to queue"}
+                          title={queued ? "Already queued" : "Add to queue"}
+                          onclick={() => podcastPlayer.queueMusic(track)}
+                        >
+                          <ListPlus
+                            size={17}
+                            strokeWidth={1.8}
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </div>
                     </article>
                   {/each}
                 </div>
@@ -1023,7 +1094,7 @@
   .music-skeleton-track {
     min-width: 0;
     display: grid;
-    grid-template-columns: 44px minmax(0, 1fr) auto 44px;
+    grid-template-columns: 44px minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 12px;
     min-height: 58px;
@@ -1040,6 +1111,12 @@
     width: 28px;
     height: 28px;
     justify-self: center;
+  }
+
+  .music-skeleton-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
   }
 
   .music-skeleton-line {
@@ -1314,7 +1391,7 @@
   .music-track-list article {
     min-width: 0;
     display: grid;
-    grid-template-columns: 44px minmax(0, 1fr) auto 44px;
+    grid-template-columns: 44px minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 12px;
     min-height: 58px;
@@ -1327,9 +1404,15 @@
     color: var(--fg);
   }
 
-  .music-track-list article > div {
+  .music-track-copy {
     min-width: 0;
     display: grid;
+  }
+
+  .music-track-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
   }
 
   .music-track-list article > span {
@@ -1464,12 +1547,12 @@
     }
 
     .music-track-list article {
-      grid-template-columns: 44px minmax(0, 1fr) 44px;
+      grid-template-columns: 44px minmax(0, 1fr) auto;
       gap: 8px;
     }
 
     .music-skeleton-track {
-      grid-template-columns: 44px minmax(0, 1fr) 44px;
+      grid-template-columns: 44px minmax(0, 1fr) auto;
       gap: 8px;
     }
 

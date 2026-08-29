@@ -1,3 +1,4 @@
+pub mod bookmark_library_queries;
 pub mod contact_queries;
 pub mod entities;
 pub mod jellyfin_queries;
@@ -5,6 +6,7 @@ pub mod ntfy_queries;
 mod podcast_queries;
 pub mod queries;
 pub mod wall_queries;
+pub mod youtube_download_queries;
 mod youtube_queries;
 
 use sqlx::SqlitePool;
@@ -208,6 +210,26 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "054_calendar_week_start",
         include_str!("../migrations/054_calendar_week_start.sql"),
     ),
+    (
+        "055_youtube_downloads",
+        include_str!("../migrations/055_youtube_downloads.sql"),
+    ),
+    (
+        "056_session_inventory",
+        include_str!("../migrations/056_session_inventory.sql"),
+    ),
+    (
+        "057_logging_settings",
+        include_str!("../migrations/057_logging_settings.sql"),
+    ),
+    (
+        "058_embedded_page_icons",
+        include_str!("../migrations/058_embedded_page_icons.sql"),
+    ),
+    (
+        "059_bookmark_library",
+        include_str!("../migrations/059_bookmark_library.sql"),
+    ),
 ];
 
 /// Maps migration names used by earlier development builds to their canonical names.
@@ -362,6 +384,220 @@ mod tests {
             usize::try_from(count).expect("migration count fits usize"),
             MIGRATIONS.len()
         );
+    }
+
+    #[tokio::test]
+    async fn logging_settings_have_safe_defaults() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let settings = queries::get_logging_settings(&pool)
+            .await
+            .expect("logging settings load");
+
+        assert!(settings.file_enabled);
+        assert_eq!(settings.log_level, "info");
+        assert_eq!(settings.retention_days, 14);
+        assert_eq!(settings.max_file_size_mb, 10);
+        assert_eq!(settings.max_files, 20);
+    }
+
+    #[tokio::test]
+    async fn youtube_download_jobs_are_private_unique_and_deletable() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (owner, _) = queries::create_account(
+            &pool,
+            "download-owner@example.com",
+            "$argon2id$download-owner",
+            "Download Owner",
+        )
+        .await
+        .expect("owner creates");
+        let (other, _) = queries::create_account(
+            &pool,
+            "download-other@example.com",
+            "$argon2id$download-other",
+            "Download Other",
+        )
+        .await
+        .expect("other creates");
+        let settings = youtube_download_queries::get_settings(&pool)
+            .await
+            .expect("download policy loads");
+        assert!(settings.member_downloads_enabled);
+        assert_eq!(settings.global_concurrency, 2);
+        assert_eq!(settings.per_user_concurrency, 1);
+
+        let draft = entities::NewYoutubeDownloadJob {
+            id: uuid::Uuid::new_v4().to_string(),
+            user_id: owner.id.clone(),
+            source_url: "https://www.youtube.com/watch?v=abcdefghijk".to_owned(),
+            youtube_video_id: "abcdefghijk".to_owned(),
+            title: "Owned video".to_owned(),
+            channel_name: "Owned channel".to_owned(),
+            duration_seconds: Some(60),
+            media_kind: "video".to_owned(),
+            output_format: "mp4".to_owned(),
+            max_height: Some(1080),
+        };
+        let job = youtube_download_queries::create_job(&pool, &draft)
+            .await
+            .expect("download job creates");
+        assert!(
+            youtube_download_queries::get_job(&pool, &other.id, &job.id)
+                .await
+                .expect("other account lookup runs")
+                .is_none()
+        );
+        let duplicate = entities::NewYoutubeDownloadJob {
+            id: uuid::Uuid::new_v4().to_string(),
+            ..draft.clone()
+        };
+        assert!(
+            youtube_download_queries::create_job(&pool, &duplicate)
+                .await
+                .is_err()
+        );
+
+        assert_eq!(
+            queries::delete_user_content(&pool, &owner.id, "downloads")
+                .await
+                .expect("download content deletes"),
+            1
+        );
+        assert!(
+            youtube_download_queries::get_job(&pool, &owner.id, &job.id)
+                .await
+                .expect("deleted job lookup runs")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn youtube_download_claims_prefer_the_account_with_less_active_work() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (first, _) = queries::create_account(
+            &pool,
+            "queue-first@example.com",
+            "$argon2id$queue-first",
+            "Queue First",
+        )
+        .await
+        .expect("first account creates");
+        let (second, _) = queries::create_account(
+            &pool,
+            "queue-second@example.com",
+            "$argon2id$queue-second",
+            "Queue Second",
+        )
+        .await
+        .expect("second account creates");
+
+        for (position, (user_id, video_id)) in [
+            (&first.id, "abcdefghijk"),
+            (&first.id, "lmnopqrstuv"),
+            (&second.id, "wxyzABCDE12"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let job = youtube_download_queries::create_job(
+                &pool,
+                &entities::NewYoutubeDownloadJob {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    user_id: user_id.clone(),
+                    source_url: format!("https://www.youtube.com/watch?v={video_id}"),
+                    youtube_video_id: video_id.to_owned(),
+                    title: format!("Queued video {position}"),
+                    channel_name: "Queue channel".to_owned(),
+                    duration_seconds: Some(60),
+                    media_kind: "video".to_owned(),
+                    output_format: "mp4".to_owned(),
+                    max_height: Some(1080),
+                },
+            )
+            .await
+            .expect("queued job creates");
+            sqlx::query("UPDATE youtube_download_jobs SET created_at = ? WHERE id = ?")
+                .bind(format!("2026-01-01T00:00:0{position}Z"))
+                .bind(job.id)
+                .execute(&pool)
+                .await
+                .expect("queue timestamp updates");
+        }
+
+        let first_claim = youtube_download_queries::claim_next_job(&pool, 2)
+            .await
+            .expect("first claim runs")
+            .expect("first claim exists");
+        assert_eq!(first_claim.user_id, first.id);
+        let second_claim = youtube_download_queries::claim_next_job(&pool, 2)
+            .await
+            .expect("second claim runs")
+            .expect("second claim exists");
+        assert_eq!(second_claim.user_id, second.id);
+    }
+
+    #[tokio::test]
+    async fn youtube_download_postprocessing_transition_is_idempotent() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (owner, _) = queries::create_account(
+            &pool,
+            "postprocessing-owner@example.com",
+            "$argon2id$postprocessing-owner",
+            "Postprocessing Owner",
+        )
+        .await
+        .expect("owner creates");
+        let job = youtube_download_queries::create_job(
+            &pool,
+            &entities::NewYoutubeDownloadJob {
+                id: uuid::Uuid::new_v4().to_string(),
+                user_id: owner.id.clone(),
+                source_url: "https://www.youtube.com/watch?v=abcdefghijk".to_owned(),
+                youtube_video_id: "abcdefghijk".to_owned(),
+                title: "Postprocessing video".to_owned(),
+                channel_name: "Postprocessing channel".to_owned(),
+                duration_seconds: Some(60),
+                media_kind: "audio".to_owned(),
+                output_format: "opus".to_owned(),
+                max_height: None,
+            },
+        )
+        .await
+        .expect("download job creates");
+        let claimed = youtube_download_queries::claim_next_job(&pool, 1)
+            .await
+            .expect("claim runs")
+            .expect("job claims");
+        assert_eq!(claimed.id, job.id);
+
+        assert!(
+            youtube_download_queries::mark_postprocessing(&pool, &job.id)
+                .await
+                .expect("first postprocessing transition runs")
+        );
+        assert!(
+            youtube_download_queries::mark_postprocessing(&pool, &job.id)
+                .await
+                .expect("repeated postprocessing transition runs")
+        );
+        assert!(
+            youtube_download_queries::mark_complete(
+                &pool,
+                &job.id,
+                "stored.opus",
+                "Postprocessing video.opus",
+                "audio/ogg",
+                1_024,
+            )
+            .await
+            .expect("completion transition runs")
+        );
+        let completed = youtube_download_queries::get_job(&pool, &owner.id, &job.id)
+            .await
+            .expect("completed job loads")
+            .expect("completed job exists");
+        assert_eq!(completed.status, "complete");
+        assert_eq!(completed.byte_size, 1_024);
     }
 
     #[tokio::test]
@@ -534,6 +770,114 @@ mod tests {
             queries::delete_bookmark(&pool, &owner.id, &bookmark.id)
                 .await
                 .expect("owner delete completes")
+        );
+    }
+
+    #[tokio::test]
+    async fn bookmark_library_keeps_global_and_personal_categories_scoped() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (owner, _) = queries::create_account(
+            &pool,
+            "library-owner@example.com",
+            "$argon2id$library-owner",
+            "Library Owner",
+        )
+        .await
+        .expect("owner creates");
+        let (other, _) = queries::create_account(
+            &pool,
+            "library-other@example.com",
+            "$argon2id$library-other",
+            "Library Other",
+        )
+        .await
+        .expect("other account creates");
+
+        let global =
+            bookmark_library_queries::create_global_category(&pool, &owner.id, "Reference")
+                .await
+                .expect("global category creates");
+        let personal =
+            bookmark_library_queries::create_personal_category(&pool, &owner.id, "Daily")
+                .await
+                .expect("personal category creates");
+        let global_item = bookmark_library_queries::create_item(
+            &pool,
+            &global.id,
+            "Pandan",
+            "https://pandan.example/",
+            "favicon",
+            None,
+            Some(("image/png", b"global-icon")),
+        )
+        .await
+        .expect("global bookmark creates");
+        let personal_item = bookmark_library_queries::create_item(
+            &pool,
+            &personal.id,
+            "Private",
+            "https://private.example/",
+            "custom",
+            Some("https://private.example/icon.png"),
+            Some(("image/png", b"personal-icon")),
+        )
+        .await
+        .expect("personal bookmark creates");
+
+        let global_categories = bookmark_library_queries::list_global_categories(&pool)
+            .await
+            .expect("global categories load");
+        assert_eq!(global_categories, vec![global.clone()]);
+        let personal_categories =
+            bookmark_library_queries::list_personal_categories(&pool, &owner.id)
+                .await
+                .expect("owner categories load");
+        assert_eq!(personal_categories, vec![personal.clone()]);
+        assert!(
+            bookmark_library_queries::list_personal_categories(&pool, &other.id)
+                .await
+                .expect("other categories load")
+                .is_empty()
+        );
+        assert_eq!(
+            bookmark_library_queries::list_global_items(&pool)
+                .await
+                .expect("global bookmarks load"),
+            vec![global_item.clone()]
+        );
+        assert_eq!(
+            bookmark_library_queries::list_personal_items(&pool, &owner.id)
+                .await
+                .expect("personal bookmarks load"),
+            vec![personal_item.clone()]
+        );
+        assert!(
+            bookmark_library_queries::get_visible_icon(&pool, &other.id, &global_item.id)
+                .await
+                .expect("global icon lookup completes")
+                .is_some()
+        );
+        assert!(
+            bookmark_library_queries::get_visible_icon(&pool, &other.id, &personal_item.id)
+                .await
+                .expect("other personal icon lookup completes")
+                .is_none()
+        );
+        assert!(
+            bookmark_library_queries::delete_category(
+                &pool,
+                &personal.id,
+                "personal",
+                Some(&owner.id),
+            )
+            .await
+            .expect("personal category deletes")
+        );
+        assert!(
+            bookmark_library_queries::list_personal_items(&pool, &owner.id)
+                .await
+                .expect("cascade checks")
+                .is_empty()
         );
     }
 
@@ -860,8 +1204,8 @@ mod tests {
         run_migrations(&pool)
             .await
             .expect("height migration applies");
-        let (iframe_height, allow_scripts): (i64, bool) = sqlx::query_as(
-            "SELECT iframe_height, allow_scripts FROM embedded_pages \
+        let (iframe_height, allow_scripts, icon_url): (i64, bool, Option<String>) = sqlx::query_as(
+            "SELECT iframe_height, allow_scripts, icon_url FROM embedded_pages \
              WHERE id = 'legacy-embedded-page'",
         )
         .fetch_one(&pool)
@@ -870,6 +1214,7 @@ mod tests {
 
         assert_eq!(iframe_height, 720);
         assert!(!allow_scripts);
+        assert_eq!(icon_url, None);
     }
 
     #[tokio::test]
@@ -906,6 +1251,7 @@ mod tests {
             "Status",
             "Instance status",
             "https://status.example.com/",
+            Some("https://status.example.com/icon.svg"),
             false,
             false,
             720,
@@ -918,6 +1264,7 @@ mod tests {
             "Notes",
             "Private notes",
             "https://notes.example.com/",
+            Some("https://notes.example.com/icon.png"),
             true,
             true,
             960,
@@ -930,6 +1277,7 @@ mod tests {
             "Reports",
             "Private reports",
             "https://reports.example.com/",
+            None,
             false,
             false,
             640,
@@ -942,6 +1290,7 @@ mod tests {
             "Other",
             "Another account's page",
             "https://other.example.com/",
+            None,
             false,
             false,
             720,
@@ -965,6 +1314,27 @@ mod tests {
         assert!(!owner_pages[1].allow_scripts);
         assert_eq!(owner_pages[0].iframe_height, 960);
         assert_eq!(owner_pages[1].iframe_height, 640);
+        assert_eq!(
+            owner_pages[0].icon_url.as_deref(),
+            Some("https://notes.example.com/icon.png")
+        );
+        assert_eq!(owner_pages[1].icon_url, None);
+        let updated_first = queries::update_personal_embedded_page(
+            &pool,
+            &owner.id,
+            &first.id,
+            "Notes",
+            "Private notes",
+            "https://notes.example.com/",
+            None,
+            true,
+            true,
+            960,
+        )
+        .await
+        .expect("personal page updates")
+        .expect("owned personal page is found");
+        assert_eq!(updated_first.icon_url, None);
         assert!(
             owner_pages.iter().all(|page| page.id != foreign.id),
             "another account's page never appears"
@@ -1013,6 +1383,10 @@ mod tests {
             .expect("global pages load");
         assert_eq!(global_pages.len(), 1);
         assert_eq!(global_pages[0].id, global.id);
+        assert_eq!(
+            global_pages[0].icon_url.as_deref(),
+            Some("https://status.example.com/icon.svg")
+        );
         assert!(global_pages[0].created_by_user_id.is_none());
     }
 
@@ -1052,9 +1426,16 @@ mod tests {
             .expect("managed users load");
         assert_eq!(before_login[0].last_login_at, None);
 
-        queries::create_session(&pool, "activity-session", &user.id, "2999-01-01T00:00:00Z")
-            .await
-            .expect("session creates");
+        queries::create_session(
+            &pool,
+            "activity-session",
+            &user.id,
+            "Pandan Test/1.0",
+            "192.0.2.10",
+            "2999-01-01T00:00:00Z",
+        )
+        .await
+        .expect("session creates");
         let after_login = queries::list_managed_users(&pool)
             .await
             .expect("managed users reload");
@@ -1067,6 +1448,106 @@ mod tests {
             .await
             .expect("managed users reload after logout");
         assert_eq!(after_logout[0].last_login_at, after_login[0].last_login_at);
+    }
+
+    #[tokio::test]
+    async fn account_sessions_are_listed_updated_and_deleted_by_public_id() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (owner, _) =
+            queries::create_account(&pool, "owner@example.com", "$argon2id$owner", "Owner")
+                .await
+                .expect("owner creates");
+        let (other, _) =
+            queries::create_account(&pool, "other@example.com", "$argon2id$other", "Other")
+                .await
+                .expect("other account creates");
+
+        queries::create_session(
+            &pool,
+            "private-token",
+            &owner.id,
+            "First browser",
+            "192.0.2.11",
+            "2999-01-01T00:00:00Z",
+        )
+        .await
+        .expect("session creates");
+        queries::touch_session(&pool, "private-token", "Latest browser", "198.51.100.7")
+            .await
+            .expect("session metadata updates");
+
+        let sessions = queries::list_account_sessions(&pool, &owner.id)
+            .await
+            .expect("sessions load");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].token, "private-token");
+        assert_eq!(sessions[0].user_agent, "Latest browser");
+        assert_eq!(sessions[0].ip_address, "198.51.100.7");
+        let public_id = sessions[0].id.clone();
+
+        assert_eq!(
+            queries::delete_account_session(&pool, &other.id, &public_id)
+                .await
+                .expect("cross-account delete is checked"),
+            None
+        );
+        assert_eq!(
+            queries::delete_account_session(&pool, &owner.id, &public_id)
+                .await
+                .expect("owner deletes session")
+                .as_deref(),
+            Some("private-token")
+        );
+        assert!(
+            queries::list_account_sessions(&pool, &owner.id)
+                .await
+                .expect("sessions reload")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn session_inventory_migration_preserves_existing_sessions() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("database connects");
+        sqlx::raw_sql(
+            "PRAGMA foreign_keys = ON; \
+             CREATE TABLE users (id TEXT PRIMARY KEY NOT NULL); \
+             CREATE TABLE sessions ( \
+                 token TEXT PRIMARY KEY NOT NULL, \
+                 user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, \
+                 expires_at TEXT NOT NULL, \
+                 created_at TEXT NOT NULL \
+             ); \
+             CREATE INDEX sessions_user_idx ON sessions (user_id); \
+             CREATE INDEX sessions_expiry_idx ON sessions (expires_at); \
+             INSERT INTO users (id) VALUES ('legacy-user'); \
+             INSERT INTO sessions (token, user_id, expires_at, created_at) \
+             VALUES ('legacy-token', 'legacy-user', '2999-01-01T00:00:00Z', '2026-08-01T00:00:00Z');",
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy session schema creates");
+
+        sqlx::raw_sql(include_str!("../migrations/056_session_inventory.sql"))
+            .execute(&pool)
+            .await
+            .expect("session inventory migration runs");
+
+        let migrated: (String, String, String, String, String) = sqlx::query_as(
+            "SELECT token, id, user_agent, ip_address, last_seen_at FROM sessions LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("migrated session loads");
+        assert_eq!(migrated.0, "legacy-token");
+        assert_eq!(migrated.1.len(), 32);
+        assert_eq!(migrated.2, "");
+        assert_eq!(migrated.3, "");
+        assert_eq!(migrated.4, "2026-08-01T00:00:00Z");
     }
 
     #[tokio::test]

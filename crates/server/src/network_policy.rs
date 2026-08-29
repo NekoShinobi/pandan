@@ -117,11 +117,27 @@ impl NetworkPolicy {
             Vec::new()
         };
         if rules.iter().any(|rule| rule.action == "deny") {
+            tracing::warn!(
+                integration = scope.as_str(),
+                scheme = url.scheme(),
+                %host,
+                port,
+                reason = "administrator_deny",
+                "outbound destination rejected"
+            );
             return Err("destination is denied by the administrator network policy".to_owned());
         }
         let explicitly_allowed =
             operator_allows_private || rules.iter().any(|rule| rule.action == "allow");
         if url.scheme() == "http" && !explicitly_allowed {
+            tracing::warn!(
+                integration = scope.as_str(),
+                scheme = url.scheme(),
+                %host,
+                port,
+                reason = "http_requires_allow",
+                "outbound destination rejected"
+            );
             return Err(
                 "only HTTPS URLs are allowed unless an administrator allows this exact HTTP origin"
                     .to_owned(),
@@ -134,6 +150,14 @@ impl NetworkPolicy {
                     .next()
                     .is_some_and(|suffix| suffix.eq_ignore_ascii_case("local")))
         {
+            tracing::warn!(
+                integration = scope.as_str(),
+                scheme = url.scheme(),
+                %host,
+                port,
+                reason = "local_hostname",
+                "outbound destination rejected"
+            );
             return Err("local network URLs are not allowed".to_owned());
         }
 
@@ -142,17 +166,53 @@ impl NetworkPolicy {
         } else {
             lookup_host((host.as_str(), port))
                 .await
-                .map_err(|_| "URL host could not be resolved".to_owned())?
+                .map_err(|error| {
+                    tracing::warn!(
+                        integration = scope.as_str(),
+                        scheme = url.scheme(),
+                        %host,
+                        port,
+                        %error,
+                        "outbound DNS resolution failed"
+                    );
+                    "URL host could not be resolved".to_owned()
+                })?
                 .collect::<Vec<_>>()
         };
         addresses.sort_unstable();
         addresses.dedup();
         if addresses.is_empty() {
+            tracing::warn!(
+                integration = scope.as_str(),
+                scheme = url.scheme(),
+                %host,
+                port,
+                reason = "no_addresses",
+                "outbound DNS resolution failed"
+            );
             return Err("URL host could not be resolved".to_owned());
         }
         if !explicitly_allowed && addresses.iter().any(|address| !public_ip(address.ip())) {
+            tracing::warn!(
+                integration = scope.as_str(),
+                scheme = url.scheme(),
+                %host,
+                port,
+                reason = "private_or_reserved_address",
+                "outbound destination rejected"
+            );
             return Err("private or reserved network URLs are not allowed".to_owned());
         }
+        tracing::debug!(
+            integration = scope.as_str(),
+            scheme = url.scheme(),
+            %host,
+            port,
+            resolved_addresses = addresses.len(),
+            explicitly_allowed,
+            operator_override = operator_allows_private,
+            "outbound destination approved"
+        );
         Ok(ValidatedUrl {
             url,
             host,
@@ -177,6 +237,11 @@ impl ValidatedUrl {
     #[must_use]
     pub fn into_url(self) -> Url {
         self.url
+    }
+
+    #[must_use]
+    pub fn addresses(&self) -> &[SocketAddr] {
+        &self.addresses
     }
 
     /// Builds a client whose resolver is fixed to the addresses that passed policy validation.
@@ -364,6 +429,16 @@ async fn create_rule(
     .ok_or(ApiError::Conflict(
         "the network rule already exists or the 128-rule limit was reached",
     ))?;
+    tracing::info!(
+        actor_user_id = %administrator.id,
+        rule_id = %rule.id,
+        action = %rule.action,
+        scheme = %rule.scheme,
+        host = %rule.host,
+        port = rule.port,
+        integration = %rule.integration,
+        "administrator created outbound network rule"
+    );
     Ok(web::Json(rule))
 }
 
@@ -372,8 +447,13 @@ async fn delete_rule(
     request: HttpRequest,
     rule_id: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
-    authenticated_administrator(&state, &request).await?;
+    let administrator = authenticated_administrator(&state, &request).await?;
     if db::queries::delete_network_access_rule(&state.pool, &rule_id).await? {
+        tracing::info!(
+            actor_user_id = %administrator.id,
+            rule_id = %rule_id,
+            "administrator deleted outbound network rule"
+        );
         Ok(HttpResponse::NoContent().finish())
     } else {
         Err(ApiError::NotFound("network access rule not found"))

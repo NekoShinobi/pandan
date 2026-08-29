@@ -1,10 +1,10 @@
 <script lang="ts">
   import ArrowDown from "lucide-svelte/icons/arrow-down";
   import ArrowUp from "lucide-svelte/icons/arrow-up";
-  import PanelTop from "lucide-svelte/icons/panel-top";
   import Pencil from "lucide-svelte/icons/pencil";
   import Plus from "lucide-svelte/icons/plus";
   import Trash2 from "lucide-svelte/icons/trash-2";
+  import EmbeddedPageIcon from "$lib/EmbeddedPageIcon.svelte";
   import {
     createGlobalEmbeddedPage,
     createPersonalEmbeddedPage,
@@ -43,6 +43,7 @@
   let formTitle = $state("");
   let formDescription = $state("");
   let formUrl = $state("");
+  let formIconUrl = $state("");
   let formAllowScripts = $state(false);
   let formAllowSameOrigin = $state(false);
   let formIframeHeight = $state(DEFAULT_IFRAME_HEIGHT);
@@ -87,6 +88,7 @@
     formTitle = "";
     formDescription = "";
     formUrl = "";
+    formIconUrl = "";
     formAllowScripts = false;
     formAllowSameOrigin = false;
     formIframeHeight = DEFAULT_IFRAME_HEIGHT;
@@ -102,6 +104,7 @@
     formTitle = page.title;
     formDescription = page.description;
     formUrl = page.url;
+    formIconUrl = page.icon_url ?? "";
     formAllowScripts = page.allow_scripts;
     formAllowSameOrigin = page.allow_same_origin;
     formIframeHeight = page.iframe_height;
@@ -127,6 +130,7 @@
       title: formTitle,
       description: formDescription,
       url: formUrl,
+      icon_url: formIconUrl.trim() || null,
       allow_scripts: formAllowScripts,
       allow_same_origin: formAllowSameOrigin,
       iframe_height: formIframeHeight,
@@ -255,7 +259,7 @@
           data-od-id={`embedded-page-settings-${page.id}`}
         >
           <div class="embedded-page-settings-icon" aria-hidden="true">
-            <PanelTop size={18} strokeWidth={1.7} />
+            <EmbeddedPageIcon iconUrl={page.icon_url} size={18} />
           </div>
           <div class="embedded-page-settings-copy">
             <div>
@@ -428,6 +432,22 @@
         <p class="field-note">
           Pages use a restricted sandbox by default. Some websites refuse
           embedding; those pages can still be opened externally.
+        </p>
+
+        <label for="embedded-page-icon-url">Sidebar icon URL (optional)</label>
+        <input
+          id="embedded-page-icon-url"
+          class="text-input"
+          type="url"
+          bind:value={formIconUrl}
+          maxlength="2000"
+          pattern="https://.*"
+          placeholder="https://example.com/icon.svg"
+          data-od-id="embedded-page-icon-url"
+        />
+        <p class="field-note">
+          Use a direct HTTPS image URL. If it cannot load, Pandan shows the
+          default custom-page icon.
         </p>
 
         <label for="embedded-page-height-preset">Iframe height</label>
