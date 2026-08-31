@@ -37,6 +37,10 @@ const MAX_RSS_REDIRECTS: usize = 3;
 const MAX_FAVICON_DOCUMENT_BYTES: usize = 256 * 1024;
 const MAX_FAVICON_CANDIDATES: usize = 8;
 const MAX_YAHOO_QUOTE_PAGE_BYTES: usize = 768 * 1024;
+const YAHOO_CHART_ENDPOINTS: [&str; 2] = [
+    "https://query1.finance.yahoo.com/",
+    "https://query2.finance.yahoo.com/",
+];
 const MAX_YOUTUBE_CHANNEL_METADATA_BYTES: usize = 1_000_000;
 const MAX_OWNED_REPOSITORIES: usize = 500;
 const MAX_PROVIDER_PAGES: usize = 100;
@@ -1500,13 +1504,14 @@ impl WidgetIntegrationService {
 
     /// Fetches recent Yahoo Finance prices through the guarded widget network policy.
     ///
-    /// The undocumented batch endpoint is attempted first. Missing symbols fall back to their
-    /// bounded public quote pages because Yahoo may rate-limit both JSON query hosts together.
+    /// Yahoo's chart endpoint is queried once per symbol with bounded concurrency. The alternate
+    /// query host and then the bounded public quote page are used only when the preceding source
+    /// fails.
     ///
     /// # Errors
     ///
-    /// Returns a safe provider error when neither the batch endpoint nor any bounded quote-page
-    /// fallback produces a usable quote.
+    /// Returns a safe provider error when neither chart host nor any bounded quote-page fallback
+    /// produces a usable quote.
     pub async fn fetch_yahoo_stock_quotes(
         &self,
         symbols: &[String],
@@ -1514,46 +1519,9 @@ impl WidgetIntegrationService {
         if symbols.is_empty() {
             return Ok(Vec::new());
         }
-        let batch_result: Result<Vec<MarketQuote>, String> = async {
-            let (client, url) = self
-                .client_for(
-                    "https://query1.finance.yahoo.com/v7/finance/quote",
-                    NetworkAccessScope::Widgets,
-                )
-                .await?;
-            let payload: Value = client
-                .get(url)
-                .query(&[("symbols", symbols.join(","))])
-                .send()
-                .await
-                .map_err(request_error)?
-                .error_for_status()
-                .map_err(request_error)?
-                .json()
-                .await
-                .map_err(request_error)?;
-            Ok(payload["quoteResponse"]["result"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(parse_yahoo_quote)
-                .collect())
-        }
-        .await;
-        let batch_error = batch_result.as_ref().err().cloned();
-        let mut quotes = batch_result
-            .unwrap_or_default()
-            .into_iter()
-            .map(|quote| (quote.symbol.clone(), quote))
-            .collect::<HashMap<_, _>>();
-        let missing = symbols
-            .iter()
-            .map(|symbol| symbol.to_ascii_uppercase())
-            .filter(|symbol| !quotes.contains_key(symbol))
-            .collect::<Vec<_>>();
-        let requests = missing.into_iter().map(|symbol| {
+        let requests = symbols.iter().cloned().map(|symbol| {
             let service = self.clone();
-            async move { service.fetch_yahoo_quote_page(&symbol).await }
+            async move { service.fetch_yahoo_chart_or_page_quote(&symbol).await }
         });
         let results = stream::iter(requests)
             .buffer_unordered(2)
@@ -1561,23 +1529,54 @@ impl WidgetIntegrationService {
             .await;
         let first_error = results
             .iter()
-            .find_map(|result| result.as_ref().err().cloned())
-            .or(batch_error);
-        quotes.extend(
-            results
-                .into_iter()
-                .filter_map(Result::ok)
-                .map(|quote| (quote.symbol.clone(), quote)),
-        );
-        let ordered = symbols
-            .iter()
-            .filter_map(|symbol| quotes.remove(&symbol.to_ascii_uppercase()))
+            .find_map(|result| result.as_ref().err().cloned());
+        let quotes = results
+            .into_iter()
+            .filter_map(Result::ok)
             .collect::<Vec<_>>();
-        if ordered.is_empty() {
+        if quotes.is_empty() {
             Err(first_error.unwrap_or_else(|| "Yahoo Finance returned no quotes".to_owned()))
         } else {
-            Ok(ordered)
+            Ok(quotes)
         }
+    }
+
+    async fn fetch_yahoo_chart_or_page_quote(&self, symbol: &str) -> Result<MarketQuote, String> {
+        for endpoint in YAHOO_CHART_ENDPOINTS {
+            if let Ok(quote) = self.fetch_yahoo_chart_quote(endpoint, symbol).await {
+                return Ok(quote);
+            }
+        }
+        self.fetch_yahoo_quote_page(symbol).await
+    }
+
+    async fn fetch_yahoo_chart_quote(
+        &self,
+        base_url: &str,
+        symbol: &str,
+    ) -> Result<MarketQuote, String> {
+        let mut endpoint =
+            Url::parse(base_url).map_err(|_| "Yahoo Finance endpoint is invalid".to_owned())?;
+        endpoint
+            .path_segments_mut()
+            .map_err(|()| "Yahoo Finance endpoint is invalid".to_owned())?
+            .extend(["v8", "finance", "chart", symbol]);
+        let (client, url) = self
+            .client_for(endpoint.as_str(), NetworkAccessScope::Widgets)
+            .await?;
+        let payload: Value = client
+            .get(url)
+            .query(&[("interval", "1d"), ("range", "1d")])
+            .send()
+            .await
+            .map_err(request_error)?
+            .error_for_status()
+            .map_err(request_error)?
+            .json()
+            .await
+            .map_err(request_error)?;
+        parse_yahoo_chart_quote(symbol, &payload)
+            .ok_or_else(|| format!("Yahoo Finance returned no quote for {symbol}"))
     }
 
     async fn fetch_yahoo_quote_page(&self, symbol: &str) -> Result<MarketQuote, String> {
@@ -3619,27 +3618,49 @@ fn value_string(value: &Value, key: &str) -> String {
     value[key].as_str().unwrap_or_default().to_owned()
 }
 
-fn parse_yahoo_quote(quote: &Value) -> Option<MarketQuote> {
-    let symbol = quote["symbol"].as_str()?.trim().to_ascii_uppercase();
-    let price = decimal_string(&quote["regularMarketPrice"])?;
+fn parse_yahoo_chart_quote(requested_symbol: &str, payload: &Value) -> Option<MarketQuote> {
+    let result = payload["chart"]["result"].as_array()?.first()?;
+    let meta = &result["meta"];
+    let price = decimal_string(&meta["regularMarketPrice"])
+        .or_else(|| yahoo_chart_indicator_decimal(result, "close"))?;
+    let symbol = meta["symbol"]
+        .as_str()
+        .map(str::trim)
+        .filter(|symbol| !symbol.is_empty())
+        .unwrap_or(requested_symbol)
+        .to_ascii_uppercase();
     Some(MarketQuote {
-        symbol: symbol.clone(),
+        symbol,
         name: clean_market_name(
-            quote["shortName"]
+            meta["shortName"]
                 .as_str()
-                .or_else(|| quote["longName"].as_str()),
+                .or_else(|| meta["longName"].as_str()),
         ),
         price,
-        previous_close: decimal_string(&quote["regularMarketPreviousClose"]),
-        day_open: decimal_string(&quote["regularMarketOpen"]),
-        day_high: decimal_string(&quote["regularMarketDayHigh"]),
-        day_low: decimal_string(&quote["regularMarketDayLow"]),
-        change_percent: decimal_string(&quote["regularMarketChangePercent"]),
-        currency: quote["currency"].as_str().unwrap_or("USD").to_owned(),
-        market_state: quote["marketState"].as_str().map(str::to_owned),
-        quoted_at: epoch_rfc3339(&quote["regularMarketTime"])
+        previous_close: decimal_string(&meta["chartPreviousClose"])
+            .or_else(|| decimal_string(&meta["previousClose"])),
+        day_open: decimal_string(&meta["regularMarketOpen"])
+            .or_else(|| yahoo_chart_indicator_decimal(result, "open")),
+        day_high: decimal_string(&meta["regularMarketDayHigh"])
+            .or_else(|| yahoo_chart_indicator_decimal(result, "high")),
+        day_low: decimal_string(&meta["regularMarketDayLow"])
+            .or_else(|| yahoo_chart_indicator_decimal(result, "low")),
+        change_percent: decimal_string(&meta["regularMarketChangePercent"]),
+        currency: meta["currency"].as_str().unwrap_or_default().to_owned(),
+        market_state: meta["marketState"].as_str().map(str::to_owned),
+        quoted_at: epoch_rfc3339(&meta["regularMarketTime"])
             .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
     })
+}
+
+fn yahoo_chart_indicator_decimal(result: &Value, field: &str) -> Option<String> {
+    result["indicators"]["quote"]
+        .as_array()?
+        .first()?
+        .get(field)?
+        .as_array()?
+        .iter()
+        .find_map(decimal_string)
 }
 
 fn parse_yahoo_quote_page(symbol: &str, document: &str) -> Option<MarketQuote> {
@@ -3812,29 +3833,64 @@ mod tests {
     }
 
     #[test]
-    fn yahoo_quote_parser_preserves_provider_decimal_values() {
-        let quote = json!({
-            "symbol": "aapl",
-            "shortName": "Apple Inc.",
-            "regularMarketPrice": 229.31,
-            "regularMarketPreviousClose": 227.76,
-            "regularMarketOpen": 228.12,
-            "regularMarketDayHigh": 230.45,
-            "regularMarketDayLow": 227.9,
-            "regularMarketChangePercent": 0.68054,
-            "currency": "USD",
-            "marketState": "REGULAR",
-            "regularMarketTime": 1_725_000_000
+    fn yahoo_chart_parser_preserves_provider_values_and_uses_daily_ohlc() {
+        let payload = json!({
+            "chart": {
+                "result": [{
+                    "meta": {
+                        "symbol": "aapl",
+                        "shortName": "Apple Inc.",
+                        "regularMarketPrice": 229.31,
+                        "regularMarketChangePercent": 0.68054,
+                        "regularMarketDayHigh": 230.45,
+                        "regularMarketDayLow": 227.9,
+                        "chartPreviousClose": 227.76,
+                        "currency": "USD",
+                        "regularMarketTime": 1_725_000_000
+                    },
+                    "indicators": {
+                        "quote": [{
+                            "open": [228.12],
+                            "high": [230.45],
+                            "low": [227.9],
+                            "close": [229.31]
+                        }]
+                    }
+                }],
+                "error": null
+            }
         });
 
-        let parsed = parse_yahoo_quote(&quote).expect("Yahoo quote parses");
+        let parsed = parse_yahoo_chart_quote("AAPL", &payload).expect("Yahoo chart quote parses");
 
         assert_eq!(parsed.symbol, "AAPL");
         assert_eq!(parsed.name.as_deref(), Some("Apple Inc."));
         assert_eq!(parsed.price, "229.31");
         assert_eq!(parsed.previous_close.as_deref(), Some("227.76"));
+        assert_eq!(parsed.day_open.as_deref(), Some("228.12"));
+        assert_eq!(parsed.day_high.as_deref(), Some("230.45"));
+        assert_eq!(parsed.day_low.as_deref(), Some("227.9"));
         assert_eq!(parsed.change_percent.as_deref(), Some("0.68054"));
         assert_eq!(parsed.currency, "USD");
+    }
+
+    #[test]
+    fn yahoo_chart_parser_rejects_a_response_without_a_price() {
+        assert!(parse_yahoo_chart_quote("AAPL", &json!({ "chart": { "result": [] } })).is_none());
+        assert!(
+            parse_yahoo_chart_quote(
+                "AAPL",
+                &json!({
+                    "chart": {
+                        "result": [{
+                            "meta": { "symbol": "AAPL" },
+                            "indicators": { "quote": [{ "close": [null] }] }
+                        }]
+                    }
+                }),
+            )
+            .is_none()
+        );
     }
 
     #[test]

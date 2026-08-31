@@ -35,6 +35,11 @@
   } = $props();
 
   type MusicView = "home" | "collection" | "detail";
+  type MusicHomeGroup = {
+    kind: JellyfinMusicKind;
+    title: string;
+    items: JellyfinMusicItem[];
+  };
 
   let status = $state<JellyfinStatus | null>(null);
   let home = $state.raw<JellyfinMusicHome | null>(null);
@@ -62,22 +67,18 @@
   const skeletonRows = [...Array(6).keys()];
   const skeletonHomeCards = [...Array(6).keys()];
   const skeletonCollectionCards = [...Array(10).keys()];
+  const skeletonHomeGroups: MusicHomeGroup[] = [
+    { kind: "albums", title: "Albums", items: [] },
+    { kind: "artists", title: "Artists", items: [] },
+    { kind: "playlists", title: "Playlists", items: [] },
+  ];
 
   onDestroy(() => viewSwap.cancel());
 
-  const activeLibrary = $derived(
-    home?.libraries.find((library) => library.id === activeLibraryId) ?? null,
-  );
   const homeRecent = $derived(
     home?.recent.filter((item) => item.library_id === activeLibraryId) ?? [],
   );
-  const homeGroups = $derived.by<
-    Array<{
-      kind: JellyfinMusicKind;
-      title: string;
-      items: JellyfinMusicItem[];
-    }>
-  >(() =>
+  const homeGroups = $derived.by<MusicHomeGroup[]>(() =>
     home
       ? [
           {
@@ -367,34 +368,31 @@
   </div>
 {/snippet}
 
-{#snippet pageSkeleton()}
-  <div
-    class="music-page-skeleton"
-    role="status"
-    aria-label="Loading Jellyfin music"
-  >
-    <span class="sr-only">Loading Jellyfin music</span>
-    <div class="music-skeleton-toolbar" aria-hidden="true">
-      <span class="music-skeleton music-skeleton-label"></span>
-      <span class="music-skeleton music-skeleton-search"></span>
-    </div>
-    <div class="music-home" aria-hidden="true">
-      <section class="music-section">
-        <div class="music-skeleton-heading" aria-hidden="true">
-          <span class="music-skeleton music-skeleton-kicker"></span>
-          <span class="music-skeleton music-skeleton-title"></span>
-        </div>
-        {@render trackSkeleton()}
-      </section>
-      <section class="music-section">
-        <div class="music-skeleton-heading" aria-hidden="true">
-          <span class="music-skeleton music-skeleton-kicker"></span>
-          <span class="music-skeleton music-skeleton-title"></span>
-        </div>
-        {@render cardSkeleton(false)}
-      </section>
-    </div>
-  </div>
+{#snippet musicSearch(searchDisabled = false)}
+  <form class="music-search" role="search" onsubmit={submitSearch}>
+    <Search
+      class="music-search-icon"
+      size={16}
+      strokeWidth={1.8}
+      aria-hidden="true"
+    />
+    <input
+      type="search"
+      bind:value={searchQuery}
+      placeholder="Search tracks"
+      maxlength="160"
+      aria-label="Search Jellyfin tracks"
+      data-od-id="jellyfin-music-search"
+    />
+    <button
+      class="ui-button ui-button--secondary"
+      type="submit"
+      disabled={searchDisabled || !searchQuery.trim()}
+      data-od-id="search-jellyfin-music"
+    >
+      Search
+    </button>
+  </form>
 {/snippet}
 
 <section
@@ -462,321 +460,153 @@
     </div>
   </header>
 
-  {#if loading}
-    {@render pageSkeleton()}
-  {:else}
-    <div class="music-loaded" {@attach loadedSurfaceEnter}>
-      {#if error}
-        <p class="podcast-page-error" role="alert">{error}</p>
-      {/if}
+  <div class="music-loaded" {@attach loadedSurfaceEnter}>
+    {#if loading}
+      <span class="sr-only" role="status">Loading Jellyfin music</span>
+    {/if}
+    {#if error}
+      <p class="podcast-page-error" role="alert">{error}</p>
+    {/if}
 
-      {#if !status?.configured}
-        <div
-          class="music-connection-state"
-          data-od-id="music-instance-not-configured"
+    {#if !loading && !status?.configured}
+      <div
+        class="music-connection-state"
+        data-od-id="music-instance-not-configured"
+      >
+        <Disc3
+          class="music-state-icon"
+          size={34}
+          strokeWidth={1.5}
+          aria-hidden="true"
+        />
+        <div>
+          <h3>Jellyfin is not connected</h3>
+          <p>An administrator needs to add the instance media server first.</p>
+        </div>
+        <button
+          class="ui-button ui-button--secondary"
+          type="button"
+          onclick={onOpenAdminSettings}
+          data-od-id="open-jellyfin-admin-settings"
         >
-          <Disc3
-            class="music-state-icon"
-            size={34}
-            strokeWidth={1.5}
-            aria-hidden="true"
-          />
-          <div>
-            <h3>Jellyfin is not connected</h3>
-            <p>
-              An administrator needs to add the instance media server first.
-            </p>
-          </div>
-          <button
-            class="ui-button ui-button--secondary"
-            type="button"
-            onclick={onOpenAdminSettings}
-            data-od-id="open-jellyfin-admin-settings"
-          >
-            Open settings
-          </button>
+          Open settings
+        </button>
+      </div>
+    {:else if !loading && !status?.connected}
+      <div class="music-connection-state" data-od-id="music-account-not-linked">
+        <Music2
+          class="music-state-icon"
+          size={34}
+          strokeWidth={1.5}
+          aria-hidden="true"
+        />
+        <div>
+          <h3>Link your music account</h3>
+          <p>
+            Connect your Jellyfin identity with Quick Connect or your Jellyfin
+            credentials. Only your music libraries will be available here.
+          </p>
         </div>
-      {:else if !status.connected}
-        <div
-          class="music-connection-state"
-          data-od-id="music-account-not-linked"
+        <button
+          class="ui-button ui-button--primary"
+          type="button"
+          onclick={onOpenAccountSettings}
+          data-od-id="open-jellyfin-account-settings"
         >
-          <Music2
-            class="music-state-icon"
-            size={34}
-            strokeWidth={1.5}
-            aria-hidden="true"
-          />
-          <div>
-            <h3>Link your music account</h3>
-            <p>
-              Connect your Jellyfin identity with Quick Connect or your Jellyfin
-              credentials. Only your music libraries will be available here.
-            </p>
-          </div>
+          Link Jellyfin
+        </button>
+      </div>
+    {:else if !loading && !home}
+      <div class="music-connection-state" data-od-id="music-load-failed">
+        <Disc3
+          class="music-state-icon"
+          size={34}
+          strokeWidth={1.5}
+          aria-hidden="true"
+        />
+        <div>
+          <h3>Music could not load</h3>
+          <p>
+            Pandan kept your Jellyfin link. Retry the library request without
+            reconnecting your account.
+          </p>
+        </div>
+        <button
+          class="ui-button ui-button--secondary"
+          type="button"
+          onclick={refresh}
+          data-od-id="retry-jellyfin-music"
+        >
+          Retry
+        </button>
+      </div>
+    {:else if !loading && home?.libraries.length === 0}
+      <p class="music-empty">
+        This Jellyfin account has no visible music libraries. Movie, TV, book,
+        music-video, and live-TV libraries are intentionally excluded.
+      </p>
+    {:else}
+      <div
+        class="music-toolbar"
+        class:music-toolbar--search-only={view === "home"}
+        data-od-id="music-toolbar"
+      >
+        {#if view !== "home"}
           <button
-            class="ui-button ui-button--primary"
+            class="ui-button ui-button--ghost"
             type="button"
-            onclick={onOpenAccountSettings}
-            data-od-id="open-jellyfin-account-settings"
+            onclick={back}
+            data-od-id="music-back"
           >
-            Link Jellyfin
+            <ArrowLeft size={16} strokeWidth={1.8} aria-hidden="true" />
+            Back
           </button>
-        </div>
-      {:else if !home}
-        <div class="music-connection-state" data-od-id="music-load-failed">
-          <Disc3
-            class="music-state-icon"
-            size={34}
-            strokeWidth={1.5}
-            aria-hidden="true"
-          />
-          <div>
-            <h3>Music could not load</h3>
-            <p>
-              Pandan kept your Jellyfin link. Retry the library request without
-              reconnecting your account.
-            </p>
-          </div>
-          <button
-            class="ui-button ui-button--secondary"
-            type="button"
-            onclick={refresh}
-            data-od-id="retry-jellyfin-music"
-          >
-            Retry
-          </button>
-        </div>
-      {:else if home.libraries.length === 0}
-        <p class="music-empty">
-          This Jellyfin account has no visible music libraries. Movie, TV, book,
-          music-video, and live-TV libraries are intentionally excluded.
-        </p>
-      {:else}
-        <div class="music-toolbar" data-od-id="music-toolbar">
-          {#if view !== "home"}
-            <button
-              class="ui-button ui-button--ghost"
-              type="button"
-              onclick={back}
-              data-od-id="music-back"
-            >
-              <ArrowLeft size={16} strokeWidth={1.8} aria-hidden="true" />
-              Back
-            </button>
-          {:else}
-            <span class="music-library-label">{activeLibrary?.name}</span>
-          {/if}
-          <form class="music-search" role="search" onsubmit={submitSearch}>
-            <Search
-              class="music-search-icon"
-              size={16}
-              strokeWidth={1.8}
-              aria-hidden="true"
-            />
-            <input
-              type="search"
-              bind:value={searchQuery}
-              placeholder="Search tracks"
-              maxlength="160"
-              aria-label="Search Jellyfin tracks"
-              data-od-id="jellyfin-music-search"
-            />
-            <button
-              class="ui-button ui-button--secondary"
-              type="submit"
-              disabled={!searchQuery.trim()}
-              data-od-id="search-jellyfin-music"
-            >
-              Search
-            </button>
-          </form>
-        </div>
+        {/if}
+        {@render musicSearch(loading)}
+      </div>
 
-        <div
-          class="music-view view-swap"
-          data-view-phase={viewSwap.phase}
-          data-view-direction={viewSwap.direction}
-          aria-busy={loadingCollection}
-          {@attach viewSwap.attach}
-        >
-          {#if view === "home"}
-            <div class="music-home" data-od-id="music-home">
-              <section
-                class="music-section"
-                aria-labelledby="music-recent-title"
-              >
-                <div class="music-section-heading">
-                  <div>
-                    <span>[ RECENT ]</span>
-                    <h3 id="music-recent-title">Recently added</h3>
-                  </div>
-                  <button
-                    class="ui-button ui-button--ghost"
-                    type="button"
-                    onclick={() =>
-                      void openCollection("tracks", "Recently added")}
-                  >
-                    See all
-                  </button>
-                </div>
-                {#if homeRecent.length === 0}
-                  <p class="music-empty">
-                    No audio items found in this library.
-                  </p>
-                {:else}
-                  <div class="music-track-list">
-                    {#each homeRecent as track, index (track.id)}
-                      {@const queued = podcastPlayer.isMusicQueued(track)}
-                      <article
-                        class:active={podcastPlayer.track?.id === track.id}
-                        data-od-id={"music-recent-" + track.id}
-                      >
-                        <button
-                          class="music-track-play"
-                          type="button"
-                          aria-label={"Play " + track.name}
-                          onclick={() => playTrack(homeRecent, index)}
-                        >
-                          <Play
-                            size={16}
-                            fill="currentColor"
-                            aria-hidden="true"
-                          />
-                        </button>
-                        <div class="music-track-copy">
-                          <strong>{track.name}</strong>
-                          <small
-                            >{track.artist ??
-                              track.album ??
-                              "Unknown artist"}</small
-                          >
-                        </div>
-                        <span
-                          >{formatPlaybackTime(
-                            track.duration_seconds ?? 0,
-                          )}</span
-                        >
-                        <div class="music-track-actions">
-                          <!-- eslint-disable svelte/no-navigation-without-resolve -- authenticated API attachment -->
-                          <a
-                            class="ui-button ui-button--ghost ui-button--icon"
-                            href={jellyfinMusicDownloadUrl(
-                              track.id,
-                              track.library_id,
-                            )}
-                            download
-                            aria-label={`Download ${track.name}`}
-                            title="Download track"
-                            data-od-id={`music-download-${track.id}`}
-                          >
-                            <Download
-                              size={17}
-                              strokeWidth={1.8}
-                              aria-hidden="true"
-                            />
-                          </a>
-                          <!-- eslint-enable svelte/no-navigation-without-resolve -->
-                          <button
-                            class="ui-button ui-button--ghost ui-button--icon"
-                            type="button"
-                            disabled={queued}
-                            aria-label={queued
-                              ? track.name + " is already queued"
-                              : "Add " + track.name + " to queue"}
-                            title={queued ? "Already queued" : "Add to queue"}
-                            onclick={() => podcastPlayer.queueMusic(track)}
-                          >
-                            <ListPlus
-                              size={17}
-                              strokeWidth={1.8}
-                              aria-hidden="true"
-                            />
-                          </button>
-                        </div>
-                      </article>
-                    {/each}
-                  </div>
-                {/if}
-              </section>
-
-              {#each homeGroups as group (group.kind)}
-                <section
-                  class="music-section"
-                  aria-labelledby={"music-" + group.kind + "-title"}
-                >
-                  <div class="music-section-heading">
-                    <div>
-                      <span>[ {group.kind.toUpperCase()} ]</span>
-                      <h3 id={"music-" + group.kind + "-title"}>
-                        {group.title}
-                      </h3>
-                    </div>
-                    <button
-                      class="ui-button ui-button--ghost"
-                      type="button"
-                      onclick={() =>
-                        void openCollection(group.kind, group.title)}
-                    >
-                      See all
-                    </button>
-                  </div>
-                  <div class="music-card-grid">
-                    {#each group.items as item (item.id)}
-                      <button
-                        class="music-card"
-                        type="button"
-                        onclick={() => void openDetail(item)}
-                        data-od-id={"music-card-" + item.id}
-                      >
-                        <span class="music-card-art">
-                          {#if artwork(item)}
-                            <img src={artwork(item)} alt="" loading="lazy" />
-                          {:else}
-                            <Disc3
-                              size={30}
-                              strokeWidth={1.4}
-                              aria-hidden="true"
-                            />
-                          {/if}
-                        </span>
-                        <strong>{item.name}</strong>
-                        <small>{cardSubtitle(item)}</small>
-                      </button>
-                    {/each}
-                  </div>
-                </section>
-              {/each}
-            </div>
-          {:else if view === "collection"}
-            <section class="music-section" data-od-id="music-collection">
+      <div
+        class="music-view view-swap"
+        data-view-phase={viewSwap.phase}
+        data-view-direction={viewSwap.direction}
+        aria-busy={loading || loadingCollection}
+        {@attach viewSwap.attach}
+      >
+        {#if view === "home"}
+          <div class="music-home" data-od-id="music-home">
+            <section class="music-section" aria-labelledby="music-recent-title">
               <div class="music-section-heading">
                 <div>
-                  <span>[ {collectionTotal} ITEMS ]</span>
-                  <h3>{collectionTitle}</h3>
+                  <span>[ RECENT ]</span>
+                  <h3 id="music-recent-title">Recently added</h3>
                 </div>
+                <button
+                  class="ui-button ui-button--ghost"
+                  type="button"
+                  disabled={loading}
+                  onclick={() =>
+                    void openCollection("tracks", "Recently added")}
+                >
+                  See all
+                </button>
               </div>
-              {#if loadingCollection}
-                <span class="sr-only" role="status">Loading collection</span>
-                {#if collectionKind === "tracks"}
-                  {@render trackSkeleton()}
-                {:else}
-                  {@render cardSkeleton()}
-                {/if}
-              {:else if collectionItems.length === 0}
-                <p class="music-empty">No matching music items.</p>
-              {:else if collectionKind === "tracks"}
+              {#if loading}
+                {@render trackSkeleton()}
+              {:else if homeRecent.length === 0}
+                <p class="music-empty">No audio items found in this library.</p>
+              {:else}
                 <div class="music-track-list">
-                  {#each collectionItems as track, index (track.id)}
+                  {#each homeRecent as track, index (track.id)}
                     {@const queued = podcastPlayer.isMusicQueued(track)}
                     <article
                       class:active={podcastPlayer.track?.id === track.id}
+                      data-od-id={"music-recent-" + track.id}
                     >
                       <button
                         class="music-track-play"
                         type="button"
                         aria-label={"Play " + track.name}
-                        onclick={() => playTrack(collectionItems, index)}
+                        onclick={() => playTrack(homeRecent, index)}
                       >
                         <Play
                           size={16}
@@ -835,141 +665,266 @@
                     </article>
                   {/each}
                 </div>
-              {:else}
-                <div class="music-card-grid music-card-grid--collection">
-                  {#each collectionItems as item (item.id)}
-                    <button
-                      class="music-card"
-                      type="button"
-                      onclick={() => void openDetail(item)}
-                    >
-                      <span class="music-card-art">
-                        {#if artwork(item)}
-                          <img src={artwork(item)} alt="" loading="lazy" />
-                        {:else}
-                          <Disc3
-                            size={30}
-                            strokeWidth={1.4}
-                            aria-hidden="true"
-                          />
-                        {/if}
-                      </span>
-                      <strong>{item.name}</strong>
-                      <small>{cardSubtitle(item)}</small>
-                    </button>
-                  {/each}
-                </div>
               {/if}
             </section>
-          {:else if detailItem}
-            <section
-              class="music-detail"
-              data-od-id={"music-detail-" + detailItem.id}
-            >
-              <div class="music-detail-heading">
-                <span class="music-detail-art">
-                  {#if artwork(detailItem)}
-                    <img src={artwork(detailItem)} alt="" />
-                  {:else}
-                    <Disc3 size={46} strokeWidth={1.3} aria-hidden="true" />
-                  {/if}
-                </span>
-                <div>
-                  <span>[ {detailItem.kind.toUpperCase()} ]</span>
-                  <h3>{detailItem.name}</h3>
-                  <p>{cardSubtitle(detailItem)}</p>
+
+            {#each loading ? skeletonHomeGroups : homeGroups as group (group.kind)}
+              <section
+                class="music-section"
+                aria-labelledby={"music-" + group.kind + "-title"}
+              >
+                <div class="music-section-heading">
+                  <div>
+                    <span>[ {group.kind.toUpperCase()} ]</span>
+                    <h3 id={"music-" + group.kind + "-title"}>
+                      {group.title}
+                    </h3>
+                  </div>
                   <button
-                    class="ui-button ui-button--primary"
+                    class="ui-button ui-button--ghost"
                     type="button"
-                    disabled={detailTracks.length === 0}
-                    onclick={playAll}
-                    data-od-id="play-jellyfin-collection"
+                    disabled={loading}
+                    onclick={() => void openCollection(group.kind, group.title)}
                   >
-                    <Play size={16} fill="currentColor" aria-hidden="true" />
-                    Play
+                    See all
                   </button>
                 </div>
-              </div>
-              {#if loadingCollection}
-                <span class="sr-only" role="status">Loading tracks</span>
-                {@render trackSkeleton()}
-              {:else if detailTracks.length === 0}
-                <p class="music-empty">
-                  This collection has no tracks from the selected music library.
-                </p>
-              {:else}
-                <div class="music-track-list">
-                  {#each detailTracks as track, index (track.id)}
-                    {@const queued = podcastPlayer.isMusicQueued(track)}
-                    <article
-                      class:active={podcastPlayer.track?.id === track.id}
-                    >
+                {#if loading}
+                  {@render cardSkeleton(false)}
+                {:else}
+                  <div class="music-card-grid">
+                    {#each group.items as item (item.id)}
                       <button
-                        class="music-track-play"
+                        class="music-card"
                         type="button"
-                        aria-label={"Play " + track.name}
-                        onclick={() => playTrack(detailTracks, index)}
+                        onclick={() => void openDetail(item)}
+                        data-od-id={"music-card-" + item.id}
                       >
-                        <Play
-                          size={16}
-                          fill="currentColor"
+                        <span class="music-card-art">
+                          {#if artwork(item)}
+                            <img src={artwork(item)} alt="" loading="lazy" />
+                          {:else}
+                            <Disc3
+                              size={30}
+                              strokeWidth={1.4}
+                              aria-hidden="true"
+                            />
+                          {/if}
+                        </span>
+                        <strong>{item.name}</strong>
+                        <small>{cardSubtitle(item)}</small>
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+              </section>
+            {/each}
+          </div>
+        {:else if view === "collection"}
+          <section class="music-section" data-od-id="music-collection">
+            <div class="music-section-heading">
+              <div>
+                <span>[ {collectionTotal} ITEMS ]</span>
+                <h3>{collectionTitle}</h3>
+              </div>
+            </div>
+            {#if loadingCollection}
+              <span class="sr-only" role="status">Loading collection</span>
+              {#if collectionKind === "tracks"}
+                {@render trackSkeleton()}
+              {:else}
+                {@render cardSkeleton()}
+              {/if}
+            {:else if collectionItems.length === 0}
+              <p class="music-empty">No matching music items.</p>
+            {:else if collectionKind === "tracks"}
+              <div class="music-track-list">
+                {#each collectionItems as track, index (track.id)}
+                  {@const queued = podcastPlayer.isMusicQueued(track)}
+                  <article class:active={podcastPlayer.track?.id === track.id}>
+                    <button
+                      class="music-track-play"
+                      type="button"
+                      aria-label={"Play " + track.name}
+                      onclick={() => playTrack(collectionItems, index)}
+                    >
+                      <Play size={16} fill="currentColor" aria-hidden="true" />
+                    </button>
+                    <div class="music-track-copy">
+                      <strong>{track.name}</strong>
+                      <small
+                        >{track.artist ??
+                          track.album ??
+                          "Unknown artist"}</small
+                      >
+                    </div>
+                    <span
+                      >{formatPlaybackTime(track.duration_seconds ?? 0)}</span
+                    >
+                    <div class="music-track-actions">
+                      <!-- eslint-disable svelte/no-navigation-without-resolve -- authenticated API attachment -->
+                      <a
+                        class="ui-button ui-button--ghost ui-button--icon"
+                        href={jellyfinMusicDownloadUrl(
+                          track.id,
+                          track.library_id,
+                        )}
+                        download
+                        aria-label={`Download ${track.name}`}
+                        title="Download track"
+                        data-od-id={`music-download-${track.id}`}
+                      >
+                        <Download
+                          size={17}
+                          strokeWidth={1.8}
+                          aria-hidden="true"
+                        />
+                      </a>
+                      <!-- eslint-enable svelte/no-navigation-without-resolve -->
+                      <button
+                        class="ui-button ui-button--ghost ui-button--icon"
+                        type="button"
+                        disabled={queued}
+                        aria-label={queued
+                          ? track.name + " is already queued"
+                          : "Add " + track.name + " to queue"}
+                        title={queued ? "Already queued" : "Add to queue"}
+                        onclick={() => podcastPlayer.queueMusic(track)}
+                      >
+                        <ListPlus
+                          size={17}
+                          strokeWidth={1.8}
                           aria-hidden="true"
                         />
                       </button>
-                      <div class="music-track-copy">
-                        <strong>{track.name}</strong>
-                        <small>{track.artist ?? detailItem.name}</small>
-                      </div>
-                      <span
-                        >{formatPlaybackTime(track.duration_seconds ?? 0)}</span
+                    </div>
+                  </article>
+                {/each}
+              </div>
+            {:else}
+              <div class="music-card-grid music-card-grid--collection">
+                {#each collectionItems as item (item.id)}
+                  <button
+                    class="music-card"
+                    type="button"
+                    onclick={() => void openDetail(item)}
+                  >
+                    <span class="music-card-art">
+                      {#if artwork(item)}
+                        <img src={artwork(item)} alt="" loading="lazy" />
+                      {:else}
+                        <Disc3 size={30} strokeWidth={1.4} aria-hidden="true" />
+                      {/if}
+                    </span>
+                    <strong>{item.name}</strong>
+                    <small>{cardSubtitle(item)}</small>
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </section>
+        {:else if detailItem}
+          <section
+            class="music-detail"
+            data-od-id={"music-detail-" + detailItem.id}
+          >
+            <div class="music-detail-heading">
+              <span class="music-detail-art">
+                {#if artwork(detailItem)}
+                  <img src={artwork(detailItem)} alt="" />
+                {:else}
+                  <Disc3 size={46} strokeWidth={1.3} aria-hidden="true" />
+                {/if}
+              </span>
+              <div>
+                <span>[ {detailItem.kind.toUpperCase()} ]</span>
+                <h3>{detailItem.name}</h3>
+                <p>{cardSubtitle(detailItem)}</p>
+                <button
+                  class="ui-button ui-button--primary"
+                  type="button"
+                  disabled={detailTracks.length === 0}
+                  onclick={playAll}
+                  data-od-id="play-jellyfin-collection"
+                >
+                  <Play size={16} fill="currentColor" aria-hidden="true" />
+                  Play
+                </button>
+              </div>
+            </div>
+            {#if loadingCollection}
+              <span class="sr-only" role="status">Loading tracks</span>
+              {@render trackSkeleton()}
+            {:else if detailTracks.length === 0}
+              <p class="music-empty">
+                This collection has no tracks from the selected music library.
+              </p>
+            {:else}
+              <div class="music-track-list">
+                {#each detailTracks as track, index (track.id)}
+                  {@const queued = podcastPlayer.isMusicQueued(track)}
+                  <article class:active={podcastPlayer.track?.id === track.id}>
+                    <button
+                      class="music-track-play"
+                      type="button"
+                      aria-label={"Play " + track.name}
+                      onclick={() => playTrack(detailTracks, index)}
+                    >
+                      <Play size={16} fill="currentColor" aria-hidden="true" />
+                    </button>
+                    <div class="music-track-copy">
+                      <strong>{track.name}</strong>
+                      <small>{track.artist ?? detailItem.name}</small>
+                    </div>
+                    <span
+                      >{formatPlaybackTime(track.duration_seconds ?? 0)}</span
+                    >
+                    <div class="music-track-actions">
+                      <!-- eslint-disable svelte/no-navigation-without-resolve -- authenticated API attachment -->
+                      <a
+                        class="ui-button ui-button--ghost ui-button--icon"
+                        href={jellyfinMusicDownloadUrl(
+                          track.id,
+                          track.library_id,
+                        )}
+                        download
+                        aria-label={`Download ${track.name}`}
+                        title="Download track"
+                        data-od-id={`music-download-${track.id}`}
                       >
-                      <div class="music-track-actions">
-                        <!-- eslint-disable svelte/no-navigation-without-resolve -- authenticated API attachment -->
-                        <a
-                          class="ui-button ui-button--ghost ui-button--icon"
-                          href={jellyfinMusicDownloadUrl(
-                            track.id,
-                            track.library_id,
-                          )}
-                          download
-                          aria-label={`Download ${track.name}`}
-                          title="Download track"
-                          data-od-id={`music-download-${track.id}`}
-                        >
-                          <Download
-                            size={17}
-                            strokeWidth={1.8}
-                            aria-hidden="true"
-                          />
-                        </a>
-                        <!-- eslint-enable svelte/no-navigation-without-resolve -->
-                        <button
-                          class="ui-button ui-button--ghost ui-button--icon"
-                          type="button"
-                          disabled={queued}
-                          aria-label={queued
-                            ? track.name + " is already queued"
-                            : "Add " + track.name + " to queue"}
-                          title={queued ? "Already queued" : "Add to queue"}
-                          onclick={() => podcastPlayer.queueMusic(track)}
-                        >
-                          <ListPlus
-                            size={17}
-                            strokeWidth={1.8}
-                            aria-hidden="true"
-                          />
-                        </button>
-                      </div>
-                    </article>
-                  {/each}
-                </div>
-              {/if}
-            </section>
-          {/if}
-        </div>
-      {/if}
-    </div>
-  {/if}
+                        <Download
+                          size={17}
+                          strokeWidth={1.8}
+                          aria-hidden="true"
+                        />
+                      </a>
+                      <!-- eslint-enable svelte/no-navigation-without-resolve -->
+                      <button
+                        class="ui-button ui-button--ghost ui-button--icon"
+                        type="button"
+                        disabled={queued}
+                        aria-label={queued
+                          ? track.name + " is already queued"
+                          : "Add " + track.name + " to queue"}
+                        title={queued ? "Already queued" : "Add to queue"}
+                        onclick={() => podcastPlayer.queueMusic(track)}
+                      >
+                        <ListPlus
+                          size={17}
+                          strokeWidth={1.8}
+                          aria-hidden="true"
+                        />
+                      </button>
+                    </div>
+                  </article>
+                {/each}
+              </div>
+            {/if}
+          </section>
+        {/if}
+      </div>
+    {/if}
+  </div>
 </section>
 
 <MusicQueueDialog open={queueOpen} onClose={() => (queueOpen = false)} />
@@ -1037,21 +992,10 @@
   }
 
   .music-loaded,
-  .music-view,
-  .music-page-skeleton {
+  .music-view {
     min-width: 0;
     display: grid;
     gap: 22px;
-  }
-
-  .music-skeleton-toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    min-height: 61px;
-    padding-bottom: 16px;
-    border-bottom: 1px solid var(--border);
   }
 
   .music-skeleton {
@@ -1064,31 +1008,6 @@
     );
     background-size: 240% 100%;
     animation: music-skeleton-scan 1.35s cubic-bezier(0.2, 0, 0, 1) infinite;
-  }
-
-  .music-skeleton-label {
-    width: min(180px, 36vw);
-    height: 12px;
-  }
-
-  .music-skeleton-search {
-    width: min(420px, 52vw);
-    height: 44px;
-  }
-
-  .music-skeleton-heading {
-    display: grid;
-    gap: 8px;
-  }
-
-  .music-skeleton-kicker {
-    width: 74px;
-    height: 8px;
-  }
-
-  .music-skeleton-title {
-    width: min(230px, 64vw);
-    height: 31px;
   }
 
   .music-skeleton-track {
@@ -1210,14 +1129,8 @@
     border-bottom: 1px solid var(--border);
   }
 
-  .music-library-label {
-    overflow: hidden;
-    color: var(--fg);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    font-weight: 550;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .music-toolbar--search-only {
+    justify-content: flex-end;
   }
 
   .music-search {
@@ -1497,16 +1410,6 @@
     .music-toolbar {
       align-items: stretch;
       flex-direction: column;
-    }
-
-    .music-skeleton-toolbar {
-      align-items: stretch;
-      flex-direction: column;
-    }
-
-    .music-skeleton-label,
-    .music-skeleton-search {
-      width: 100%;
     }
 
     .music-search {
