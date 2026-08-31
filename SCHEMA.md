@@ -308,11 +308,13 @@ together, with each opt-in reducing sandbox isolation.
 to 720 pixels, with API and database constraints limiting values to 320–2,400 pixels. The interface
 offers 480, 720, and 1,080 pixel presets plus a custom option; width remains responsive to the
 application canvas.
-`icon_kind` selects `favicon`, `lucide`, or `custom`. Favicon rows store no value and derive the
-conventional `/favicon.ico` URL from the page origin in the browser. Lucide rows store one supported
+`icon_kind` selects `favicon`, `lucide`, or `custom`. Favicon rows store no value; the server tries
+the conventional origin favicon and bounded HTML-declared discovery. Lucide rows store one supported
 icon name. Custom rows store a credential-free HTTPS image URL no longer than 2,000 characters.
-Remote images load without a referrer, and the interface falls back to the packaged panel icon when
-an image cannot load.
+Remote icons are fetched through the `images` network policy, SVG sources are rasterized, and up to
+256 KiB of supported image bytes are stored in SQLite. The browser reads only the authenticated
+Pandan icon endpoint. Existing rows are hydrated on their first icon request. A failed fetch records
+the attempt without bytes so the interface stays on the packaged panel icon until the page is edited.
 
 | Column               | Type    | Constraints                                                        |
 | -------------------- | ------- | ------------------------------------------------------------------ |
@@ -323,8 +325,11 @@ an image cannot load.
 | `title`              | TEXT    | Required, trimmed length 1–80                                      |
 | `description`        | TEXT    | Required, maximum length 280                                       |
 | `url`                | TEXT    | Required absolute HTTPS URL, maximum length 2,000                  |
-| `icon_kind`          | TEXT    | Required, `favicon`, `lucide`, or `custom`                          |
+| `icon_kind`          | TEXT    | Required, `favicon`, `lucide`, or `custom`                         |
 | `icon_value`         | TEXT    | Null for favicon; supported Lucide name or HTTPS custom icon URL   |
+| `icon_content_type`  | TEXT    | Optional supported cached image media type                         |
+| `icon_data`          | BLOB    | Optional cached image bytes, maximum 256 KiB                       |
+| `icon_fetched_at`    | TEXT    | Optional RFC 3339 timestamp for the latest fetch attempt           |
 | `allow_scripts`      | INTEGER | Required boolean, defaults to `0`                                  |
 | `allow_same_origin`  | INTEGER | Required boolean, defaults to `0`                                  |
 | `iframe_height`      | INTEGER | Required, 320–2,400 pixels, defaults to `720`                      |
@@ -575,29 +580,34 @@ store a public `reddit.com/r/{subreddit}/{sort}.rss` Atom URL; older saved `.jso
 normalized to the same Atom endpoint when fetched. Fetching uses the server network policy; public
 HTTPS is implicit, while private or HTTP origins require an administrator allow rule. A normalized
 origin is stored separately to make base-URL filtering predictable.
+An optional account-owned custom name controls how a source is labelled without replacing the
+title fetched from the feed, so later refreshes cannot overwrite the user's choice.
 
 The background refresh worker schedules on `last_attempted_at`, which is stamped when a refresh is
 claimed and by every manual refresh, so a failing source backs off for a full window instead of
 being retried on every sweep. `last_fetched_at` still records the last successful fetch. Every
 successful refresh advances `refresh_generation`; failures leave it unchanged so Current views keep
-showing the last known-good snapshot.
+showing the last known-good snapshot. Each subscription exposes only its configured number of latest
+snapshot entries in Current; the limit defaults to 25 and may be set from 1 through 200.
 
-| Column               | Type    | Constraints                             |
-| -------------------- | ------- | --------------------------------------- |
-| `id`                 | TEXT    | Primary key                             |
-| `user_id`            | TEXT    | References `users` with cascade delete  |
-| `url`                | TEXT    | Required source URL, unique per user    |
-| `base_url`           | TEXT    | Required normalized HTTP(S) origin      |
-| `title`              | TEXT    | Required, fetched feed title            |
-| `category`           | TEXT    | Required, trimmed length 1–40           |
-| `auto_delete_days`   | INTEGER | Optional age from 1–3,650 days          |
-| `auto_delete_mode`   | TEXT    | `read` or `all`                         |
-| `last_fetched_at`    | TEXT    | Optional RFC 3339 timestamp             |
-| `last_attempted_at`  | TEXT    | Optional RFC 3339 refresh attempt       |
-| `last_error`         | TEXT    | Optional safe provider error            |
-| `refresh_generation` | INTEGER | Latest successful snapshot, initially 0 |
-| `created_at`         | TEXT    | Required, RFC 3339 timestamp            |
-| `updated_at`         | TEXT    | Required, RFC 3339 timestamp            |
+| Column                | Type    | Constraints                               |
+| --------------------- | ------- | ----------------------------------------- |
+| `id`                  | TEXT    | Primary key                               |
+| `user_id`             | TEXT    | References `users` with cascade delete    |
+| `url`                 | TEXT    | Required source URL, unique per user      |
+| `base_url`            | TEXT    | Required normalized HTTP(S) origin        |
+| `title`               | TEXT    | Required, fetched feed title              |
+| `custom_name`         | TEXT    | Optional, trimmed length 1–80             |
+| `category`            | TEXT    | Required, trimmed length 1–40             |
+| `auto_delete_days`    | INTEGER | Optional age from 1–3,650 days            |
+| `auto_delete_mode`    | TEXT    | `read` or `all`                           |
+| `current_entry_limit` | INTEGER | Latest Current entries, 1–200; default 25 |
+| `last_fetched_at`     | TEXT    | Optional RFC 3339 timestamp               |
+| `last_attempted_at`   | TEXT    | Optional RFC 3339 refresh attempt         |
+| `last_error`          | TEXT    | Optional safe provider error              |
+| `refresh_generation`  | INTEGER | Latest successful snapshot, initially 0   |
+| `created_at`          | TEXT    | Required, RFC 3339 timestamp              |
+| `updated_at`          | TEXT    | Required, RFC 3339 timestamp              |
 
 ## `rss_items`
 
@@ -606,8 +616,8 @@ identifier and preserves `read_at`. Automatic retention runs when the reader loa
 refreshes; manual pruning can remove old read-only or all entries across one user's subscriptions.
 Entries may retain separate article and discussion destinations. Entries saved in `rss_read_later`
 are excluded from both automatic retention and manual pruning. Entries stamped with the
-subscription's latest successful generation form its Current projection and are also protected from
-retention while the source still exposes them.
+subscription's latest successful generation are ranked newest-first. The configured latest entries
+form its Current projection and are also protected from retention while the source still exposes them.
 
 | Column                 | Type    | Constraints                                         |
 | ---------------------- | ------- | --------------------------------------------------- |
@@ -901,13 +911,35 @@ the media root in both directions.
 ## `podcast_subscriptions`
 
 Private account-to-podcast membership. Every episode read — metadata, audio bytes, and listening
-state — resolves through this table.
+state — resolves through this table. New-episode notification routing is optional and may reference
+only an account-owned ntfy topic; deleting that topic disables the route.
 
-| Column       | Type | Constraints                                                      |
-| ------------ | ---- | ---------------------------------------------------------------- |
-| `user_id`    | TEXT | Composite primary key, references `users` with cascade delete    |
-| `podcast_id` | TEXT | Composite primary key, references `podcasts` with cascade delete |
-| `created_at` | TEXT | Required, RFC 3339 timestamp                                     |
+| Column                       | Type    | Constraints                                                      |
+| ---------------------------- | ------- | ---------------------------------------------------------------- |
+| `user_id`                    | TEXT    | Composite primary key, references `users` with cascade delete    |
+| `podcast_id`                 | TEXT    | Composite primary key, references `podcasts` with cascade delete |
+| `ntfy_notifications_enabled` | INTEGER | 0 or 1, defaults to 0                                            |
+| `ntfy_topic_id`              | TEXT    | Optional reference to `ntfy_topics`, null on topic delete        |
+| `created_at`                 | TEXT    | Required, RFC 3339 timestamp                                     |
+
+## `podcast_notification_deliveries`
+
+Durable account-scoped work queue for newly indexed episodes. Rows are inserted in the same
+transaction as their episode, claimed with a short lease, retried with backoff, and resolved against
+the subscription's current topic and ntfy connection before publishing. Disabling a show's route
+removes only undelivered work; delivered rows prevent old episodes from replaying after re-enabling.
+
+| Column             | Type    | Constraints                                                              |
+| ------------------ | ------- | ------------------------------------------------------------------------ |
+| `user_id`          | TEXT    | Composite primary key, references `users` with cascade delete            |
+| `episode_id`       | TEXT    | Composite primary key, references `podcast_episodes` with cascade delete |
+| `attempts`         | INTEGER | Required, non-negative, defaults to 0                                    |
+| `last_error`       | TEXT    | Required, defaults to empty                                              |
+| `next_attempt_at`  | TEXT    | Required RFC 3339 retry time                                             |
+| `lease_started_at` | TEXT    | Optional RFC 3339 worker lease                                           |
+| `delivered_at`     | TEXT    | Optional RFC 3339 successful publish time                                |
+| `created_at`       | TEXT    | Required, RFC 3339 timestamp                                             |
+| `updated_at`       | TEXT    | Required, RFC 3339 timestamp                                             |
 
 ## `podcast_episode_progress`
 
@@ -984,20 +1016,23 @@ that would create a cycle.
 ## `calendar_subscriptions`
 
 User-owned iCalendar sources approved by the server network policy. URLs are unique within an
-account. Refresh errors are stored without discarding the most recent successful event snapshot.
+account. A custom listing name overrides the fetched source name without being replaced by refresh.
+Refresh errors are stored without discarding the most recent successful event snapshot.
 
-| Column            | Type | Constraints                                            |
-| ----------------- | ---- | ------------------------------------------------------ |
-| `id`              | TEXT | Primary key                                            |
-| `user_id`         | TEXT | References `users` with cascade delete                 |
-| `url`             | TEXT | Required source URL, unique per user                   |
-| `name`            | TEXT | Required fetched calendar name, length 1–120           |
-| `color`           | TEXT | Legacy preset key retained for migration compatibility |
-| `color_value`     | TEXT | Required six-digit sRGB hex color                      |
-| `last_fetched_at` | TEXT | Optional RFC 3339 timestamp                            |
-| `last_error`      | TEXT | Optional safe provider error                           |
-| `created_at`      | TEXT | Required, RFC 3339 timestamp                           |
-| `updated_at`      | TEXT | Required, RFC 3339 timestamp                           |
+| Column            | Type | Constraints                                              |
+| ----------------- | ---- | -------------------------------------------------------- |
+| `id`              | TEXT | Primary key                                              |
+| `user_id`         | TEXT | References `users` with cascade delete                   |
+| `url`             | TEXT | Required source URL, unique per user                     |
+| `name`            | TEXT | Required fetched calendar name, length 1–120             |
+| `custom_name`     | TEXT | Optional owner-defined listing name, length 1–120        |
+| `color`           | TEXT | Legacy preset key retained for migration compatibility   |
+| `color_value`     | TEXT | Required six-digit sRGB hex color                        |
+| `display_mode`    | TEXT | Month view presentation: `full` or `dot`; default `full` |
+| `last_fetched_at` | TEXT | Optional RFC 3339 timestamp                              |
+| `last_error`      | TEXT | Optional safe provider error                             |
+| `created_at`      | TEXT | Required, RFC 3339 timestamp                             |
+| `updated_at`      | TEXT | Required, RFC 3339 timestamp                             |
 
 ## `calendar_events`
 
@@ -1173,12 +1208,65 @@ may leave the structured fields null until the record is edited.
 | `description`        | TEXT    | Required, up to 2,000 characters                                                        |
 | `frequency`          | TEXT    | Required server-formatted display label, trimmed length 1–40                            |
 | `frequency_interval` | INTEGER | 1–999 for structured schedules; null only for unrecognized legacy labels                |
-| `frequency_unit`     | TEXT    | `day`, `week`, `month`, or `year`; null only for unrecognized legacy labels              |
+| `frequency_unit`     | TEXT    | `day`, `week`, `month`, or `year`; null only for unrecognized legacy labels             |
 | `amount_micros`      | INTEGER | Exact charge per billing period in millionths of one currency unit; 0–1,000,000,000,000 |
 | `currency`           | TEXT    | Required uppercase three-letter currency code; defaults to `USD` for migrated records   |
 | `first_paid_on`      | TEXT    | Required ISO calendar date                                                              |
 | `created_at`         | TEXT    | Required, RFC 3339 timestamp                                                            |
 | `updated_at`         | TEXT    | Required, RFC 3339 timestamp                                                            |
+
+## `trading_settings`
+
+One private Trading provider record per account. The Finnhub key is optional and is encrypted by
+the server before storage. API responses expose only whether a key exists. Refresh status is safe
+for display and retains the timestamp of the last successful provider update when a later attempt
+fails.
+
+| Column                        | Type | Constraints                                                     |
+| ----------------------------- | ---- | --------------------------------------------------------------- |
+| `user_id`                     | TEXT | Primary key, references `users` with cascade delete              |
+| `finnhub_api_key_ciphertext`  | TEXT | Nullable XChaCha20-Poly1305 nonce and ciphertext, base64 encoded |
+| `last_refresh_at`             | TEXT | Nullable RFC 3339 timestamp of the last successful refresh       |
+| `last_refresh_error`          | TEXT | Nullable provider-safe status message                            |
+| `created_at`                  | TEXT | Required, RFC 3339 timestamp                                     |
+| `updated_at`                  | TEXT | Required, RFC 3339 timestamp                                     |
+
+## `trading_watchlist`
+
+Account-owned market symbols in a stable display order. Each account may store up to ten rows.
+Symbols compare case-insensitively, and deleting one cascades to its cached quote.
+
+| Column       | Type    | Constraints                                      |
+| ------------ | ------- | ------------------------------------------------ |
+| `id`         | TEXT    | Primary key                                      |
+| `user_id`    | TEXT    | References `users` with cascade delete           |
+| `symbol`     | TEXT    | Required, 1–16 characters; unique per account    |
+| `position`   | INTEGER | Required 0–9; unique per account                 |
+| `created_at` | TEXT    | Required, RFC 3339 timestamp                     |
+| `updated_at` | TEXT    | Required, RFC 3339 timestamp                     |
+
+## `trading_quotes`
+
+The last successful quote for each watched symbol. Price fields remain provider decimal strings
+instead of binary floating-point values. Partial refreshes upsert only successful symbols, leaving
+older cached rows available so the Trading page never blanks while a provider is degraded.
+
+| Column           | Type | Constraints                                                             |
+| ---------------- | ---- | ----------------------------------------------------------------------- |
+| `user_id`        | TEXT | Composite primary key and watchlist foreign key                         |
+| `symbol`         | TEXT | Composite primary key and watchlist foreign key                         |
+| `name`           | TEXT | Required provider name or the normalized symbol                         |
+| `price`          | TEXT | Required provider decimal string                                        |
+| `previous_close` | TEXT | Nullable provider decimal string                                        |
+| `day_open`       | TEXT | Nullable provider decimal string                                        |
+| `day_high`       | TEXT | Nullable provider decimal string                                        |
+| `day_low`        | TEXT | Nullable provider decimal string                                        |
+| `change_percent` | TEXT | Nullable provider decimal string                                        |
+| `currency`       | TEXT | Required provider currency; may be empty until metadata has been cached |
+| `market_state`   | TEXT | Nullable provider market-state label                                    |
+| `source`         | TEXT | `yahoo` or `finnhub`                                                   |
+| `quoted_at`      | TEXT | Required RFC 3339 provider timestamp                                    |
+| `refreshed_at`   | TEXT | Required RFC 3339 timestamp when Pandan stored this snapshot            |
 
 ## `coding_projects`
 
@@ -1195,6 +1283,29 @@ without joining encrypted token material into the API model.
 | `repository` | TEXT | Required `owner/name` path, length 3–240              |
 | `created_at` | TEXT | Required, RFC 3339 timestamp                          |
 | `updated_at` | TEXT | Required, RFC 3339 timestamp                          |
+
+## `coding_categories`
+
+Account-owned labels used to organize subscribed Coding repositories. Names compare
+case-insensitively and are unique within one account.
+
+| Column       | Type | Constraints                                       |
+| ------------ | ---- | ------------------------------------------------- |
+| `id`         | TEXT | Primary key                                       |
+| `user_id`    | TEXT | References `users` with cascade delete            |
+| `name`       | TEXT | Required, trimmed length 1–48; unique per account |
+| `created_at` | TEXT | Required, RFC 3339 timestamp                      |
+| `updated_at` | TEXT | Required, RFC 3339 timestamp                      |
+
+## `coding_project_categories`
+
+Many-to-many category assignments for subscribed repositories. Handlers and queries verify that
+both sides belong to the authenticated account before replacing assignments.
+
+| Column        | Type | Constraints                                                               |
+| ------------- | ---- | ------------------------------------------------------------------------- |
+| `project_id`  | TEXT | Composite primary key; references `coding_projects` with cascade delete   |
+| `category_id` | TEXT | Composite primary key; references `coding_categories` with cascade delete |
 
 ## `coding_credentials`
 
@@ -1381,7 +1492,8 @@ favorite boards independently.
 
 Card moves rewrite source and destination positions in one transaction and may not cross boards.
 `kanban_card_assignees` links cards to active workspace members. `kanban_labels` stores unique
-board-scoped names with one of `accent`, `blue`, `amber`, `red`, `violet`, or `gray`;
+board-scoped names with a six-digit `#RRGGBB` color. The legacy `accent`, `blue`, `amber`, `red`,
+`violet`, and `gray` values remain readable for existing rows;
 `kanban_card_labels` is the card-to-label join table.
 
 ### Card collaboration tables

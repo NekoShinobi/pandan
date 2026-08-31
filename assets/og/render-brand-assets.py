@@ -405,6 +405,35 @@ def render_card(type_: Type, output: Path) -> None:
     report(output)
 
 
+def render_wordmark_icon(type_: Type, output: Path, size: int) -> None:
+    """Render the text-only wordmark used by the native PWA launch screen."""
+    base = Image.new("RGBA", (size * SCALE, size * SCALE), rgba(BG))
+    layer = Layer(base)
+    text = "Pandan"
+    font_size = 92 * size / 512
+    tracking = -0.04 * font_size
+    font = type_.font("medium", font_size)
+    _, ink_top, _, ink_bottom = font.getbbox(text, anchor="ls")
+    baseline = size / 2 - (ink_top + ink_bottom) / (2 * SCALE)
+
+    type_.draw(
+        layer,
+        (size / 2, baseline),
+        text,
+        weight="medium",
+        size=font_size,
+        fill=rgba(FG),
+        tracking=tracking,
+        anchor="ms",
+    )
+    layer.commit()
+
+    base.convert("RGB").resize((size, size), Image.LANCZOS).save(
+        output, "PNG", optimize=True
+    )
+    report(output)
+
+
 def render_icon(type_: Type, output: Path, size: int, *, bleed: bool) -> None:
     """The `P>` mark as a square app icon; `bleed` fills the tile, as iOS expects."""
     scale = size / 64
@@ -453,7 +482,7 @@ def main() -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     render_card(type_, args.out_dir / "og-card.png")
     render_icon(type_, args.out_dir / "icon-192.png", 192, bleed=False)
-    render_icon(type_, args.out_dir / "icon-512.png", 512, bleed=False)
+    render_wordmark_icon(type_, args.out_dir / "icon-512.png", 512)
     render_icon(type_, args.out_dir / "icon-maskable-192.png", 192, bleed=True)
     render_icon(type_, args.out_dir / "icon-maskable-512.png", 512, bleed=True)
     render_icon(type_, args.out_dir / "apple-touch-icon.png", 180, bleed=True)

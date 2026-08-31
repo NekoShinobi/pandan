@@ -34,7 +34,7 @@
     let mode = podcastPlayer.visualizationMode;
     let colors = audioVisualizationPaletteColors(
       podcastPlayer.visualizationPalette,
-      podcastPlayer.visualizationHue,
+      podcastPlayer.visualizationColor,
     );
     let intensity = podcastPlayer.visualizationIntensity;
     let animationRunning = false;
@@ -142,12 +142,11 @@
       mode = podcastPlayer.visualizationMode;
       colors = audioVisualizationPaletteColors(
         podcastPlayer.visualizationPalette,
-        podcastPlayer.visualizationHue,
+        podcastPlayer.visualizationColor,
       );
       intensity = podcastPlayer.visualizationIntensity;
       loadArtwork(podcastPlayer.artworkUrl);
-      animationRunning =
-        podcastPlayer.playing && !prefersReducedMotion.current;
+      animationRunning = podcastPlayer.playing && !prefersReducedMotion.current;
       cancelAnimationFrame(frameRequest);
       lastFrameAt = 0;
       if (animationRunning) {

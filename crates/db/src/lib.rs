@@ -6,6 +6,7 @@ pub mod jellyfin_queries;
 pub mod ntfy_queries;
 mod podcast_queries;
 pub mod queries;
+pub mod trading_queries;
 pub mod wall_queries;
 pub mod youtube_download_queries;
 mod youtube_queries;
@@ -243,6 +244,38 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "062_payment_subscription_frequencies",
         include_str!("../migrations/062_payment_subscription_frequencies.sql"),
     ),
+    (
+        "063_rss_current_entry_limit",
+        include_str!("../migrations/063_rss_current_entry_limit.sql"),
+    ),
+    (
+        "064_coding_repository_categories",
+        include_str!("../migrations/064_coding_repository_categories.sql"),
+    ),
+    (
+        "065_embedded_page_icon_cache",
+        include_str!("../migrations/065_embedded_page_icon_cache.sql"),
+    ),
+    (
+        "066_calendar_display_mode",
+        include_str!("../migrations/066_calendar_display_mode.sql"),
+    ),
+    (
+        "067_podcast_ntfy_notifications",
+        include_str!("../migrations/067_podcast_ntfy_notifications.sql"),
+    ),
+    (
+        "068_calendar_listing_edits",
+        include_str!("../migrations/068_calendar_listing_edits.sql"),
+    ),
+    (
+        "069_rss_custom_name",
+        include_str!("../migrations/069_rss_custom_name.sql"),
+    ),
+    (
+        "070_trading_watchlist",
+        include_str!("../migrations/070_trading_watchlist.sql"),
+    ),
 ];
 
 /// Maps migration names used by earlier development builds to their canonical names.
@@ -411,6 +444,101 @@ mod tests {
         assert_eq!(settings.retention_days, 14);
         assert_eq!(settings.max_file_size_mb, 10);
         assert_eq!(settings.max_files, 20);
+    }
+
+    #[tokio::test]
+    async fn trading_watchlists_credentials_and_quotes_are_account_scoped() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (owner, _) = queries::create_account(
+            &pool,
+            "trading-owner@example.com",
+            "$argon2id$trading-owner",
+            "Trading Owner",
+        )
+        .await
+        .expect("owner creates");
+        let (other, _) = queries::create_account(
+            &pool,
+            "trading-other@example.com",
+            "$argon2id$trading-other",
+            "Trading Other",
+        )
+        .await
+        .expect("other account creates");
+
+        let apple = trading_queries::create_trading_watchlist_item(&pool, &owner.id, "AAPL")
+            .await
+            .expect("first symbol creates");
+        trading_queries::create_trading_watchlist_item(&pool, &owner.id, "MSFT")
+            .await
+            .expect("second symbol creates");
+        trading_queries::set_trading_finnhub_key(&pool, &owner.id, Some("encrypted-owner-key"))
+            .await
+            .expect("credential stores");
+        trading_queries::upsert_trading_quotes(
+            &pool,
+            &owner.id,
+            &[entities::TradingQuoteDraft {
+                symbol: "AAPL".to_owned(),
+                name: "Apple Inc.".to_owned(),
+                price: "229.31".to_owned(),
+                previous_close: Some("227.76".to_owned()),
+                day_open: Some("228.12".to_owned()),
+                day_high: Some("230.45".to_owned()),
+                day_low: Some("227.90".to_owned()),
+                change_percent: Some("0.68054".to_owned()),
+                currency: "USD".to_owned(),
+                market_state: Some("REGULAR".to_owned()),
+                source: "yahoo".to_owned(),
+                quoted_at: "2026-08-31T12:00:00Z".to_owned(),
+            }],
+            "2026-08-31T12:00:01Z",
+        )
+        .await
+        .expect("quote caches");
+
+        assert!(
+            trading_queries::list_trading_watchlist(&pool, &other.id)
+                .await
+                .expect("other watchlist loads")
+                .is_empty()
+        );
+        assert!(
+            trading_queries::get_trading_settings(&pool, &other.id)
+                .await
+                .expect("other settings load")
+                .is_none()
+        );
+        assert!(
+            trading_queries::list_trading_quotes(&pool, &other.id)
+                .await
+                .expect("other quotes load")
+                .is_empty()
+        );
+        assert!(
+            !trading_queries::delete_trading_watchlist_item(&pool, &other.id, &apple.id,)
+                .await
+                .expect("cross-account delete is refused")
+        );
+
+        assert!(
+            trading_queries::delete_trading_watchlist_item(&pool, &owner.id, &apple.id,)
+                .await
+                .expect("owned symbol deletes")
+        );
+        assert!(
+            trading_queries::list_trading_quotes(&pool, &owner.id)
+                .await
+                .expect("owner quotes reload")
+                .is_empty(),
+            "deleting a symbol removes its cached quote"
+        );
+        let remaining = trading_queries::list_trading_watchlist(&pool, &owner.id)
+            .await
+            .expect("remaining watchlist loads");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].symbol, "MSFT");
+        assert_eq!(remaining[0].position, 0);
     }
 
     #[tokio::test]
@@ -1071,6 +1199,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rss_current_entry_limit_migration_defaults_existing_subscriptions() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::from_str("sqlite::memory:")
+                    .expect("memory url parses")
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("database connects");
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS _migrations (\
+             name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("migration ledger creates");
+
+        let limit_index = MIGRATIONS
+            .iter()
+            .position(|(name, _)| *name == "063_rss_current_entry_limit")
+            .expect("RSS Current entry limit migration is registered");
+        for (name, migration_sql) in MIGRATIONS.iter().take(limit_index) {
+            let mut transaction = pool.begin().await.expect("migration starts");
+            sqlx::raw_sql(*migration_sql)
+                .execute(&mut *transaction)
+                .await
+                .expect("existing migration applies");
+            sqlx::query("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)")
+                .bind(*name)
+                .bind(chrono::Utc::now().to_rfc3339())
+                .execute(&mut *transaction)
+                .await
+                .expect("existing migration records");
+            transaction.commit().await.expect("migration commits");
+        }
+
+        let (owner, _) = queries::create_account(
+            &pool,
+            "rss-current-upgrade@example.com",
+            "$argon2id$current-upgrade",
+            "RSS Current Upgrade",
+        )
+        .await
+        .expect("owner creates");
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO rss_subscriptions \
+             (id, user_id, url, base_url, title, category, auto_delete_days, auto_delete_mode, \
+              last_fetched_at, last_attempted_at, refresh_generation, created_at, updated_at) \
+             VALUES ('legacy-current-rss', ?, 'https://example.com/feed.xml', \
+                     'https://example.com', 'Legacy Current feed', 'General', 7, 'all', \
+                     ?, ?, 1, ?, ?)",
+        )
+        .bind(&owner.id)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("legacy subscription stores");
+
+        run_migrations(&pool)
+            .await
+            .expect("RSS Current entry limit migration applies");
+
+        let current_entry_limit: i64 = sqlx::query_scalar(
+            "SELECT current_entry_limit FROM rss_subscriptions WHERE id = 'legacy-current-rss'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("migrated limit loads");
+        assert_eq!(current_entry_limit, 25);
+        assert!(
+            sqlx::query(
+                "UPDATE rss_subscriptions SET current_entry_limit = 0 \
+                 WHERE id = 'legacy-current-rss'",
+            )
+            .execute(&pool)
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn the_walls_migration_applies_over_an_existing_database() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -1344,6 +1558,42 @@ mod tests {
         );
         assert_eq!(owner_pages[1].icon_kind, "favicon");
         assert_eq!(owner_pages[1].icon_value, None);
+        let uncached_icon =
+            queries::get_visible_embedded_page_icon_cache(&pool, &owner.id, &first.id)
+                .await
+                .expect("owner icon cache query succeeds")
+                .expect("owner can see their icon source");
+        assert_eq!(uncached_icon.content_type, None);
+        assert_eq!(uncached_icon.data, None);
+        assert_eq!(uncached_icon.fetched_at, None);
+        assert!(
+            queries::get_visible_embedded_page_icon_cache(&pool, &other.id, &first.id)
+                .await
+                .expect("foreign icon cache query succeeds")
+                .is_none(),
+            "another account cannot read a personal page icon"
+        );
+        let icon_bytes = b"stored-icon";
+        assert!(
+            queries::store_embedded_page_icon_attempt(
+                &pool,
+                &first.id,
+                &first.url,
+                &first.icon_kind,
+                first.icon_value.as_deref(),
+                Some(("image/png", icon_bytes)),
+            )
+            .await
+            .expect("icon cache stores")
+        );
+        let cached_icon =
+            queries::get_visible_embedded_page_icon_cache(&pool, &owner.id, &first.id)
+                .await
+                .expect("cached owner icon query succeeds")
+                .expect("cached owner icon remains visible");
+        assert_eq!(cached_icon.content_type.as_deref(), Some("image/png"));
+        assert_eq!(cached_icon.data.as_deref(), Some(icon_bytes.as_slice()));
+        assert!(cached_icon.fetched_at.is_some());
         let moved_personal =
             queries::move_global_embedded_page_to_personal(&pool, &owner.id, &global.id, 32)
                 .await
@@ -1385,6 +1635,14 @@ mod tests {
         .expect("owned personal page is found");
         assert_eq!(updated_first.icon_kind, "lucide");
         assert_eq!(updated_first.icon_value.as_deref(), Some("terminal"));
+        let cleared_icon =
+            queries::get_visible_embedded_page_icon_cache(&pool, &owner.id, &first.id)
+                .await
+                .expect("updated icon cache query succeeds")
+                .expect("updated page remains visible");
+        assert_eq!(cleared_icon.content_type, None);
+        assert_eq!(cleared_icon.data, None);
+        assert_eq!(cleared_icon.fetched_at, None);
         assert!(
             owner_pages.iter().all(|page| page.id != foreign.id),
             "another account's page never appears"
@@ -2330,9 +2588,11 @@ mod tests {
                 url: "https://example.com/feed.xml".to_owned(),
                 base_url: "https://example.com".to_owned(),
                 title: "Example feed".to_owned(),
+                custom_name: None,
                 category: "Research".to_owned(),
                 auto_delete_days: None,
                 auto_delete_mode: "read".to_owned(),
+                current_entry_limit: 25,
             },
             &[entities::RssItemDraft {
                 external_id: "old-entry".to_owned(),
@@ -2454,6 +2714,148 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rss_current_entry_limit_caps_snapshot_and_retention() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (owner, _) = queries::create_account(
+            &pool,
+            "current-limit@example.com",
+            "$argon2id$current-limit",
+            "Current Limit",
+        )
+        .await
+        .expect("reader creates");
+        let subscription = queries::create_rss_subscription(
+            &pool,
+            &owner.id,
+            &entities::RssSubscriptionDraft {
+                url: "https://example.com/limited.xml".to_owned(),
+                base_url: "https://example.com".to_owned(),
+                title: "Limited feed".to_owned(),
+                custom_name: Some("Reading list".to_owned()),
+                category: "Research".to_owned(),
+                auto_delete_days: Some(1),
+                auto_delete_mode: "all".to_owned(),
+                current_entry_limit: 2,
+            },
+            &[
+                entities::RssItemDraft {
+                    external_id: "newest".to_owned(),
+                    url: "https://example.com/newest".to_owned(),
+                    comments_url: String::new(),
+                    title: "Newest entry".to_owned(),
+                    summary: String::new(),
+                    published_at: "2000-01-03T00:00:00Z".to_owned(),
+                },
+                entities::RssItemDraft {
+                    external_id: "middle".to_owned(),
+                    url: "https://example.com/middle".to_owned(),
+                    comments_url: String::new(),
+                    title: "Middle entry".to_owned(),
+                    summary: String::new(),
+                    published_at: "2000-01-02T00:00:00Z".to_owned(),
+                },
+                entities::RssItemDraft {
+                    external_id: "oldest".to_owned(),
+                    url: "https://example.com/oldest".to_owned(),
+                    comments_url: String::new(),
+                    title: "Oldest entry".to_owned(),
+                    summary: String::new(),
+                    published_at: "2000-01-01T00:00:00Z".to_owned(),
+                },
+            ],
+        )
+        .await
+        .expect("subscription creates");
+
+        assert_eq!(subscription.current_entry_limit, 2);
+        assert_eq!(subscription.custom_name.as_deref(), Some("Reading list"));
+        let items = queries::list_rss_items(&pool, &owner.id)
+            .await
+            .expect("items load");
+        let current_titles = items
+            .iter()
+            .filter(|item| item.is_current)
+            .map(|item| item.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(current_titles, vec!["Newest entry", "Middle entry"]);
+        assert!(items.iter().all(|item| item.source == "Reading list"));
+        let compatibility_update = queries::update_rss_subscription(
+            &pool,
+            &owner.id,
+            &subscription.id,
+            None,
+            "Research",
+            Some(1),
+            "all",
+            None,
+        )
+        .await
+        .expect("legacy settings update")
+        .expect("subscription remains");
+        assert_eq!(compatibility_update.current_entry_limit, 2);
+        assert_eq!(
+            compatibility_update.custom_name.as_deref(),
+            Some("Reading list")
+        );
+        let widget_titles = queries::list_current_rss_items(
+            &pool,
+            &owner.id,
+            std::slice::from_ref(&subscription.id),
+            10,
+        )
+        .await
+        .expect("Current items load")
+        .into_iter()
+        .map(|item| item.title)
+        .collect::<Vec<_>>();
+        assert_eq!(widget_titles, vec!["Newest entry", "Middle entry"]);
+        assert_eq!(
+            queries::apply_rss_retention(&pool, &owner.id)
+                .await
+                .expect("retention applies"),
+            1
+        );
+
+        let cleared_name = None;
+        let updated = queries::update_rss_subscription(
+            &pool,
+            &owner.id,
+            &subscription.id,
+            Some(&cleared_name),
+            "Research",
+            Some(1),
+            "all",
+            Some(1),
+        )
+        .await
+        .expect("settings update")
+        .expect("subscription remains");
+        assert_eq!(updated.current_entry_limit, 1);
+        assert_eq!(updated.custom_name, None);
+        assert_eq!(
+            queries::list_rss_items(&pool, &owner.id)
+                .await
+                .expect("items reload")
+                .iter()
+                .filter(|item| item.is_current)
+                .count(),
+            1
+        );
+        assert_eq!(
+            queries::apply_rss_retention(&pool, &owner.id)
+                .await
+                .expect("narrowed retention applies"),
+            1
+        );
+        let remaining = queries::list_rss_items(&pool, &owner.id)
+            .await
+            .expect("remaining item loads");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].title, "Newest entry");
+        assert_eq!(remaining[0].source, "Limited feed");
+    }
+
+    #[tokio::test]
     async fn due_rss_subscriptions_are_claimed_once_per_refresh_window() {
         let pool = connect("sqlite::memory:").await.expect("database connects");
         let (owner, _) =
@@ -2467,9 +2869,11 @@ mod tests {
                 url: "https://example.com/feed.xml".to_owned(),
                 base_url: "https://example.com".to_owned(),
                 title: "Example feed".to_owned(),
+                custom_name: None,
                 category: "Research".to_owned(),
                 auto_delete_days: None,
                 auto_delete_mode: "read".to_owned(),
+                current_entry_limit: 25,
             },
             &[],
         )
@@ -2868,6 +3272,59 @@ mod tests {
         )
         .await
         .expect("calendar creates");
+        assert_eq!(source.display_mode, "full");
+        assert!(
+            !queries::update_calendar_subscription_display_mode(
+                &pool, &other.id, &source.id, "dot",
+            )
+            .await
+            .expect("cross-user display update is checked")
+        );
+        assert!(
+            queries::update_calendar_subscription_display_mode(
+                &pool,
+                &owner.id,
+                &source.id,
+                "dot",
+            )
+            .await
+            .expect("owner updates display mode")
+        );
+        assert_eq!(
+            queries::get_calendar_subscription(&pool, &owner.id, &source.id)
+                .await
+                .expect("calendar reloads")
+                .expect("calendar remains")
+                .display_mode,
+            "dot"
+        );
+        assert!(
+            queries::update_calendar_subscription_settings(
+                &pool,
+                &other.id,
+                &source.id,
+                "Other calendar",
+                "#FB7185",
+                "full",
+            )
+            .await
+            .expect("cross-user listing update is checked")
+            .is_none()
+        );
+        let edited = queries::update_calendar_subscription_settings(
+            &pool,
+            &owner.id,
+            &source.id,
+            "Team calendar",
+            "#FB7185",
+            "dot",
+        )
+        .await
+        .expect("listing updates")
+        .expect("calendar remains");
+        assert_eq!(edited.name, "Team calendar");
+        assert_eq!(edited.color, "#FB7185");
+        assert_eq!(edited.display_mode, "dot");
         assert_eq!(
             queries::list_calendar_events(&pool, &owner.id)
                 .await
@@ -2881,6 +3338,43 @@ mod tests {
                 .expect("other events load")
                 .is_empty()
         );
+        let events = queries::list_calendar_events(&pool, &owner.id)
+            .await
+            .expect("renamed events load");
+        assert_eq!(events[0].calendar_name, "Team calendar");
+        let replaced = queries::replace_calendar_subscription_source(
+            &pool,
+            &owner.id,
+            &source.id,
+            "https://example.com/studio.ics",
+            "Studio source",
+            "Studio calendar",
+            "#60A5FA",
+            "full",
+            &[entities::CalendarEventDraft {
+                external_id: "review".to_owned(),
+                title: "Review".to_owned(),
+                description: String::new(),
+                location: String::new(),
+                url: String::new(),
+                start_at: "2026-08-15T14:00:00+00:00".to_owned(),
+                end_at: None,
+                all_day: false,
+            }],
+        )
+        .await
+        .expect("calendar source replaces")
+        .expect("calendar remains");
+        assert_eq!(replaced.url, "https://example.com/studio.ics");
+        assert_eq!(replaced.name, "Studio calendar");
+        assert_eq!(replaced.color, "#60A5FA");
+        assert_eq!(replaced.display_mode, "full");
+        let replaced_events = queries::list_calendar_events(&pool, &owner.id)
+            .await
+            .expect("replacement events load");
+        assert_eq!(replaced_events.len(), 1);
+        assert_eq!(replaced_events[0].title, "Review");
+        assert_eq!(replaced_events[0].calendar_name, "Studio calendar");
         assert!(
             !queries::delete_calendar_subscription(&pool, &other.id, &source.id)
                 .await
@@ -2996,6 +3490,12 @@ mod tests {
         .await
         .expect("project creates");
         assert!(!project.has_credential);
+        assert_eq!(
+            queries::list_coding_account_ids(&pool)
+                .await
+                .expect("Coding refresh accounts load"),
+            vec![owner.id.clone()]
+        );
         assert!(
             queries::list_coding_projects(&pool, &other.id)
                 .await
@@ -3028,6 +3528,56 @@ mod tests {
                 .expect("owner credentials load")[0]
                 .ciphertext,
             "encrypted-token"
+        );
+
+        let category = queries::create_coding_category(&pool, &owner.id, "Backend")
+            .await
+            .expect("category creates");
+        assert!(
+            queries::list_coding_categories(&pool, &other.id)
+                .await
+                .expect("other categories load")
+                .is_empty()
+        );
+        assert!(
+            !queries::replace_coding_project_categories(
+                &pool,
+                &other.id,
+                &project.id,
+                std::slice::from_ref(&category.id),
+            )
+            .await
+            .expect("cross-user assignment is checked")
+        );
+        assert!(
+            queries::replace_coding_project_categories(
+                &pool,
+                &owner.id,
+                &project.id,
+                std::slice::from_ref(&category.id),
+            )
+            .await
+            .expect("owner assigns category")
+        );
+        assert_eq!(
+            queries::list_coding_project_category_assignments(&pool, &owner.id)
+                .await
+                .expect("owner assignments load"),
+            vec![entities::CodingProjectCategoryAssignment {
+                project_id: project.id.clone(),
+                category_id: category.id.clone(),
+            }]
+        );
+        assert!(
+            queries::delete_coding_category(&pool, &owner.id, &category.id)
+                .await
+                .expect("category deletes")
+        );
+        assert!(
+            queries::list_coding_project_category_assignments(&pool, &owner.id)
+                .await
+                .expect("assignments reload")
+                .is_empty()
         );
     }
 
@@ -3345,6 +3895,114 @@ mod tests {
             .expect("catalogue loads");
         assert_eq!(summaries.len(), 1);
         assert!(summaries[0].subscribed, "approval subscribes the requester");
+        assert!(!summaries[0].ntfy_notifications_enabled);
+        assert_eq!(summaries[0].ntfy_topic_id, None);
+
+        let refresh_targets = queries::list_subscribed_podcasts_for_refresh(&pool, &member.id)
+            .await
+            .expect("member refresh targets load");
+        assert_eq!(
+            refresh_targets,
+            vec![entities::PodcastRefreshTarget {
+                id: podcast.id.clone(),
+                feed_url: podcast.feed_url.clone(),
+            }]
+        );
+        assert!(
+            queries::list_subscribed_podcasts_for_refresh(&pool, &admin.id)
+                .await
+                .expect("administrator refresh targets load")
+                .is_empty(),
+            "catalogue access alone must not grant a manual feed refresh"
+        );
+        assert!(
+            !queries::claim_subscribed_podcast_refresh(
+                &pool,
+                &admin.id,
+                &podcast.id,
+                "9999-12-31T23:59:59Z",
+                "1970-01-01T00:00:00Z",
+            )
+            .await
+            .expect("foreign refresh claim is checked")
+        );
+        assert!(
+            queries::claim_subscribed_podcast_refresh(
+                &pool,
+                &member.id,
+                &podcast.id,
+                "9999-12-31T23:59:59Z",
+                "1970-01-01T00:00:00Z",
+            )
+            .await
+            .expect("listener refresh claim succeeds")
+        );
+        assert!(
+            !queries::claim_subscribed_podcast_refresh(
+                &pool,
+                &member.id,
+                &podcast.id,
+                "9999-12-31T23:59:59Z",
+                "1970-01-01T00:00:00Z",
+            )
+            .await
+            .expect("active refresh lease is checked"),
+            "a second manual refresh cannot steal an active lease"
+        );
+        queries::finish_podcast_refresh(&pool, &podcast.id, None)
+            .await
+            .expect("manual refresh lease releases");
+
+        ntfy_queries::upsert_ntfy_connection(&pool, &member.id, "https://ntfy.example.com", None)
+            .await
+            .expect("member ntfy connection creates");
+        let member_topic =
+            ntfy_queries::create_ntfy_topic(&pool, &member.id, "new-episodes", "Podcasts")
+                .await
+                .expect("member topic creates");
+        ntfy_queries::upsert_ntfy_connection(&pool, &admin.id, "https://ntfy.example.com", None)
+            .await
+            .expect("administrator ntfy connection creates");
+        let foreign_topic =
+            ntfy_queries::create_ntfy_topic(&pool, &admin.id, "admin-only", "Admin")
+                .await
+                .expect("administrator topic creates");
+        assert!(
+            queries::update_podcast_notification_settings(
+                &pool,
+                &member.id,
+                &podcast.id,
+                true,
+                Some(&foreign_topic.id),
+            )
+            .await
+            .expect("foreign topic update is checked")
+            .is_none(),
+            "a listener cannot route a podcast through another account's topic"
+        );
+        let notification_settings = queries::update_podcast_notification_settings(
+            &pool,
+            &member.id,
+            &podcast.id,
+            true,
+            Some(&member_topic.id),
+        )
+        .await
+        .expect("notification settings save")
+        .expect("subscription exists");
+        assert!(notification_settings.enabled);
+        assert_eq!(notification_settings.topic.as_deref(), Some("new-episodes"));
+        let summary = queries::list_podcast_summaries(&pool, &member.id)
+            .await
+            .expect("catalogue reloads")
+            .into_iter()
+            .next()
+            .expect("show remains visible");
+        assert!(summary.ntfy_notifications_enabled);
+        assert_eq!(
+            summary.ntfy_topic_id.as_deref(),
+            Some(member_topic.id.as_str())
+        );
         assert!(
             !queries::approve_podcast_request(&pool, &request.id, &admin.id, &podcast.id, "")
                 .await
@@ -3391,6 +4049,38 @@ mod tests {
         .await
         .expect("episodes index");
         assert_eq!(new_ids.len(), 2);
+
+        let notification = queries::claim_podcast_notification(&pool, "1970-01-01T00:00:00Z", 3)
+            .await
+            .expect("notification claim completes")
+            .expect("a notification is queued with the new episode");
+        assert_eq!(notification.user_id, member.id);
+        assert_eq!(notification.topic, "new-episodes");
+        assert_eq!(notification.podcast_title, "Example Show");
+        queries::mark_podcast_notification_delivered(
+            &pool,
+            &notification.user_id,
+            &notification.episode_id,
+        )
+        .await
+        .expect("notification delivery records");
+        queries::update_podcast_notification_settings(
+            &pool,
+            &member.id,
+            &podcast.id,
+            false,
+            Some(&member_topic.id),
+        )
+        .await
+        .expect("notification settings disable")
+        .expect("subscription remains");
+        assert!(
+            queries::claim_podcast_notification(&pool, "1970-01-01T00:00:00Z", 3)
+                .await
+                .expect("disabled queue lookup completes")
+                .is_none(),
+            "disabling a route drops its undelivered work"
+        );
 
         // Re-indexing the same feed discovers nothing new.
         assert!(

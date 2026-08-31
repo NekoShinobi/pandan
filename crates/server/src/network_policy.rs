@@ -352,7 +352,7 @@ fn public_ip(ip: IpAddr) -> bool {
 }
 
 fn public_ipv4(ip: Ipv4Addr) -> bool {
-    let [a, b, ..] = ip.octets();
+    let [a, b, c, d] = ip.octets();
     !(ip.is_private()
         || ip.is_loopback()
         || ip.is_link_local()
@@ -363,8 +363,8 @@ fn public_ipv4(ip: Ipv4Addr) -> bool {
         || a == 0
         || a >= 224
         || (a == 100 && (64..=127).contains(&b))
-        || (a == 192 && b == 0)
-        || (a == 192 && b == 88 && ip.octets()[2] == 99)
+        || (a == 192 && b == 0 && c == 0 && !matches!(d, 9 | 10))
+        || (a == 192 && b == 88 && c == 99)
         || (a == 198 && matches!(b, 18 | 19)))
 }
 
@@ -465,7 +465,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn private_ipv4_forms_are_not_public() {
+    fn ip_policy_distinguishes_public_and_non_public_addresses() {
         assert!(!public_ip("127.0.0.1".parse().expect("IPv4 parses")));
         assert!(!public_ip(
             "::ffff:192.168.1.9".parse().expect("mapped IPv6 parses")
@@ -473,7 +473,16 @@ mod tests {
         assert!(!public_ip(
             "64:ff9b::a00:1".parse().expect("NAT64 IPv6 parses")
         ));
+        assert!(!public_ip(
+            "192.0.0.8".parse().expect("reserved IPv4 parses")
+        ));
         assert!(public_ip("8.8.8.8".parse().expect("public IPv4 parses")));
+        assert!(public_ip(
+            "192.0.66.220".parse().expect("TechCrunch IPv4 parses")
+        ));
+        assert!(public_ip(
+            "192.0.0.9".parse().expect("public anycast IPv4 parses")
+        ));
     }
 
     #[test]

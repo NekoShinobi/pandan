@@ -108,6 +108,22 @@ pub async fn list_ntfy_topics(
     .await
 }
 
+/// Loads one topic only when it belongs to the requested account.
+pub async fn get_ntfy_topic(
+    pool: &SqlitePool,
+    user_id: &str,
+    topic_id: &str,
+) -> Result<Option<NtfyTopic>, sqlx::Error> {
+    sqlx::query_as::<_, NtfyTopic>(
+        "SELECT id, topic, label, last_message_id, created_at, updated_at \
+         FROM ntfy_topics WHERE id = ? AND user_id = ?",
+    )
+    .bind(topic_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+}
+
 /// Adds one account-owned topic subscription.
 pub async fn create_ntfy_topic(
     pool: &SqlitePool,

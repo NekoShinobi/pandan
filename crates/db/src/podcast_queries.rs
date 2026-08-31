@@ -1,7 +1,8 @@
 use crate::entities::{
     Podcast, PodcastArtwork, PodcastArtworkDraft, PodcastCachedFile, PodcastDownloadJob,
-    PodcastDraft, PodcastEpisode, PodcastEpisodeDraft, PodcastFeedPreview, PodcastRefreshTarget,
-    PodcastRequest, PodcastRequestDraft, PodcastSettings, PodcastSummary,
+    PodcastDraft, PodcastEpisode, PodcastEpisodeDraft, PodcastFeedPreview, PodcastNotificationJob,
+    PodcastNotificationSettings, PodcastRefreshTarget, PodcastRequest, PodcastRequestDraft,
+    PodcastSettings, PodcastSummary,
 };
 use sqlx::{Row, SqlitePool};
 use std::collections::HashSet;
@@ -311,6 +312,9 @@ pub async fn list_podcast_summaries(
                 COALESCE(length(podcasts.artwork_data), 0) > 0 AS has_artwork, \
                 podcasts.auto_download_count, podcasts.max_retained_episodes, \
                 podcast_subscriptions.user_id IS NOT NULL AS subscribed, \
+                COALESCE(podcast_subscriptions.ntfy_notifications_enabled, 0) \
+                    AS ntfy_notifications_enabled, \
+                podcast_subscriptions.ntfy_topic_id, \
                 (SELECT COUNT(*) FROM podcast_episodes \
                    WHERE podcast_episodes.podcast_id = podcasts.id) AS episode_count, \
                 (SELECT COUNT(*) FROM podcast_downloads \
@@ -427,6 +431,31 @@ pub async fn list_due_podcasts(
     .await
 }
 
+/// Lists the catalogue entries one listener is currently subscribed to.
+///
+/// This is the input to a user-requested refresh. Keeping the subscription filter in
+/// the database prevents the HTTP route from turning into an unrestricted shared-feed
+/// fetch primitive.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the query cannot be completed.
+pub async fn list_subscribed_podcasts_for_refresh(
+    pool: &SqlitePool,
+    user_id: &str,
+) -> Result<Vec<PodcastRefreshTarget>, sqlx::Error> {
+    sqlx::query_as::<_, PodcastRefreshTarget>(
+        "SELECT podcasts.id, podcasts.feed_url FROM podcasts \
+         JOIN podcast_subscriptions \
+           ON podcast_subscriptions.podcast_id = podcasts.id \
+         WHERE podcast_subscriptions.user_id = ? \
+         ORDER BY podcasts.title COLLATE NOCASE, podcasts.id",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+}
+
 /// Claims one due refresh with a short cross-process lease.
 ///
 /// # Errors
@@ -448,6 +477,43 @@ pub async fn claim_podcast_refresh(
     .bind(&now)
     .bind(id)
     .bind(due_before)
+    .bind(abandoned_before)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        == 1)
+}
+
+/// Claims a listener-requested refresh while enforcing ownership and a short cooldown.
+///
+/// Unlike the background claim, this does not wait for the normal four-hour fetch
+/// window. It still requires an active subscription, an expired lease, and a caller-
+/// supplied cooldown so repeated button presses cannot hammer an upstream feed.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the atomic update cannot be completed.
+pub async fn claim_subscribed_podcast_refresh(
+    pool: &SqlitePool,
+    user_id: &str,
+    id: &str,
+    refreshed_before: &str,
+    abandoned_before: &str,
+) -> Result<bool, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    Ok(sqlx::query(
+        "UPDATE podcasts SET refresh_started_at = ?, updated_at = ? WHERE id = ? \
+         AND EXISTS (SELECT 1 FROM podcast_subscriptions \
+                     WHERE podcast_subscriptions.podcast_id = podcasts.id \
+                       AND podcast_subscriptions.user_id = ?) \
+         AND (last_fetched_at IS NULL OR datetime(last_fetched_at) <= datetime(?)) \
+         AND (refresh_started_at IS NULL OR datetime(refresh_started_at) <= datetime(?))",
+    )
+    .bind(&now)
+    .bind(&now)
+    .bind(id)
+    .bind(user_id)
+    .bind(refreshed_before)
     .bind(abandoned_before)
     .execute(pool)
     .await?
@@ -762,6 +828,97 @@ pub async fn unsubscribe_from_podcast(
     )
 }
 
+/// Loads one listener's outbound ntfy route for a subscribed podcast.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the query cannot be completed.
+pub async fn get_podcast_notification_settings(
+    pool: &SqlitePool,
+    user_id: &str,
+    podcast_id: &str,
+) -> Result<Option<PodcastNotificationSettings>, sqlx::Error> {
+    sqlx::query_as::<_, PodcastNotificationSettings>(
+        "SELECT podcast_subscriptions.ntfy_notifications_enabled AS enabled, \
+                podcast_subscriptions.ntfy_topic_id AS topic_id, \
+                ntfy_topics.topic, ntfy_topics.label AS topic_label \
+         FROM podcast_subscriptions \
+         LEFT JOIN ntfy_topics ON ntfy_topics.id = podcast_subscriptions.ntfy_topic_id \
+              AND ntfy_topics.user_id = podcast_subscriptions.user_id \
+         WHERE podcast_subscriptions.user_id = ? \
+           AND podcast_subscriptions.podcast_id = ?",
+    )
+    .bind(user_id)
+    .bind(podcast_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Replaces one listener's outbound ntfy route for a subscribed podcast.
+///
+/// Disabling notifications also drops work that has not left Pandan yet. Delivered history stays
+/// attached to its episode so a later re-enable never replays old notifications.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the update or reload cannot be completed.
+pub async fn update_podcast_notification_settings(
+    pool: &SqlitePool,
+    user_id: &str,
+    podcast_id: &str,
+    enabled: bool,
+    topic_id: Option<&str>,
+) -> Result<Option<PodcastNotificationSettings>, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    if enabled && topic_id.is_none() {
+        transaction.rollback().await?;
+        return Ok(None);
+    }
+    if let Some(topic_id) = topic_id {
+        let owns_topic = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM ntfy_topics WHERE id = ? AND user_id = ?",
+        )
+        .bind(topic_id)
+        .bind(user_id)
+        .fetch_one(&mut *transaction)
+        .await?
+            > 0;
+        if !owns_topic {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+    }
+    let changed = sqlx::query(
+        "UPDATE podcast_subscriptions \
+         SET ntfy_notifications_enabled = ?, ntfy_topic_id = ? \
+         WHERE user_id = ? AND podcast_id = ?",
+    )
+    .bind(enabled)
+    .bind(topic_id)
+    .bind(user_id)
+    .bind(podcast_id)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if changed == 0 {
+        transaction.rollback().await?;
+        return Ok(None);
+    }
+    if !enabled {
+        sqlx::query(
+            "DELETE FROM podcast_notification_deliveries \
+             WHERE user_id = ? AND delivered_at IS NULL \
+               AND episode_id IN (SELECT id FROM podcast_episodes WHERE podcast_id = ?)",
+        )
+        .bind(user_id)
+        .bind(podcast_id)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    get_podcast_notification_settings(pool, user_id, podcast_id).await
+}
+
 /// Reports whether one user may reach one episode through an active subscription.
 ///
 /// Every episode read — metadata, audio bytes, progress — resolves through this.
@@ -858,10 +1015,177 @@ pub async fn upsert_podcast_episodes(
         .bind(&now)
         .execute(&mut *transaction)
         .await?;
+        sqlx::query(
+            "INSERT INTO podcast_notification_deliveries \
+             (user_id, episode_id, attempts, last_error, next_attempt_at, created_at, updated_at) \
+             SELECT podcast_subscriptions.user_id, ?, 0, '', ?, ?, ? \
+             FROM podcast_subscriptions \
+             JOIN ntfy_topics ON ntfy_topics.id = podcast_subscriptions.ntfy_topic_id \
+                  AND ntfy_topics.user_id = podcast_subscriptions.user_id \
+             JOIN ntfy_connections ON ntfy_connections.user_id = podcast_subscriptions.user_id \
+             WHERE podcast_subscriptions.podcast_id = ? \
+               AND podcast_subscriptions.ntfy_notifications_enabled = 1 \
+             ON CONFLICT(user_id, episode_id) DO NOTHING",
+        )
+        .bind(&id)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .bind(podcast_id)
+        .execute(&mut *transaction)
+        .await?;
         inserted.push(id);
     }
     transaction.commit().await?;
     Ok(inserted)
+}
+
+/// Claims one due outbound podcast notification, including an abandoned lease after a crash.
+///
+/// The job resolves against the subscription's current topic and connection. A disabled or removed
+/// route therefore cannot leak a pending notification after the listener changes their settings.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the claim cannot be completed.
+pub async fn claim_podcast_notification(
+    pool: &SqlitePool,
+    abandoned_before: &str,
+    max_attempts: i64,
+) -> Result<Option<PodcastNotificationJob>, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let candidate = sqlx::query_as::<_, (String, String)>(
+        "SELECT podcast_notification_deliveries.user_id, \
+                podcast_notification_deliveries.episode_id \
+         FROM podcast_notification_deliveries \
+         JOIN podcast_episodes \
+           ON podcast_episodes.id = podcast_notification_deliveries.episode_id \
+         JOIN podcast_subscriptions \
+           ON podcast_subscriptions.user_id = podcast_notification_deliveries.user_id \
+          AND podcast_subscriptions.podcast_id = podcast_episodes.podcast_id \
+          AND podcast_subscriptions.ntfy_notifications_enabled = 1 \
+         JOIN ntfy_topics \
+           ON ntfy_topics.id = podcast_subscriptions.ntfy_topic_id \
+          AND ntfy_topics.user_id = podcast_subscriptions.user_id \
+         JOIN ntfy_connections \
+           ON ntfy_connections.user_id = podcast_subscriptions.user_id \
+         WHERE podcast_notification_deliveries.delivered_at IS NULL \
+           AND podcast_notification_deliveries.attempts < ? \
+           AND datetime(podcast_notification_deliveries.next_attempt_at) <= datetime(?) \
+           AND (podcast_notification_deliveries.lease_started_at IS NULL \
+                OR datetime(podcast_notification_deliveries.lease_started_at) <= datetime(?)) \
+         ORDER BY podcast_notification_deliveries.created_at ASC LIMIT 1",
+    )
+    .bind(max_attempts)
+    .bind(&now)
+    .bind(abandoned_before)
+    .fetch_optional(pool)
+    .await?;
+    let Some((user_id, episode_id)) = candidate else {
+        return Ok(None);
+    };
+
+    let claimed = sqlx::query(
+        "UPDATE podcast_notification_deliveries \
+         SET lease_started_at = ?, attempts = attempts + 1, updated_at = ? \
+         WHERE user_id = ? AND episode_id = ? AND delivered_at IS NULL \
+           AND attempts < ? \
+           AND datetime(next_attempt_at) <= datetime(?) \
+           AND (lease_started_at IS NULL OR datetime(lease_started_at) <= datetime(?))",
+    )
+    .bind(&now)
+    .bind(&now)
+    .bind(&user_id)
+    .bind(&episode_id)
+    .bind(max_attempts)
+    .bind(&now)
+    .bind(abandoned_before)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    if claimed == 0 {
+        return Ok(None);
+    }
+
+    sqlx::query_as::<_, PodcastNotificationJob>(
+        "SELECT podcast_notification_deliveries.user_id, \
+                podcast_notification_deliveries.episode_id, \
+                podcasts.title AS podcast_title, \
+                podcast_episodes.title AS episode_title, podcast_episodes.episode_url, \
+                ntfy_connections.base_url, ntfy_connections.token_ciphertext, \
+                ntfy_topics.topic, podcast_notification_deliveries.attempts \
+         FROM podcast_notification_deliveries \
+         JOIN podcast_episodes \
+           ON podcast_episodes.id = podcast_notification_deliveries.episode_id \
+         JOIN podcasts ON podcasts.id = podcast_episodes.podcast_id \
+         JOIN podcast_subscriptions \
+           ON podcast_subscriptions.user_id = podcast_notification_deliveries.user_id \
+          AND podcast_subscriptions.podcast_id = podcast_episodes.podcast_id \
+          AND podcast_subscriptions.ntfy_notifications_enabled = 1 \
+         JOIN ntfy_topics \
+           ON ntfy_topics.id = podcast_subscriptions.ntfy_topic_id \
+          AND ntfy_topics.user_id = podcast_subscriptions.user_id \
+         JOIN ntfy_connections \
+           ON ntfy_connections.user_id = podcast_subscriptions.user_id \
+         WHERE podcast_notification_deliveries.user_id = ? \
+           AND podcast_notification_deliveries.episode_id = ?",
+    )
+    .bind(user_id)
+    .bind(episode_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Marks one outbound podcast notification delivered.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the update cannot be completed.
+pub async fn mark_podcast_notification_delivered(
+    pool: &SqlitePool,
+    user_id: &str,
+    episode_id: &str,
+) -> Result<(), sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE podcast_notification_deliveries \
+         SET delivered_at = ?, lease_started_at = NULL, last_error = '', updated_at = ? \
+         WHERE user_id = ? AND episode_id = ?",
+    )
+    .bind(&now)
+    .bind(&now)
+    .bind(user_id)
+    .bind(episode_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Releases one failed outbound podcast notification until its next retry window.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the update cannot be completed.
+pub async fn mark_podcast_notification_failed(
+    pool: &SqlitePool,
+    user_id: &str,
+    episode_id: &str,
+    error: &str,
+    next_attempt_at: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE podcast_notification_deliveries \
+         SET lease_started_at = NULL, last_error = ?, next_attempt_at = ?, updated_at = ? \
+         WHERE user_id = ? AND episode_id = ?",
+    )
+    .bind(error)
+    .bind(next_attempt_at)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(user_id)
+    .bind(episode_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// Lists one podcast's episodes with the caller's listening state.

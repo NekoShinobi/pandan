@@ -15,6 +15,14 @@ import {
   isAudioVisualizationMode,
   type AudioVisualizationMode,
 } from "$lib/audioVisualizationCatalog";
+import {
+  adjustHexLightness,
+  hexToHsl,
+  hslToHex,
+  normalizeHexColor,
+  rotateHexHue,
+  type HexColor,
+} from "$lib/color";
 
 export type { AudioVisualizationMode } from "$lib/audioVisualizationCatalog";
 
@@ -45,6 +53,7 @@ const DEFAULT_VISUALIZATION_INTENSITY = 1;
 const DEFAULT_VISUALIZATION_BRIGHTNESS = 1;
 const DEFAULT_VISUALIZATION_CONTRAST = 1;
 const DEFAULT_VISUALIZATION_HUE = 145;
+const DEFAULT_VISUALIZATION_COLOR: HexColor = "#74D89A";
 const DEFAULT_VISUALIZATION_PALETTE = "mono";
 const DEFAULT_VISUALIZATION_RESPONSE = "balanced";
 const VISUALIZATION_FFT_SIZE = 512;
@@ -79,6 +88,7 @@ type AudioVisualizationSettings = {
   brightness: number;
   contrast: number;
   hue: number;
+  color: HexColor;
   palette: AudioVisualizationPalette;
   response: AudioVisualizationResponse;
 };
@@ -101,6 +111,7 @@ class PodcastPlayer {
   visualizationBrightness = $state(DEFAULT_VISUALIZATION_BRIGHTNESS);
   visualizationContrast = $state(DEFAULT_VISUALIZATION_CONTRAST);
   visualizationHue = $state(DEFAULT_VISUALIZATION_HUE);
+  visualizationColor = $state<HexColor>(DEFAULT_VISUALIZATION_COLOR);
   visualizationPalette = $state<AudioVisualizationPalette>(
     DEFAULT_VISUALIZATION_PALETTE,
   );
@@ -162,6 +173,7 @@ class PodcastPlayer {
     this.visualizationBrightness = visualization.brightness;
     this.visualizationContrast = visualization.contrast;
     this.visualizationHue = visualization.hue;
+    this.visualizationColor = visualization.color;
     this.visualizationPalette = visualization.palette;
     this.visualizationResponse = visualization.response;
     // Mount is not a user gesture. A stored boost waits for the first play rather than
@@ -315,6 +327,20 @@ class PodcastPlayer {
 
   setVisualizationHue(value: number) {
     this.visualizationHue = clamp(value, 0, 360);
+    const current = hexToHsl(this.visualizationColor);
+    this.visualizationColor = hslToHex(
+      this.visualizationHue,
+      current.saturation,
+      current.lightness,
+    );
+    this.#storeVisualizationSettings();
+  }
+
+  setVisualizationColor(value: HexColor) {
+    const normalized = normalizeHexColor(value);
+    if (!normalized) return;
+    this.visualizationColor = normalized;
+    this.visualizationHue = hexToHsl(normalized).hue;
     this.#storeVisualizationSettings();
   }
 
@@ -344,6 +370,7 @@ class PodcastPlayer {
     this.visualizationBrightness = DEFAULT_VISUALIZATION_BRIGHTNESS;
     this.visualizationContrast = DEFAULT_VISUALIZATION_CONTRAST;
     this.visualizationHue = DEFAULT_VISUALIZATION_HUE;
+    this.visualizationColor = DEFAULT_VISUALIZATION_COLOR;
     this.visualizationPalette = DEFAULT_VISUALIZATION_PALETTE;
     this.visualizationResponse = DEFAULT_VISUALIZATION_RESPONSE;
     for (const analyser of [
@@ -1018,6 +1045,7 @@ class PodcastPlayer {
       brightness: this.visualizationBrightness,
       contrast: this.visualizationContrast,
       hue: this.visualizationHue,
+      color: this.visualizationColor,
       palette: this.visualizationPalette,
       response: this.visualizationResponse,
     });
@@ -1174,6 +1202,7 @@ function readStoredVisualizationSettings(): AudioVisualizationSettings {
     brightness: DEFAULT_VISUALIZATION_BRIGHTNESS,
     contrast: DEFAULT_VISUALIZATION_CONTRAST,
     hue: DEFAULT_VISUALIZATION_HUE,
+    color: DEFAULT_VISUALIZATION_COLOR,
     palette: DEFAULT_VISUALIZATION_PALETTE,
     response: DEFAULT_VISUALIZATION_RESPONSE,
   };
@@ -1183,6 +1212,10 @@ function readStoredVisualizationSettings(): AudioVisualizationSettings {
     if (!stored) return defaults;
     const parsed: unknown = JSON.parse(stored);
     if (!isRecord(parsed)) return defaults;
+    const hue = storedNumber(parsed.hue, 0, 360, defaults.hue);
+    const storedColor =
+      typeof parsed.color === "string" ? normalizeHexColor(parsed.color) : null;
+    const color = storedColor ?? hslToHex(hue, 56, 65);
     return {
       mode: isAudioVisualizationMode(parsed.mode) ? parsed.mode : defaults.mode,
       visibility: storedNumber(
@@ -1209,7 +1242,8 @@ function readStoredVisualizationSettings(): AudioVisualizationSettings {
         MAX_VISUALIZATION_CONTRAST,
         defaults.contrast,
       ),
-      hue: storedNumber(parsed.hue, 0, 360, defaults.hue),
+      hue: hexToHsl(color).hue,
+      color,
       palette: isVisualizationPalette(parsed.palette)
         ? parsed.palette
         : defaults.palette,
@@ -1287,35 +1321,23 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
 }
 
-function rotatedHue(hue: number, offset: number): number {
-  return (Math.round(hue) + offset + 360) % 360;
-}
-
-/** Produces canvas-ready OKLch colors from the listener's base hue. */
+/** Produces canvas-ready colors from the listener's selected base color. */
 export function audioVisualizationPaletteColors(
   palette: AudioVisualizationPalette,
-  hue: number,
+  color: HexColor,
 ): string[] {
-  const base = clamp(hue, 0, 360);
+  const base = normalizeHexColor(color) ?? DEFAULT_VISUALIZATION_COLOR;
   if (palette === "mono") {
-    return [`oklch(79% 0.16 ${rotatedHue(base, 0)})`];
+    return [base];
   }
   if (palette === "pandan") {
-    return [
-      `oklch(66% 0.12 ${rotatedHue(base, 0)})`,
-      `oklch(79% 0.16 ${rotatedHue(base, 0)})`,
-      `oklch(88% 0.1 ${rotatedHue(base, 0)})`,
-    ];
+    return [adjustHexLightness(base, -13), base, adjustHexLightness(base, 13)];
   }
   if (palette === "signal") {
-    return [
-      `oklch(79% 0.16 ${rotatedHue(base, 0)})`,
-      `oklch(82% 0.15 ${rotatedHue(base, 72)})`,
-      `oklch(72% 0.18 ${rotatedHue(base, 232)})`,
-    ];
+    return [base, rotateHexHue(base, 72), rotateHexHue(base, 232)];
   }
-  return [0, 60, 120, 180, 240, 300].map(
-    (offset) => `oklch(78% 0.17 ${rotatedHue(base, offset)})`,
+  return [0, 60, 120, 180, 240, 300].map((offset) =>
+    rotateHexHue(base, offset),
   );
 }
 

@@ -533,7 +533,7 @@
     {name}
     {required}
     {disabled}
-    pattern="\d{4}-\d{2}-\d{2}"
+    pattern={"\\d{4}-\\d{2}-\\d{2}"}
     tabindex="-1"
     aria-hidden="true"
     {value}

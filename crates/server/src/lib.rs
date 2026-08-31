@@ -30,6 +30,7 @@ mod bible;
 mod bookmark_library;
 mod bookmarks;
 pub mod calendar;
+mod coding_categories;
 mod contacts;
 pub mod document;
 mod embedded_pages;
@@ -43,6 +44,7 @@ pub mod ntfy;
 pub mod oidc;
 pub mod podcast_media;
 mod podcasts;
+mod trading;
 mod walls;
 pub mod widget_integrations;
 mod youtube_downloads;
@@ -67,8 +69,12 @@ const MAX_TASK_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 const RSS_REFRESH_MINUTES: i64 = 30;
 const RSS_REFRESH_BATCH_SIZE: usize = 100;
 const RSS_REFRESH_SPACING_SECONDS: u64 = 1;
+const CODING_REFRESH_SECONDS: u64 = 60 * 60;
+const CODING_REFRESH_CONCURRENCY: usize = 4;
 const DEFAULT_RSS_RETENTION_DAYS: i64 = 7;
 const DEFAULT_RSS_RETENTION_MODE: &str = "all";
+const DEFAULT_RSS_CURRENT_ENTRY_LIMIT: i64 = 25;
+const MAX_RSS_CURRENT_ENTRY_LIMIT: i64 = 200;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -356,6 +362,7 @@ pub struct CodingResponse {
     pub credentials: Vec<CodingCredentialResponse>,
     pub secret_storage_enabled: bool,
     pub provider_errors: Vec<String>,
+    pub cached_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -390,18 +397,26 @@ pub struct RssReaderResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateRssSubscriptionRequest {
     pub url: String,
+    #[serde(default)]
+    pub custom_name: Option<String>,
     pub category: String,
     #[serde(default = "default_rss_auto_delete_days")]
     pub auto_delete_days: Option<i64>,
     #[serde(default = "default_rss_auto_delete_mode")]
     pub auto_delete_mode: String,
+    #[serde(default = "default_rss_current_entry_limit")]
+    pub current_entry_limit: i64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UpdateRssSubscriptionRequest {
+    #[serde(default)]
+    pub custom_name: Option<String>,
     pub category: String,
     pub auto_delete_days: Option<i64>,
     pub auto_delete_mode: String,
+    #[serde(default)]
+    pub current_entry_limit: Option<i64>,
 }
 
 fn default_rss_auto_delete_days() -> Option<i64> {
@@ -410,6 +425,10 @@ fn default_rss_auto_delete_days() -> Option<i64> {
 
 fn default_rss_auto_delete_mode() -> String {
     DEFAULT_RSS_RETENTION_MODE.to_owned()
+}
+
+fn default_rss_current_entry_limit() -> i64 {
+    DEFAULT_RSS_CURRENT_ENTRY_LIMIT
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -449,6 +468,19 @@ pub struct CreateCalendarSubscriptionRequest {
     pub url: String,
     #[serde(default = "default_calendar_color")]
     pub color: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UpdateCalendarDisplayModeRequest {
+    pub display_mode: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UpdateCalendarSubscriptionRequest {
+    pub url: String,
+    pub name: String,
+    pub color: String,
+    pub display_mode: String,
 }
 
 fn default_calendar_color() -> String {
@@ -1320,26 +1352,65 @@ async fn coding(
     query: web::Query<CodingDataQuery>,
 ) -> Result<web::Json<CodingResponse>, ApiError> {
     let account = authenticated_account(&state, &request).await?;
-    let (cache_generation, cached_response) = if query.refresh {
-        (
-            state
-                .widget_integrations
-                .clear_coding_cache(&account.id)
-                .await,
-            None,
-        )
-    } else {
-        state
+    if query.refresh {
+        let generation = state
             .widget_integrations
-            .coding_cache_snapshot(&account.id)
+            .clear_coding_cache(&account.id)
+            .await;
+        return refresh_coding_account(&state, &account.id, generation)
             .await
-    };
-    if let Some(response) = cached_response {
+            .map(web::Json);
+    }
+    if let Some(response) = state
+        .widget_integrations
+        .coding_cache_snapshot(&account.id)
+        .await
+        .1
+    {
         return Ok(web::Json(response));
     }
+
+    load_coding_cache_shell(&state, &account.id)
+        .await
+        .map(web::Json)
+}
+
+async fn load_coding_cache_shell(
+    state: &AppState,
+    account_id: &str,
+) -> Result<CodingResponse, ApiError> {
     let (projects, stored_credentials) = tokio::try_join!(
-        db::queries::list_coding_projects(&state.pool, &account.id),
-        db::queries::list_coding_credentials(&state.pool, &account.id)
+        db::queries::list_coding_projects(&state.pool, account_id),
+        db::queries::list_coding_credentials(&state.pool, account_id)
+    )?;
+    Ok(CodingResponse {
+        projects,
+        releases: Vec::new(),
+        merge_requests: Vec::new(),
+        owned_repositories: Vec::new(),
+        pipelines: Vec::new(),
+        credentials: stored_credentials
+            .into_iter()
+            .map(|credential| CodingCredentialResponse {
+                provider: credential.provider,
+                host: credential.host,
+                connected: true,
+            })
+            .collect(),
+        secret_storage_enabled: state.widget_integrations.secrets_enabled(),
+        provider_errors: Vec::new(),
+        cached_at: None,
+    })
+}
+
+async fn refresh_coding_account(
+    state: &AppState,
+    account_id: &str,
+    cache_generation: u64,
+) -> Result<CodingResponse, ApiError> {
+    let (projects, stored_credentials) = tokio::try_join!(
+        db::queries::list_coding_projects(&state.pool, account_id),
+        db::queries::list_coding_credentials(&state.pool, account_id)
     )?;
     let credential_map = stored_credentials
         .iter()
@@ -1456,12 +1527,64 @@ async fn coding(
         credentials,
         secret_storage_enabled: state.widget_integrations.secrets_enabled(),
         provider_errors,
+        cached_at: Some(Utc::now().to_rfc3339()),
     };
     state
         .widget_integrations
-        .cache_coding_if_current(&account.id, cache_generation, &response)
+        .cache_coding_if_current(account_id, cache_generation, &response)
         .await;
-    Ok(web::Json(response))
+    Ok(response)
+}
+
+/// Refreshes every configured account's Coding snapshot once an hour.
+///
+/// The previous completed snapshot stays readable while provider requests are in flight.
+pub fn spawn_coding_refresh_worker(state: web::Data<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            refresh_coding_accounts(&state).await;
+            sleep(TokioDuration::from_secs(CODING_REFRESH_SECONDS)).await;
+        }
+    });
+}
+
+async fn refresh_coding_accounts(state: &AppState) {
+    let account_ids = match db::queries::list_coding_account_ids(&state.pool).await {
+        Ok(account_ids) => account_ids,
+        Err(error) => {
+            warn!(%error, "failed to load Coding accounts for background refresh");
+            return;
+        }
+    };
+    for account_ids in account_ids.chunks(CODING_REFRESH_CONCURRENCY) {
+        let results = join_all(account_ids.iter().map(|account_id| {
+            let account_id = account_id.clone();
+            async move {
+                let generation = state
+                    .widget_integrations
+                    .coding_cache_snapshot(&account_id)
+                    .await
+                    .0;
+                let result = refresh_coding_account(state, &account_id, generation).await;
+                (account_id, result)
+            }
+        }))
+        .await;
+        for (account_id, result) in results {
+            match result {
+                Ok(_) => info!(%account_id, "Coding cache refreshed"),
+                Err(error) => warn!(%account_id, %error, "Coding cache refresh failed"),
+            }
+        }
+    }
+}
+
+fn queue_coding_refresh(state: web::Data<AppState>, account_id: String, generation: u64) {
+    tokio::spawn(async move {
+        if let Err(error) = refresh_coding_account(&state, &account_id, generation).await {
+            warn!(%account_id, %error, "queued Coding cache refresh failed");
+        }
+    });
 }
 
 async fn create_coding_project(
@@ -1499,10 +1622,11 @@ async fn create_coding_project(
             ApiError::Database(error)
         }
     })?;
-    state
+    let generation = state
         .widget_integrations
         .clear_coding_cache(&account.id)
         .await;
+    queue_coding_refresh(state.clone(), account.id.clone(), generation);
     Ok((web::Json(project), StatusCode::CREATED))
 }
 
@@ -1513,10 +1637,11 @@ async fn delete_coding_project(
 ) -> Result<HttpResponse, ApiError> {
     let account = authenticated_account(&state, &request).await?;
     if db::queries::delete_coding_project(&state.pool, &account.id, &project_id).await? {
-        state
+        let generation = state
             .widget_integrations
             .clear_coding_cache(&account.id)
             .await;
+        queue_coding_refresh(state.clone(), account.id.clone(), generation);
         Ok(HttpResponse::NoContent().finish())
     } else {
         Err(ApiError::NotFound("Coding project not found"))
@@ -1548,10 +1673,11 @@ async fn update_coding_credential(
             &payload.host,
         )
         .await?;
-        state
+        let generation = state
             .widget_integrations
             .clear_coding_cache(&account.id)
             .await;
+        queue_coding_refresh(state.clone(), account.id.clone(), generation);
         return Ok(web::Json(CodingCredentialResponse {
             provider: payload.provider.clone(),
             host: payload.host.clone(),
@@ -1579,10 +1705,11 @@ async fn update_coding_credential(
         &ciphertext,
     )
     .await?;
-    state
+    let generation = state
         .widget_integrations
         .clear_coding_cache(&account.id)
         .await;
+    queue_coding_refresh(state.clone(), account.id.clone(), generation);
     Ok(web::Json(CodingCredentialResponse {
         provider: payload.provider.clone(),
         host: payload.host.clone(),
@@ -2533,7 +2660,9 @@ async fn create_rss_subscription(
         &payload.category,
         payload.auto_delete_days,
         &payload.auto_delete_mode,
+        Some(payload.current_entry_limit),
     )?;
+    let custom_name = validate_rss_custom_name(payload.custom_name.as_deref())?;
     let (title, items) = fetch_rss_snapshot(&state, &url).await?;
     let parsed =
         reqwest::Url::parse(&url).map_err(|_| ApiError::BadRequest("RSS URL is invalid"))?;
@@ -2551,9 +2680,11 @@ async fn create_rss_subscription(
             url,
             base_url,
             title,
+            custom_name,
             category,
             auto_delete_days: payload.auto_delete_days,
             auto_delete_mode: payload.auto_delete_mode.clone(),
+            current_entry_limit: payload.current_entry_limit,
         },
         &items,
     )
@@ -2575,14 +2706,22 @@ async fn update_rss_subscription(
         &payload.category,
         payload.auto_delete_days,
         &payload.auto_delete_mode,
+        payload.current_entry_limit,
     )?;
+    let custom_name = payload
+        .custom_name
+        .as_deref()
+        .map(|value| validate_rss_custom_name(Some(value)))
+        .transpose()?;
     db::queries::update_rss_subscription(
         &state.pool,
         &account.id,
         &subscription_id,
+        custom_name.as_ref(),
         &category,
         payload.auto_delete_days,
         &payload.auto_delete_mode,
+        payload.current_entry_limit,
     )
     .await?
     .ok_or(ApiError::NotFound("RSS subscription not found"))?;
@@ -2820,6 +2959,7 @@ fn validate_rss_settings(
     category: &str,
     auto_delete_days: Option<i64>,
     mode: &str,
+    current_entry_limit: Option<i64>,
 ) -> Result<String, ApiError> {
     let category = validate_short_text(category, "RSS category is required", 40)?.to_owned();
     if let Some(days) = auto_delete_days {
@@ -2827,7 +2967,29 @@ fn validate_rss_settings(
     } else if !matches!(mode, "read" | "all") {
         return Err(ApiError::BadRequest("RSS retention mode is invalid"));
     }
+    if current_entry_limit.is_some_and(|limit| !(1..=MAX_RSS_CURRENT_ENTRY_LIMIT).contains(&limit))
+    {
+        return Err(ApiError::BadRequest(
+            "RSS Current entries must be between 1 and 200",
+        ));
+    }
     Ok(category)
+}
+
+fn validate_rss_custom_name(value: Option<&str>) -> Result<Option<String>, ApiError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.chars().count() > 80 {
+        return Err(ApiError::BadRequest(
+            "RSS feed name must be 80 characters or fewer",
+        ));
+    }
+    Ok(Some(value.to_owned()))
 }
 
 fn validate_rss_retention(days: i64, mode: &str) -> Result<(), ApiError> {
@@ -2922,6 +3084,60 @@ async fn refresh_calendar_subscription(
     }
 }
 
+async fn update_calendar_subscription(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    subscription_id: web::Path<String>,
+    payload: web::Json<UpdateCalendarSubscriptionRequest>,
+) -> Result<web::Json<CalendarResponse>, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    let subscription =
+        db::queries::get_calendar_subscription(&state.pool, &account.id, &subscription_id)
+            .await?
+            .ok_or(ApiError::NotFound("calendar subscription not found"))?;
+    let url = validate_calendar_url(&payload.url)?;
+    let name = validate_short_text(&payload.name, "calendar name is required", 120)?.to_owned();
+    let color = validate_calendar_color(&payload.color)?;
+    let display_mode = validate_calendar_display_mode(&payload.display_mode)?;
+    if db::queries::list_calendar_subscriptions(&state.pool, &account.id)
+        .await?
+        .iter()
+        .any(|candidate| candidate.id != subscription.id && candidate.url == url)
+    {
+        return Err(ApiError::Conflict("this calendar is already subscribed"));
+    }
+
+    let updated = if subscription.url == url {
+        db::queries::update_calendar_subscription_settings(
+            &state.pool,
+            &account.id,
+            &subscription.id,
+            &name,
+            &color,
+            display_mode,
+        )
+        .await?
+    } else {
+        let snapshot = fetch_calendar_snapshot(&state, &url).await?;
+        db::queries::replace_calendar_subscription_source(
+            &state.pool,
+            &account.id,
+            &subscription.id,
+            &url,
+            &snapshot.name,
+            &name,
+            &color,
+            display_mode,
+            &snapshot.events,
+        )
+        .await?
+    };
+    if updated.is_none() {
+        return Err(ApiError::NotFound("calendar subscription not found"));
+    }
+    Ok(web::Json(load_calendar(&state, &account.id).await?))
+}
+
 async fn delete_calendar_subscription(
     state: web::Data<AppState>,
     request: HttpRequest,
@@ -2934,6 +3150,27 @@ async fn delete_calendar_subscription(
     } else {
         Err(ApiError::NotFound("calendar subscription not found"))
     }
+}
+
+async fn update_calendar_subscription_display_mode(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    subscription_id: web::Path<String>,
+    payload: web::Json<UpdateCalendarDisplayModeRequest>,
+) -> Result<web::Json<CalendarResponse>, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    let display_mode = validate_calendar_display_mode(&payload.display_mode)?;
+    if !db::queries::update_calendar_subscription_display_mode(
+        &state.pool,
+        &account.id,
+        &subscription_id,
+        display_mode,
+    )
+    .await?
+    {
+        return Err(ApiError::NotFound("calendar subscription not found"));
+    }
+    Ok(web::Json(load_calendar(&state, &account.id).await?))
 }
 
 async fn load_calendar(state: &AppState, user_id: &str) -> Result<CalendarResponse, ApiError> {
@@ -3050,6 +3287,16 @@ fn validate_calendar_color(value: &str) -> Result<String, ApiError> {
         ));
     }
     Ok(value.to_ascii_uppercase())
+}
+
+fn validate_calendar_display_mode(value: &str) -> Result<&'static str, ApiError> {
+    match value {
+        "full" => Ok("full"),
+        "dot" => Ok("dot"),
+        _ => Err(ApiError::BadRequest(
+            "calendar display mode must be full or dot",
+        )),
+    }
 }
 
 async fn payment_subscriptions(
@@ -3409,6 +3656,7 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
             .configure(announcements::configure)
             .configure(bookmark_library::configure)
             .configure(bookmarks::configure)
+            .configure(coding_categories::configure)
             .configure(embedded_pages::configure)
             .configure(jellyfin::configure)
             .configure(network_policy::configure)
@@ -3481,6 +3729,7 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
             .configure(ntfy::configure)
             .configure(walls::configure)
             .configure(podcasts::configure)
+            .configure(trading::configure)
             .configure(youtube_downloads::configure)
             .route("/rss", web::get().to(rss_reader))
             .route(
@@ -3514,6 +3763,14 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
             .route(
                 "/calendar/subscriptions/{subscription_id}/refresh",
                 web::post().to(refresh_calendar_subscription),
+            )
+            .route(
+                "/calendar/subscriptions/{subscription_id}/display",
+                web::patch().to(update_calendar_subscription_display_mode),
+            )
+            .route(
+                "/calendar/subscriptions/{subscription_id}",
+                web::patch().to(update_calendar_subscription),
             )
             .route(
                 "/calendar/subscriptions/{subscription_id}",
@@ -3807,7 +4064,7 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn new_rss_subscriptions_default_to_seven_day_all_item_retention() {
+    async fn new_rss_subscriptions_default_reader_settings() {
         let request: CreateRssSubscriptionRequest = serde_json::from_value(serde_json::json!({
             "url": "https://example.com/feed.xml",
             "category": "General"
@@ -3816,6 +4073,27 @@ mod tests {
 
         assert_eq!(request.auto_delete_days, Some(7));
         assert_eq!(request.auto_delete_mode, "all");
+        assert_eq!(request.current_entry_limit, 25);
+        assert_eq!(request.custom_name, None);
+        assert!(validate_rss_settings("General", Some(7), "all", Some(1)).is_ok());
+        assert!(validate_rss_settings("General", Some(7), "all", Some(200)).is_ok());
+        assert!(validate_rss_settings("General", Some(7), "all", Some(0)).is_err());
+        assert!(validate_rss_settings("General", Some(7), "all", Some(201)).is_err());
+
+        let legacy_update: UpdateRssSubscriptionRequest =
+            serde_json::from_value(serde_json::json!({
+                "category": "General",
+                "auto_delete_days": 7,
+                "auto_delete_mode": "all"
+            }))
+            .expect("legacy update deserializes");
+        assert_eq!(legacy_update.current_entry_limit, None);
+        assert_eq!(legacy_update.custom_name, None);
+        assert_eq!(
+            validate_rss_custom_name(Some("  Personal reading  ")).unwrap(),
+            Some("Personal reading".to_owned())
+        );
+        assert_eq!(validate_rss_custom_name(Some("  ")).unwrap(), None);
     }
 
     fn state(pool: SqlitePool) -> web::Data<AppState> {
@@ -5520,6 +5798,24 @@ mod tests {
             serde_json::json!(true)
         );
 
+        let refreshed = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/podcasts/refresh")
+                .cookie(member_cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(refreshed.status(), StatusCode::NO_CONTENT);
+        let anonymous_refresh = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/podcasts/refresh")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(anonymous_refresh.status(), StatusCode::UNAUTHORIZED);
+
         // An administrator reaches the review queue and the storage policy.
         let queue: Vec<serde_json::Value> = test::call_and_read_body_json(
             &app,
@@ -5581,6 +5877,140 @@ mod tests {
         )
         .await;
         assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn podcast_notification_settings_are_scoped_to_the_listener() {
+        let pool = test_pool().await;
+        let app = test::init_service(
+            App::new()
+                .app_data(state(pool.clone()))
+                .configure(configure_api),
+        )
+        .await;
+        let setup = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/setup")
+                .set_json(RegisterRequest {
+                    email: "podcast-alerts@example.com".to_owned(),
+                    password: "a secure administrator password".to_owned(),
+                    display_name: "Podcast Alerts".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        let cookie = session_cookie(&setup);
+        let listener = db::queries::find_user_credentials(&pool, "podcast-alerts@example.com")
+            .await
+            .expect("listener lookup completes")
+            .expect("listener exists");
+        let podcast = db::queries::insert_podcast(
+            &pool,
+            &db::entities::PodcastDraft {
+                feed_url: "https://example.com/alerts.xml".to_owned(),
+                normalized_url: "https://example.com/alerts.xml".to_owned(),
+                preview: db::entities::PodcastFeedPreview {
+                    title: "Alert Show".to_owned(),
+                    description: String::new(),
+                    author: "Host".to_owned(),
+                    site_url: "https://example.com/alerts".to_owned(),
+                    language: "en".to_owned(),
+                    artwork_url: String::new(),
+                },
+                added_by: listener.id.clone(),
+                auto_download_count: 0,
+            },
+        )
+        .await
+        .expect("podcast creates");
+        db::queries::subscribe_to_podcast(&pool, &listener.id, &podcast.id)
+            .await
+            .expect("listener subscribes");
+        db::ntfy_queries::upsert_ntfy_connection(
+            &pool,
+            &listener.id,
+            "https://ntfy.example.com",
+            None,
+        )
+        .await
+        .expect("listener ntfy connection creates");
+        let topic = db::ntfy_queries::create_ntfy_topic(
+            &pool,
+            &listener.id,
+            "podcast-alerts",
+            "Podcast alerts",
+        )
+        .await
+        .expect("listener topic creates");
+        let (other, _) = db::queries::create_account(
+            &pool,
+            "other-podcast-alerts@example.com",
+            "$argon2id$other-alerts",
+            "Other Alerts",
+        )
+        .await
+        .expect("other account creates");
+        db::ntfy_queries::upsert_ntfy_connection(
+            &pool,
+            &other.id,
+            "https://ntfy.example.com",
+            None,
+        )
+        .await
+        .expect("other ntfy connection creates");
+        let foreign_topic =
+            db::ntfy_queries::create_ntfy_topic(&pool, &other.id, "private", "Private")
+                .await
+                .expect("foreign topic creates");
+
+        let refused = test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri(&format!("/api/podcasts/{}/notifications", podcast.id))
+                .cookie(cookie.clone())
+                .set_json(serde_json::json!({
+                    "enabled": true,
+                    "topic_id": foreign_topic.id
+                }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+
+        let saved: serde_json::Value = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::put()
+                .uri(&format!("/api/podcasts/{}/notifications", podcast.id))
+                .cookie(cookie.clone())
+                .set_json(serde_json::json!({
+                    "enabled": true,
+                    "topic_id": topic.id
+                }))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(saved["enabled"], serde_json::json!(true));
+        assert_eq!(saved["topic"], serde_json::json!("podcast-alerts"));
+
+        let overview: serde_json::Value = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/podcasts")
+                .cookie(cookie)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(overview["ntfy_connected"], serde_json::json!(true));
+        assert_eq!(overview["ntfy_topics"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            overview["podcasts"][0]["ntfy_notifications_enabled"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            overview["podcasts"][0]["ntfy_topic_id"],
+            serde_json::json!(topic.id)
+        );
     }
 
     /// A malformed or private feed address is refused before anything is fetched.
@@ -6298,9 +6728,10 @@ mod tests {
 
     #[actix_web::test]
     async fn embedded_pages_keep_global_and_personal_scopes_separate() {
+        let pool = test_pool().await;
         let app = test::init_service(
             App::new()
-                .app_data(state(test_pool().await))
+                .app_data(state(pool.clone()))
                 .configure(configure_api),
         )
         .await;
@@ -6334,6 +6765,44 @@ mod tests {
         assert_eq!(personal.scope, "user");
         assert_eq!(personal.icon_kind, "favicon");
         assert_eq!(personal.icon_value, None);
+        assert!(
+            db::queries::store_embedded_page_icon_attempt(
+                &pool,
+                &personal.id,
+                &personal.url,
+                &personal.icon_kind,
+                personal.icon_value.as_deref(),
+                Some(("image/png", b"cached-icon")),
+            )
+            .await
+            .expect("personal icon cache stores")
+        );
+        let personal_icon = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/api/embedded-pages/{}/icon", personal.id))
+                .cookie(member.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(personal_icon.status(), StatusCode::OK);
+        assert_eq!(
+            personal_icon.headers().get(header::CONTENT_TYPE),
+            Some(&header::HeaderValue::from_static("image/png"))
+        );
+        assert_eq!(
+            test::read_body(personal_icon).await.as_ref(),
+            b"cached-icon"
+        );
+        let hidden_icon = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/api/embedded-pages/{}/icon", personal.id))
+                .cookie(other.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(hidden_icon.status(), StatusCode::NOT_FOUND);
 
         let global: db::entities::EmbeddedPage = test::call_and_read_body_json(
             &app,

@@ -19,8 +19,8 @@ use actix_web::{
     web,
 };
 use db::entities::{
-    Podcast, PodcastDraft, PodcastEpisode, PodcastRequest, PodcastRequestDraft, PodcastSettings,
-    PodcastSummary,
+    Podcast, PodcastDraft, PodcastEpisode, PodcastNotificationSettings, PodcastRequest,
+    PodcastRequestDraft, PodcastSettings, PodcastSummary,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -41,6 +41,15 @@ pub struct PodcastOverview {
     in_progress: Vec<PodcastEpisode>,
     requests: Vec<PodcastRequest>,
     policy: PodcastPolicy,
+    ntfy_connected: bool,
+    ntfy_topics: Vec<PodcastNtfyTopic>,
+}
+
+#[derive(Debug, Serialize)]
+struct PodcastNtfyTopic {
+    id: String,
+    topic: String,
+    label: String,
 }
 
 /// The part of the administrator policy a member is allowed to see.
@@ -131,6 +140,12 @@ struct QueueReorderPayload {
 }
 
 #[derive(Debug, Deserialize)]
+struct NotificationSettingsPayload {
+    enabled: bool,
+    topic_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct AdminSettingsPayload {
     requests_enabled: bool,
     member_downloads_enabled: bool,
@@ -173,6 +188,7 @@ pub fn configure(config: &mut web::ServiceConfig) {
                     .route(web::get().to(get_settings))
                     .route(web::patch().to(update_settings)),
             )
+            .route("/refresh", web::post().to(refresh_subscriptions))
             .service(
                 web::resource("/episodes/{episode_id}/download")
                     .route(web::get().to(episode_download))
@@ -204,6 +220,10 @@ pub fn configure(config: &mut web::ServiceConfig) {
                 web::resource("/{podcast_id}/subscription")
                     .route(web::put().to(subscribe))
                     .route(web::delete().to(unsubscribe)),
+            )
+            .route(
+                "/{podcast_id}/notifications",
+                web::put().to(update_notification_settings),
             )
             .service(
                 web::resource("/{podcast_id}")
@@ -316,6 +336,22 @@ async fn overview(
 ) -> Result<web::Json<PodcastOverview>, ApiError> {
     let account = authenticated_account(&state, &request).await?;
     let settings = db::queries::get_podcast_settings(&state.pool).await?;
+    let ntfy_connected = db::ntfy_queries::get_ntfy_connection(&state.pool, &account.id)
+        .await?
+        .is_some();
+    let ntfy_topics = if ntfy_connected {
+        db::ntfy_queries::list_ntfy_topics(&state.pool, &account.id)
+            .await?
+            .into_iter()
+            .map(|topic| PodcastNtfyTopic {
+                id: topic.id,
+                topic: topic.topic,
+                label: topic.label,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(web::Json(PodcastOverview {
         podcasts: db::queries::list_podcast_summaries(&state.pool, &account.id).await?,
         queue: db::queries::list_podcast_queue(&state.pool, &account.id).await?,
@@ -338,7 +374,20 @@ async fn overview(
             member_downloads_enabled: settings.member_downloads_enabled,
             max_pending_requests_per_user: settings.max_pending_requests_per_user,
         },
+        ntfy_connected,
+        ntfy_topics,
     }))
+}
+
+/// Fetches every feed the caller currently subscribes to, then releases the request so
+/// the browser can reload the newly indexed overview.
+async fn refresh_subscriptions(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+) -> Result<HttpResponse, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    podcast_media::refresh_subscribed_podcasts(&state, &account.id).await?;
+    Ok(HttpResponse::NoContent().finish())
 }
 
 /// Submits one feed for administrator review.
@@ -452,6 +501,54 @@ async fn unsubscribe(
     let account = authenticated_account(&state, &request).await?;
     db::queries::unsubscribe_from_podcast(&state.pool, &account.id, &path.into_inner()).await?;
     Ok(HttpResponse::NoContent().finish())
+}
+
+async fn update_notification_settings(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    path: web::Path<String>,
+    payload: web::Json<NotificationSettingsPayload>,
+) -> Result<web::Json<PodcastNotificationSettings>, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    let podcast_id = path.into_inner();
+    let topic_id = payload
+        .topic_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if payload.enabled && topic_id.is_none() {
+        return Err(ApiError::BadRequest(
+            "choose an ntfy topic before enabling podcast notifications",
+        ));
+    }
+    if let Some(topic_id) = topic_id
+        && db::ntfy_queries::get_ntfy_topic(&state.pool, &account.id, topic_id)
+            .await?
+            .is_none()
+    {
+        return Err(ApiError::BadRequest(
+            "the selected ntfy topic is not available",
+        ));
+    }
+    if payload.enabled
+        && db::ntfy_queries::get_ntfy_connection(&state.pool, &account.id)
+            .await?
+            .is_none()
+    {
+        return Err(ApiError::Conflict(
+            "connect ntfy before enabling podcast notifications",
+        ));
+    }
+    db::queries::update_podcast_notification_settings(
+        &state.pool,
+        &account.id,
+        &podcast_id,
+        payload.enabled,
+        topic_id,
+    )
+    .await?
+    .map(web::Json)
+    .ok_or(ApiError::NotFound("podcast subscription not found"))
 }
 
 async fn podcast_artwork(

@@ -27,7 +27,6 @@
   import Terminal from "lucide-svelte/icons/terminal";
   import Video from "lucide-svelte/icons/video";
   import Wrench from "lucide-svelte/icons/wrench";
-  import { SvelteURL } from "svelte/reactivity";
   import type { EmbeddedPageIconKind } from "$lib/api";
 
   const lucideIcons: Record<string, typeof PanelTop> = {
@@ -61,27 +60,21 @@
   };
 
   type Props = {
-    pageUrl: string;
+    pageId: string;
+    updatedAt: string;
     iconKind: EmbeddedPageIconKind;
     iconValue: string | null;
     size?: number;
   };
 
-  let { pageUrl, iconKind, iconValue, size = 18 }: Props = $props();
+  let { pageId, updatedAt, iconKind, iconValue, size = 18 }: Props = $props();
   let failedSource = $state("");
   let Icon = $derived(lucideIcons[iconValue ?? ""] ?? PanelTop);
   let imageSource = $derived.by(() => {
-    if (iconKind === "custom") return iconValue;
-    if (iconKind !== "favicon") return null;
-    try {
-      const source = new SvelteURL(pageUrl);
-      source.pathname = "/favicon.ico";
-      source.search = "";
-      source.hash = "";
-      return source.toString();
-    } catch {
-      return null;
-    }
+    if (iconKind === "lucide") return null;
+    const id = encodeURIComponent(pageId);
+    const version = encodeURIComponent(updatedAt);
+    return `/api/embedded-pages/${id}/icon?v=${version}`;
   });
   let resolvedImageSource = $derived(
     imageSource && imageSource !== failedSource ? imageSource : null,
@@ -98,7 +91,6 @@
     src={resolvedImageSource}
     alt=""
     decoding="async"
-    referrerpolicy="no-referrer"
     onerror={useFallback}
     aria-hidden="true"
   />

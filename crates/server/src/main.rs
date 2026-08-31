@@ -78,6 +78,7 @@ async fn main() -> miette::Result<()> {
     server::spawn_podcast_workers(state.clone());
     server::spawn_youtube_download_workers(state.clone());
     server::spawn_rss_refresh_worker(state.clone());
+    server::spawn_coding_refresh_worker(state.clone());
     server::ntfy::spawn_ntfy_worker(state.clone());
 
     info!(port, "server listening");

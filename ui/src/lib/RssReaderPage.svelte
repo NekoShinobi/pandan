@@ -35,6 +35,8 @@
 
   const BACKGROUND_SYNC_MS = 5 * 60 * 1000;
   const DEFAULT_RETENTION_DAYS = 7;
+  const DEFAULT_CURRENT_ENTRY_LIMIT = 25;
+  const MAX_CURRENT_ENTRY_LIMIT = 200;
 
   let reader = $state.raw<RssReaderResponse>({ subscriptions: [], items: [] });
   let loading = $state(true);
@@ -45,6 +47,7 @@
   let sourceFilter = $state("all");
   let unreadOnly = $state(false);
   let busySubscriptionId = $state("");
+  let sourcesDialog = $state<HTMLDialogElement>();
   let subscriptionDialog = $state<HTMLDialogElement>();
   let subscriptionUrlInput = $state<HTMLInputElement>();
   let pruneDialog = $state<HTMLDialogElement>();
@@ -57,10 +60,12 @@
   let redditSubreddit = $state("");
   let redditSort = $state<RedditSort>("hot");
   let redditTopPeriod = $state<RedditTopPeriod>("day");
+  let feedName = $state("");
   let feedCategory = $state("General");
   let retentionEnabled = $state(true);
   let retentionDays = $state(DEFAULT_RETENTION_DAYS);
   let retentionMode = $state<RssRetentionMode>("all");
+  let currentEntryLimit = $state(DEFAULT_CURRENT_ENTRY_LIMIT);
   let subscriptionError = $state("");
   let savingSubscription = $state(false);
   let confirmingDelete = $state(false);
@@ -177,6 +182,13 @@
     };
   }
 
+  function captureSourcesDialog(node: HTMLDialogElement) {
+    sourcesDialog = node;
+    return () => {
+      sourcesDialog = undefined;
+    };
+  }
+
   function captureSubscriptionUrlInput(node: HTMLInputElement) {
     subscriptionUrlInput = node;
     return () => {
@@ -206,10 +218,12 @@
     redditSubreddit = "";
     redditSort = "hot";
     redditTopPeriod = "day";
+    feedName = "";
     feedCategory = "General";
     retentionEnabled = true;
     retentionDays = DEFAULT_RETENTION_DAYS;
     retentionMode = "all";
+    currentEntryLimit = DEFAULT_CURRENT_ENTRY_LIMIT;
     subscriptionError = "";
     confirmingDelete = false;
     subscriptionDialog?.showModal();
@@ -222,6 +236,7 @@
     feedSourceKind = "feed";
     feedUrl = subscription.url;
     feedUrlCopied = false;
+    feedName = subscription.custom_name ?? "";
     feedCategory = subscription.category;
     retentionEnabled = subscription.auto_delete_days !== null;
     retentionDays = subscription.auto_delete_days ?? DEFAULT_RETENTION_DAYS;
@@ -229,6 +244,7 @@
       subscription.auto_delete_days === null
         ? "all"
         : subscription.auto_delete_mode;
+    currentEntryLimit = subscription.current_entry_limit;
     subscriptionError = "";
     confirmingDelete = false;
     subscriptionDialog?.showModal();
@@ -236,6 +252,25 @@
 
   function closeSubscriptionDialog() {
     if (!savingSubscription) subscriptionDialog?.close();
+  }
+
+  function openSources() {
+    sourcesDialog?.showModal();
+  }
+
+  function chooseSource(subscriptionId: string) {
+    sourceFilter = subscriptionId;
+    sourcesDialog?.close();
+  }
+
+  function manageFeedFromSources(subscription: RssSubscription) {
+    sourcesDialog?.close();
+    openEditFeed(subscription);
+  }
+
+  function pruneFromSources() {
+    sourcesDialog?.close();
+    openPrune();
   }
 
   async function copyFeedUrl() {
@@ -274,9 +309,11 @@
     subscriptionError = "";
     try {
       const settings = {
+        custom_name: feedName.trim(),
         category: feedCategory.trim(),
         auto_delete_days: retentionEnabled ? retentionDays : null,
         auto_delete_mode: retentionMode,
+        current_entry_limit: currentEntryLimit,
       };
       reader = editingSubscriptionId
         ? await updateRssSubscription(editingSubscriptionId, settings)
@@ -469,6 +506,22 @@
     ).length;
   }
 
+  function subscriptionViewCount(subscriptionId: string) {
+    if (activeView === "current") {
+      return subscriptionCurrentCount(subscriptionId);
+    }
+    if (activeView === "read-later") {
+      return reader.items.filter(
+        (item) => item.subscription_id === subscriptionId && item.saved_at !== null,
+      ).length;
+    }
+    return subscriptionUnreadCount(subscriptionId);
+  }
+
+  function subscriptionLabel(subscription: RssSubscription) {
+    return subscription.custom_name?.trim() || subscription.title;
+  }
+
   function plainText(value: string) {
     return value
       .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
@@ -549,6 +602,18 @@
       </p>
     </div>
     <div class="rss-header-actions">
+      <button
+        class="ui-button ui-button--secondary rss-secondary-button rss-sources-trigger"
+        type="button"
+        onclick={openSources}
+        data-od-id="rss-sources-menu-button"
+      >
+        <RefreshCw size={16} strokeWidth={1.8} aria-hidden="true" />
+        <span>
+          <strong>Sources</strong>
+          <small>Latest cached {relativeTime(latestSnapshotAt)}</small>
+        </span>
+      </button>
       <button class="ui-button ui-button--primary rss-primary-button" type="button" onclick={openAddFeed}>
         <Plus size={16} strokeWidth={2} aria-hidden="true" />
         Add Feed
@@ -587,21 +652,6 @@
     </button>
   </nav>
 
-  {#if activeView === "current"}
-    <div class="rss-snapshot-status" data-od-id="rss-current-status" role="status">
-      <span class="rss-snapshot-icon" aria-hidden="true">
-        <RefreshCw size={15} strokeWidth={1.8} />
-      </span>
-      <span>
-        <strong>Latest cached snapshot</strong>
-        <small>{relativeTime(latestSnapshotAt)}</small>
-      </span>
-      <span class="rss-snapshot-sources">
-        {currentSourceCount} of {reader.subscriptions.length} sources ready
-      </span>
-    </div>
-  {/if}
-
   <div class="rss-filter-bar" data-od-id="rss-filters">
     <label class="rss-search">
       <Search size={16} strokeWidth={1.8} aria-hidden="true" />
@@ -613,16 +663,7 @@
         data-od-id="rss-text-filter"
       />
     </label>
-    <label class="rss-mobile-source-filter">
-      <span class="sr-only">Filter by source feed</span>
-      <select bind:value={sourceFilter} data-od-id="rss-source-filter">
-        <option value="all">All sources</option>
-        {#each reader.subscriptions as subscription (subscription.id)}
-          <option value={subscription.id}>{subscription.title}</option>
-        {/each}
-      </select>
-    </label>
-    <label>
+    <label class="rss-category-filter">
       <span class="sr-only">Filter by category</span>
       <select bind:value={categoryFilter} data-od-id="rss-category-filter">
         <option value="all">All categories</option>
@@ -641,6 +682,33 @@
     </button>
   </div>
 
+  {#if reader.subscriptions.length > 0}
+    <nav class="rss-source-strip" aria-label="Filter by feed" data-od-id="rss-source-strip">
+      <button
+        class:active={sourceFilter === "all"}
+        type="button"
+        aria-pressed={sourceFilter === "all"}
+        onclick={() => (sourceFilter = "all")}
+        data-od-id="rss-source-all"
+      >
+        All feeds
+      </button>
+      {#each reader.subscriptions as subscription (subscription.id)}
+        <button
+          class:active={sourceFilter === subscription.id}
+          type="button"
+          aria-pressed={sourceFilter === subscription.id}
+          onclick={() =>
+            (sourceFilter = sourceFilter === subscription.id ? "all" : subscription.id)}
+          data-od-id={`rss-source-tab-${subscription.id}`}
+        >
+          {subscriptionLabel(subscription)}
+          <span>{subscriptionViewCount(subscription.id)}</span>
+        </button>
+      {/each}
+    </nav>
+  {/if}
+
   {#if pageError}
     <div class="rss-page-message" role="status">
       <span>{pageError}</span>
@@ -648,8 +716,7 @@
     </div>
   {/if}
 
-  <div class="rss-reader-layout">
-    <main class="rss-item-list" aria-label="RSS items">
+  <main class="rss-item-list" aria-label="RSS items">
       {#if loading}
         <div class="rss-empty" role="status">
           <RefreshCw class="rss-loading-icon" size={28} strokeWidth={1.5} aria-hidden="true" />
@@ -759,20 +826,29 @@
           </div>
         {/each}
       {/if}
-    </main>
+  </main>
 
-    <aside class="rss-source-panel" data-od-id="rss-source-directory">
-      <div class="rss-source-heading">
-        <div>
-          <span>[ SOURCES ]</span>
-          <strong>{reader.subscriptions.length}</strong>
-        </div>
-        <div class="rss-source-tools">
-          {#if sourceFilter !== "all"}
-            <button type="button" onclick={() => (sourceFilter = "all")}>Show all</button>
-          {/if}
-          <button type="button" onclick={openPrune}>Prune</button>
-        </div>
+  <dialog
+    class="rss-dialog rss-sources-dialog"
+    {@attach captureSourcesDialog}
+    aria-labelledby="rss-sources-title"
+    onclick={(event) => event.target === sourcesDialog && sourcesDialog.close()}
+    data-od-id="rss-sources-dialog"
+  >
+    <header>
+      <div>
+        <span>[ {reader.subscriptions.length} SOURCES ]</span>
+        <h2 id="rss-sources-title">Feed sources</h2>
+      </div>
+      <button class="ui-button ui-button--ghost ui-button--icon" type="button" aria-label="Close sources" onclick={() => sourcesDialog?.close()}>
+        <X size={18} strokeWidth={1.8} aria-hidden="true" />
+      </button>
+    </header>
+    <div class="rss-sources-dialog-body">
+      <div class="rss-sources-summary" role="status">
+        <span>Latest cached snapshot</span>
+        <strong>{relativeTime(latestSnapshotAt)}</strong>
+        <small>{currentSourceCount} of {reader.subscriptions.length} sources ready</small>
       </div>
       <div class="rss-source-list">
         {#each reader.subscriptions as subscription (subscription.id)}
@@ -781,11 +857,10 @@
               class="rss-source-select"
               type="button"
               aria-pressed={sourceFilter === subscription.id}
-              onclick={() =>
-                (sourceFilter = sourceFilter === subscription.id ? "all" : subscription.id)}
+              onclick={() => chooseSource(subscription.id)}
             >
               <span>
-                <strong>{subscription.title}</strong>
+                <strong>{subscriptionLabel(subscription)}</strong>
                 <small>
                   {hostLabel(subscription.base_url)} · {subscriptionCurrentCount(subscription.id)} current · {subscriptionUnreadCount(subscription.id)} unread
                 </small>
@@ -797,6 +872,9 @@
                 ? `Updated ${relativeTime(subscription.last_fetched_at)}`
                 : "Waiting for first refresh"}
             </p>
+            {#if subscription.custom_name}
+              <p class="rss-source-original-title">Feed title · {subscription.title}</p>
+            {/if}
             {#if subscription.last_error}
               <p class="rss-source-error">Refresh failed · {subscription.last_error}</p>
             {/if}
@@ -814,7 +892,7 @@
                 />
                 Refresh
               </button>
-              <button type="button" onclick={() => openEditFeed(subscription)}>
+              <button type="button" onclick={() => manageFeedFromSources(subscription)}>
                 <Settings2 size={14} strokeWidth={1.8} aria-hidden="true" />
                 Manage
               </button>
@@ -824,8 +902,12 @@
           <p class="rss-source-empty">No subscriptions yet.</p>
         {/each}
       </div>
-    </aside>
-  </div>
+    </div>
+    <footer>
+      <button class="ui-button ui-button--secondary rss-secondary-button" type="button" onclick={pruneFromSources}>Prune archive</button>
+      <button class="ui-button ui-button--primary rss-primary-button" type="button" onclick={() => sourcesDialog?.close()}>Done</button>
+    </footer>
+  </dialog>
 
   <dialog
     class="rss-dialog rss-item-dialog"
@@ -1044,18 +1126,46 @@
         </section>
       {/if}
 
-      <label for="rss-feed-category">Category</label>
-      <input
-        id="rss-feed-category"
-        list="rss-category-options"
-        bind:value={feedCategory}
-        maxlength="40"
-        placeholder="Technology"
-        required
-      />
+      <div class="rss-feed-identity-grid">
+        <label class="rss-form-field" for="rss-feed-name">
+          <span>Feed name <small>Optional</small></span>
+          <input
+            id="rss-feed-name"
+            type="text"
+            bind:value={feedName}
+            maxlength="80"
+            placeholder={editingSubscription?.title ?? "Use the feed title"}
+            data-od-id="rss-feed-name"
+          />
+        </label>
+        <label class="rss-form-field" for="rss-feed-category">
+          <span>Category</span>
+          <input
+            id="rss-feed-category"
+            list="rss-category-options"
+            bind:value={feedCategory}
+            maxlength="40"
+            placeholder="Technology"
+            required
+            data-od-id="rss-feed-category"
+          />
+        </label>
+      </div>
       <datalist id="rss-category-options">
         {#each categories as category (category)}<option value={category}></option>{/each}
       </datalist>
+
+      <fieldset class="rss-current-settings" data-od-id="rss-current-entry-limit-setting">
+        <legend>Current View</legend>
+        <div class="rss-retention-setting">
+          <label class="rss-retention-setting-label" for="rss-current-entry-limit">Show latest</label>
+          <div class="rss-retention-age">
+            <input id="rss-current-entry-limit" type="number" bind:value={currentEntryLimit} min="1" max={MAX_CURRENT_ENTRY_LIMIT} required data-od-id="rss-current-entry-limit" />
+            <span>entries</span>
+          </div>
+        </div>
+        <p class="rss-current-help">Per feed, from its latest successful refresh. These entries are marked Current and protected from pruning.</p>
+      </fieldset>
 
       <button class="ui-toggle-button rss-check-row" type="button" aria-pressed={retentionEnabled} onclick={() => (retentionEnabled = !retentionEnabled)}>
         <span class="ui-toggle-indicator" aria-hidden="true"></span>
@@ -1139,9 +1249,14 @@
 <style>
   .rss-reader { display: grid; gap: 18px; padding: clamp(24px, 3vw, 42px); min-width: 0; }
   .rss-reader-header { display: flex; align-items: end; justify-content: space-between; gap: 24px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
-  .rss-dialog header span, .rss-source-heading span { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .09em; }
+  .rss-dialog header span { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .09em; }
   .rss-reader-header p { margin-top: 8px; color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
   .rss-header-actions, .rss-source-actions, .rss-dialog footer { display: flex; align-items: center; gap: 8px; }
+  .rss-sources-trigger { min-height: 50px; justify-content: flex-start; padding-inline: 12px 15px; }
+  .rss-sources-trigger > span { display: grid; gap: 2px; text-align: left; }
+  .rss-sources-trigger strong { color: inherit; font-size: 11px; font-weight: 560; }
+  .rss-sources-trigger small { color: var(--muted); font-size: 8px; font-weight: 450; letter-spacing: .01em; }
+  .rss-sources-trigger:hover small { color: var(--surface); }
   .rss-view-tabs { display: flex; gap: 6px; overflow-x: auto; }
   .rss-view-tabs span { color: inherit; font-variant-numeric: tabular-nums; opacity: .7; }
   button, input, select { font: inherit; }
@@ -1155,23 +1270,23 @@
   .rss-danger-button:hover { background: var(--fg); color: var(--surface); }
   button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
   button:disabled { cursor: wait; opacity: .55; }
-  .rss-snapshot-status { min-height: 54px; display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 9px 13px; border: 1px solid var(--border); background: color-mix(in oklch, var(--page-surface, var(--surface)) 86%, transparent); }
-  .rss-snapshot-icon { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--border); color: var(--fg); }
-  .rss-snapshot-status > span:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
-  .rss-snapshot-status strong { font-family: var(--font-mono); font-size: 11px; font-weight: 560; }
-  .rss-snapshot-status small, .rss-snapshot-sources { color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
-  .rss-snapshot-sources { text-align: right; }
-  .rss-filter-bar { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(150px, .55fr) auto; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 9px; background: color-mix(in oklch, var(--page-surface, var(--surface)) 86%, transparent); }
-  .rss-mobile-source-filter { display: none; }
+  .rss-filter-bar { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(220px, .7fr) auto; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 9px; background: color-mix(in oklch, var(--page-surface, var(--surface)) 86%, transparent); }
   .rss-search { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 0 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--muted); }
   .rss-search input, .rss-filter-bar select { width: 100%; min-height: 42px; border: 0; outline: 0; background: transparent; color: var(--fg); font-family: var(--font-mono); font-size: 12px; }
-  .rss-filter-bar label:not(.rss-search) { min-width: 170px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+  .rss-filter-bar label:not(.rss-search) { min-width: 220px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+  .rss-category-filter select { padding: 0 36px 0 14px; background: var(--bg); color: var(--fg); color-scheme: dark; }
+  .rss-category-filter option { background: var(--bg); color: var(--fg); padding: 8px 14px; }
   .rss-unread-toggle { padding: 0 13px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font-family: var(--font-mono); font-size: 11px; }
   .rss-unread-toggle.is-active { border-color: var(--fg); background: var(--fg); color: var(--surface); }
+  .rss-source-strip { display: flex; gap: 6px; min-width: 0; overflow-x: auto; overscroll-behavior-inline: contain; scrollbar-width: none; }
+  .rss-source-strip::-webkit-scrollbar { display: none; }
+  .rss-source-strip button { min-height: 44px; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--page-surface, var(--surface)); color: var(--muted); font-family: var(--font-mono); font-size: 10px; }
+  .rss-source-strip button:hover { border-color: var(--fg); color: var(--fg); }
+  .rss-source-strip button.active { border-color: var(--fg); background: var(--fg); color: var(--surface); }
+  .rss-source-strip span { min-width: 18px; padding: 2px 5px; border: 1px solid currentColor; border-radius: 999px; font-size: 8px; text-align: center; opacity: .72; }
   .rss-page-message { display: flex; justify-content: space-between; gap: 16px; padding: 11px 13px; border: 1px solid var(--border); background: var(--page-surface, var(--surface)); color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
   .rss-page-message button { min-height: auto; color: var(--fg); text-decoration: underline; }
-  .rss-reader-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 300px); gap: 18px; align-items: start; }
-  .rss-item-list, .rss-source-panel { border: 1px solid var(--border); background: var(--page-surface, var(--surface)); }
+  .rss-item-list { min-width: 0; border: 1px solid var(--border); background: var(--page-surface, var(--surface)); }
   .rss-item { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; border-bottom: 1px solid var(--border); transition: background-color 120ms cubic-bezier(.2, 0, 0, 1); }
   .rss-item:last-child { border-bottom: 0; }
   .rss-item:hover, .rss-item:focus-within { background: var(--fg-soft); }
@@ -1192,24 +1307,20 @@
   .rss-item-action:hover { border-color: var(--fg); background: var(--page-surface, var(--surface)); color: var(--fg); }
   .rss-item-action:active { transform: translateY(1px); }
   .rss-item-action.is-active { color: var(--fg); }
-  .rss-source-panel { position: sticky; top: 20px; }
-  .rss-source-heading { min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 15px; border-bottom: 1px solid var(--border); }
-  .rss-source-heading > div { display: flex; align-items: baseline; gap: 10px; }
-  .rss-source-heading strong { font-family: var(--font-mono); font-size: 24px; font-weight: 520; }
-  .rss-source-heading button { min-height: auto; color: var(--fg); font-family: var(--font-mono); font-size: 10px; text-decoration: underline; }
-  .rss-source-tools { display: flex; align-items: center; gap: 10px; }
+  .rss-source-list { border: 1px solid var(--border); }
   .rss-source { padding: 14px; border-bottom: 1px solid var(--border); }
   .rss-source:last-child { border-bottom: 0; }
   .rss-source.is-active { background: var(--bg); }
-  .rss-source-select { width: 100%; min-height: auto; display: flex; align-items: start; justify-content: space-between; gap: 10px; text-align: left; }
+  .rss-source-select { width: 100%; min-height: 44px; display: flex; align-items: start; justify-content: space-between; gap: 10px; text-align: left; }
   .rss-source-select > span { min-width: 0; display: grid; gap: 3px; }
   .rss-source-select strong, .rss-source-select small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rss-source-select strong { font-size: 12px; font-weight: 560; }
   .rss-source-select small { color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
   .rss-source-select em { flex: 0 0 auto; color: var(--muted); font-family: var(--font-mono); font-size: 9px; font-style: normal; }
   .rss-source-freshness { margin-top: 7px; color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
+  .rss-source-original-title { margin-top: 4px; overflow: hidden; color: var(--muted); font-family: var(--font-mono); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
   .rss-source-actions { margin-top: 11px; }
-  .rss-source-actions button { min-height: 31px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; border: 1px solid var(--border); color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
+  .rss-source-actions button { min-height: 44px; display: inline-flex; align-items: center; gap: 5px; padding: 0 11px; border: 1px solid var(--border); color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
   .rss-source-actions button:hover { border-color: var(--fg); color: var(--fg); }
   .rss-source-error { margin-top: 8px; color: var(--fg); font-size: 10px; line-height: 1.4; }
   .rss-source-empty { padding: 20px 15px; color: var(--muted); font-family: var(--font-mono); font-size: 10px; }
@@ -1223,8 +1334,16 @@
   .rss-dialog::backdrop { background: rgba(0, 0, 0, .7); backdrop-filter: blur(7px); }
   .rss-dialog header { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
   .rss-dialog header h2 { margin-top: 5px; font-family: var(--font-display); font-size: 24px; font-weight: 600; letter-spacing: -.02em; }
-  .rss-dialog header > button { width: 42px; min-height: 42px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 7px; }
+  .rss-dialog header > button { width: 44px; min-height: 44px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 7px; }
   .rss-dialog form { display: grid; gap: 10px; padding: 22px; }
+  .rss-sources-dialog { width: min(680px, calc(100vw - 32px)); overflow: hidden; }
+  .rss-sources-dialog[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+  .rss-sources-dialog-body { min-height: 0; display: grid; align-content: start; gap: 14px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 18px 20px; }
+  .rss-sources-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 4px 14px; padding: 12px 14px; border: 1px solid var(--border); background: var(--bg); }
+  .rss-sources-summary span, .rss-sources-summary small { color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
+  .rss-sources-summary strong { color: var(--fg); font-family: var(--font-mono); font-size: 11px; font-weight: 560; }
+  .rss-sources-summary small { grid-column: 1 / -1; }
+  .rss-sources-dialog > footer { justify-content: space-between; margin: 0; padding: 16px 20px max(16px, env(safe-area-inset-bottom)); background: var(--page-surface, var(--surface)); }
   .rss-subscription-dialog { overflow: hidden; }
   .rss-dialog .rss-subscription-form { max-height: calc(min(780px, calc(100dvh - 32px)) - 77px); grid-template-rows: minmax(0, 1fr) auto; gap: 0; overflow: hidden; padding: 0; }
   .rss-subscription-scroll { min-height: 0; display: grid; gap: 10px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 22px; }
@@ -1248,11 +1367,15 @@
   .rss-reddit-options label { display: grid; gap: 6px; }
   .rss-reddit-preview { overflow-wrap: anywhere; color: var(--muted); font-family: var(--font-mono); font-size: 9px; line-height: 1.5; }
   .rss-subscription-dialog header h2 { margin-top: 0; }
+  .rss-feed-identity-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .rss-form-field { min-width: 0; display: grid; align-content: start; gap: 6px; }
+  .rss-form-field > span { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .05em; }
+  .rss-form-field > span small { margin-left: 5px; color: var(--muted); font-size: 8px; letter-spacing: .02em; }
   .rss-check-row { width: 100%; box-sizing: border-box; display: flex; align-items: center; gap: 11px; margin-top: 10px; padding: 13px; border: 1px solid var(--border); }
   .rss-check-copy { min-width: 0; flex: 1; display: grid; gap: 3px; line-height: 1.4; }
   .rss-check-row strong { font-size: 12px; font-weight: 560; }
   .rss-check-row small { overflow-wrap: anywhere; color: var(--muted); font-size: 10px; }
-  .rss-dialog .rss-retention-settings { gap: 0; padding: 14px; }
+  .rss-dialog .rss-current-settings, .rss-dialog .rss-retention-settings { gap: 0; padding: 14px; }
   .rss-retention-setting { display: grid; grid-template-columns: 88px minmax(0, 1fr); align-items: start; gap: 16px; }
   .rss-retention-setting + .rss-retention-setting { margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--border); }
   .rss-retention-setting-label { min-height: 44px; display: flex; align-items: center; }
@@ -1260,6 +1383,7 @@
   .rss-retention-scope .rss-retention-setting-label { min-height: 0; }
   .rss-dialog .rss-retention-setting-label, .rss-retention-age span { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .03em; }
   .rss-retention-age { display: grid; grid-template-columns: 100px auto; align-items: center; justify-content: start; gap: 9px; }
+  .rss-current-help { margin: 10px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
   .rss-retention-options { display: grid; gap: 9px; }
   .rss-retention-options label { min-height: 44px; }
   .rss-dialog fieldset { display: grid; gap: 8px; margin: 2px 0 8px; padding: 12px; border: 1px solid var(--border); }
@@ -1292,16 +1416,12 @@
     .rss-reader { padding: 20px 16px; }
     .rss-reader-header { align-items: start; flex-direction: column; }
     .rss-filter-bar { grid-template-columns: 1fr; }
-    .rss-mobile-source-filter { display: block; }
     .rss-filter-bar label:not(.rss-search) { min-width: 0; }
-    .rss-reader-layout { grid-template-columns: 1fr; }
-    .rss-source-panel { position: static; }
   }
   @media (max-width: 560px) {
     .rss-header-actions { width: 100%; }
     .rss-header-actions button { flex: 1; }
-    .rss-snapshot-status { grid-template-columns: 32px minmax(0, 1fr); }
-    .rss-snapshot-sources { grid-column: 2; text-align: left; }
+    .rss-sources-trigger small { max-width: 21ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .rss-item { grid-template-columns: 1fr; }
     .rss-item-open { min-height: 82px; padding: 10px; }
     .rss-item-actions { justify-content: flex-end; padding: 4px; border-top: 1px solid var(--border); border-left: 0; }
@@ -1318,6 +1438,7 @@
     .rss-dialog footer button { flex: 1; }
     .rss-dialog footer .rss-danger-button:first-child { flex-basis: 100%; margin-right: 0; }
     .rss-reddit-options { grid-template-columns: 1fr; }
+    .rss-feed-identity-grid { grid-template-columns: 1fr; }
     .rss-retention-setting { grid-template-columns: 1fr; gap: 7px; }
     .rss-retention-setting-label { min-height: 0; }
   }

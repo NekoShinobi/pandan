@@ -1,6 +1,7 @@
 <script lang="ts">
   import DOMPurify from "dompurify";
   import Bookmark from "lucide-svelte/icons/bookmark";
+  import Bell from "lucide-svelte/icons/bell";
   import Check from "lucide-svelte/icons/check";
   import ChevronDown from "lucide-svelte/icons/chevron-down";
   import ChevronUp from "lucide-svelte/icons/chevron-up";
@@ -32,6 +33,7 @@
     podcastArtworkUrl,
     podcastEpisodeDownloadUrl,
     rejectPodcastRequest,
+    refreshPodcasts,
     removeFromPodcastQueue,
     removePodcastDownload,
     requestPodcastDownload,
@@ -40,6 +42,7 @@
     subscribeToPodcast,
     unsubscribeFromPodcast,
     updatePodcastSettings,
+    updatePodcastNotificationSettings,
     withdrawPodcastRequest,
     type PodcastAdminSettings,
     type PodcastEpisode,
@@ -68,6 +71,8 @@
       member_downloads_enabled: true,
       max_pending_requests_per_user: 5,
     },
+    ntfy_connected: false,
+    ntfy_topics: [],
   };
 
   let overview = $state.raw<PodcastOverview>(emptyOverview);
@@ -104,6 +109,11 @@
   let showDialog = $state<HTMLDialogElement>();
   let downloadingShow = $state(false);
   let showFeedback = $state("");
+  let notificationEnabled = $state(false);
+  let notificationTopicId = $state("");
+  let savingNotifications = $state(false);
+  let notificationFeedback = $state("");
+  let notificationError = $state("");
 
   let adminSettings = $state.raw<PodcastAdminSettings | null>(null);
   /** Instance-wide pending queue. `overview.requests` is scoped to the caller. */
@@ -125,6 +135,14 @@
   );
   const canDownload = $derived(
     isAdministrator || overview.policy.member_downloads_enabled,
+  );
+  /** Count the distinct episodes represented across every section in the Listen view. */
+  const listenCount = $derived(
+    new Set(
+      [...overview.queue, ...overview.in_progress, ...overview.recent].map(
+        (episode) => episode.id,
+      ),
+    ).size,
   );
   /**
    * Anything still moving is worth polling for; a settled page is not.
@@ -259,9 +277,17 @@
     };
   });
 
-  function reload() {
+  async function reload() {
+    if (loading || refreshing) return;
     refreshing = true;
-    reloadToken += 1;
+    pageError = "";
+    try {
+      await refreshPodcasts();
+      reloadToken += 1;
+    } catch (error) {
+      pageError = describeError(error, "Podcast feeds could not refresh.");
+      refreshing = false;
+    }
   }
 
   function describeError(error: unknown, fallback: string): string {
@@ -284,6 +310,13 @@
     const gigabytes = bytes / 1024 ** 3;
     if (gigabytes >= 1) return `${gigabytes.toFixed(1)} GB`;
     return `${Math.round(bytes / 1024 ** 2)} MB`;
+  }
+
+  function podcastNotificationTopic(podcast: PodcastSummary): string {
+    const topic = overview.ntfy_topics.find(
+      (candidate) => candidate.id === podcast.ntfy_topic_id,
+    );
+    return topic ? `${topic.label} · ${topic.topic}` : "Topic unavailable";
   }
 
   function toggleExpanded(episodeId: string) {
@@ -445,6 +478,11 @@
     openPodcast = podcast;
     openEpisodes = [];
     showFeedback = "";
+    notificationEnabled = podcast.ntfy_notifications_enabled;
+    notificationTopicId =
+      podcast.ntfy_topic_id ?? overview.ntfy_topics[0]?.id ?? "";
+    notificationFeedback = "";
+    notificationError = "";
     episodesLoading = podcast.subscribed;
     showDialog?.showModal();
   }
@@ -454,6 +492,60 @@
     openPodcast = null;
     openEpisodes = [];
     showFeedback = "";
+    notificationFeedback = "";
+    notificationError = "";
+  }
+
+  function togglePodcastNotifications() {
+    if (!overview.ntfy_connected || overview.ntfy_topics.length === 0) return;
+    notificationEnabled = !notificationEnabled;
+    if (notificationEnabled && !notificationTopicId) {
+      notificationTopicId = overview.ntfy_topics[0]?.id ?? "";
+    }
+  }
+
+  async function savePodcastNotificationSettings(event: SubmitEvent) {
+    event.preventDefault();
+    const podcast = openPodcast;
+    if (
+      !podcast ||
+      savingNotifications ||
+      (notificationEnabled && !notificationTopicId)
+    )
+      return;
+    savingNotifications = true;
+    notificationFeedback = "";
+    notificationError = "";
+    try {
+      const settings = await updatePodcastNotificationSettings(podcast.id, {
+        enabled: notificationEnabled,
+        topic_id: notificationTopicId || null,
+      });
+      const updatedPodcast = {
+        ...podcast,
+        ntfy_notifications_enabled: settings.enabled,
+        ntfy_topic_id: settings.topic_id,
+      };
+      openPodcast = updatedPodcast;
+      overview = {
+        ...overview,
+        podcasts: overview.podcasts.map((candidate) =>
+          candidate.id === updatedPodcast.id ? updatedPodcast : candidate,
+        ),
+      };
+      notificationEnabled = settings.enabled;
+      notificationTopicId = settings.topic_id ?? "";
+      notificationFeedback = settings.enabled
+        ? `New episodes will be sent to ${settings.topic_label ?? settings.topic}.`
+        : "New episode notifications are off for this show.";
+    } catch (error) {
+      notificationError = describeError(
+        error,
+        "The notification route could not be saved.",
+      );
+    } finally {
+      savingNotifications = false;
+    }
   }
 
   /**
@@ -756,46 +848,48 @@
           <Trash2 size={15} strokeWidth={1.9} />
         </button>
       {/if}
-      <!--
-        Only offered when there is something behind it: a feed that shipped no notes
-        would otherwise give every one of its episodes a control that opens nothing.
-      -->
-      {#if notes}
-        <button
-          class="ui-button ui-button--ghost ui-button--icon podcast-episode-disclosure"
-          type="button"
-          aria-expanded={expanded}
-          aria-controls={`podcast-notes-${episode.id}`}
-          aria-label={expanded
-            ? `Hide the description for ${episode.title}`
-            : `Show the description for ${episode.title}`}
-          title={expanded ? "Hide description" : "Show description"}
-          onclick={() => toggleExpanded(episode.id)}
-        >
-          {#if expanded}
-            <ChevronUp size={15} strokeWidth={1.9} />
-          {:else}
-            <ChevronDown size={15} strokeWidth={1.9} />
-          {/if}
-        </button>
-      {/if}
+      <!-- Keep the disclosure position stable and make missing feed notes explicit. -->
+      <button
+        class="ui-button ui-button--ghost ui-button--icon podcast-episode-disclosure"
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={`podcast-notes-${episode.id}`}
+        aria-label={expanded
+          ? `Hide the description for ${episode.title}`
+          : `Show the description for ${episode.title}`}
+        title={expanded ? "Hide description" : "Show description"}
+        onclick={() => toggleExpanded(episode.id)}
+      >
+        {#if expanded}
+          <ChevronUp size={15} strokeWidth={1.9} />
+        {:else}
+          <ChevronDown size={15} strokeWidth={1.9} />
+        {/if}
+      </button>
     </div>
 
-    {#if notes}
-      <div
-        class="podcast-notes-disclosure"
-        id={`podcast-notes-${episode.id}`}
-        aria-hidden={!expanded}
-        inert={!expanded}
-        {@attach motionDisclosure(expanded)}
-      >
+    <div
+      class="podcast-notes-disclosure"
+      id={`podcast-notes-${episode.id}`}
+      aria-hidden={!expanded}
+      inert={!expanded}
+      {@attach motionDisclosure(expanded)}
+    >
+      {#if notes}
         <div
           class="podcast-episode-notes"
           data-od-id={`podcast-notes-${episode.id}`}
           {@attach renderSanitizedNotes(notes)}
         ></div>
-      </div>
-    {/if}
+      {:else}
+        <p
+          class="podcast-episode-notes podcast-episode-notes--empty"
+          data-od-id={`podcast-notes-${episode.id}`}
+        >
+          No Additional Info
+        </p>
+      {/if}
+    </div>
   </li>
 {/snippet}
 
@@ -864,7 +958,7 @@
         data-od-id={`podcasts-${view}-view`}
       >
         {label}
-        {#if view === "listen"}<span>{overview.queue.length}</span>{/if}
+        {#if view === "listen"}<span>{listenCount}</span>{/if}
         {#if view === "saved"}<span>{overview.saved.length}</span>{/if}
         {#if view === "requests"}
           <span>
@@ -944,6 +1038,12 @@
                       {podcast.episode_count} episodes ·
                       {podcast.downloaded_count} downloaded
                     </small>
+                    {#if podcast.ntfy_notifications_enabled}
+                      <small class="podcast-card-alert">
+                        <Bell size={11} strokeWidth={1.9} aria-hidden="true" />
+                        Alerts · {podcastNotificationTopic(podcast)}
+                      </small>
+                    {/if}
                   </span>
                 </button>
                 <div class="podcast-card-actions">
@@ -1306,10 +1406,87 @@
         <p class="podcast-empty">
           Subscribe to this show to download and play its episodes.
         </p>
-      {:else if episodesLoading}
-        <p class="podcast-empty">Loading episodes…</p>
       {:else}
-        {#if isAdministrator}
+        <form
+          class="podcast-notification-panel"
+          onsubmit={savePodcastNotificationSettings}
+          data-od-id={`podcast-notifications-${openPodcast.id}`}
+        >
+          <div class="podcast-notification-copy">
+            <span class="podcast-kicker">[ NTFY.ROUTE ]</span>
+            <strong>New episode alerts</strong>
+            <p>
+              {#if !overview.ntfy_connected}
+                Connect ntfy from Notifications before enabling alerts.
+              {:else if overview.ntfy_topics.length === 0}
+                Add a topic in Notifications before enabling alerts.
+              {:else}
+                Pandan sends one ntfy message when a new episode is indexed.
+              {/if}
+            </p>
+          </div>
+          <div class="podcast-notification-controls">
+            <button
+              class="ui-toggle-button"
+              type="button"
+              aria-pressed={notificationEnabled}
+              aria-label={`${notificationEnabled ? "Disable" : "Enable"} new episode alerts for ${openPodcast.title}`}
+              disabled={!overview.ntfy_connected ||
+                overview.ntfy_topics.length === 0 ||
+                savingNotifications}
+              onclick={togglePodcastNotifications}
+              data-od-id={`podcast-notifications-enabled-${openPodcast.id}`}
+            >
+              <span class="ui-toggle-indicator" aria-hidden="true"></span>
+              Send to ntfy
+            </button>
+            <label for={`podcast-notification-topic-${openPodcast.id}`}>
+              Topic
+              <select
+                id={`podcast-notification-topic-${openPodcast.id}`}
+                bind:value={notificationTopicId}
+                disabled={!overview.ntfy_connected ||
+                  overview.ntfy_topics.length === 0 ||
+                  savingNotifications}
+                data-od-id={`podcast-notifications-topic-${openPodcast.id}`}
+              >
+                {#if overview.ntfy_topics.length === 0}
+                  <option value="">No topics configured</option>
+                {:else}
+                  {#each overview.ntfy_topics as topic (topic.id)}
+                    <option value={topic.id}>{topic.label} · {topic.topic}</option>
+                  {/each}
+                {/if}
+              </select>
+            </label>
+            <button
+              class="ui-button ui-button--secondary"
+              type="submit"
+              disabled={savingNotifications ||
+                !overview.ntfy_connected ||
+                overview.ntfy_topics.length === 0 ||
+                (notificationEnabled && !notificationTopicId)}
+              data-od-id={`save-podcast-notifications-${openPodcast.id}`}
+            >
+              {savingNotifications ? "Saving…" : "Save"}
+            </button>
+          </div>
+          {#if notificationFeedback}
+            <p class="podcast-feedback" role="status">
+              {notificationFeedback}
+            </p>
+          {/if}
+          {#if notificationError}
+            <p class="podcast-episode-error" role="alert">
+              <CircleAlert size={12} strokeWidth={1.9} aria-hidden="true" />
+              {notificationError}
+            </p>
+          {/if}
+        </form>
+        {#if episodesLoading}
+          <p class="podcast-empty">Loading episodes…</p>
+        {:else}
+          {#if isAdministrator}
           <!--
             Caching a whole back catalogue commits shared disk for the whole instance,
             so it stays an administrator control alongside the per-episode download.
@@ -1339,8 +1516,9 @@
               {downloadingShow ? "Queueing…" : "Download all"}
             </button>
           </div>
+          {/if}
+          {@render episodeList(openEpisodes, "This show has no episodes yet.")}
         {/if}
-        {@render episodeList(openEpisodes, "This show has no episodes yet.")}
       {/if}
     </div>
   {/if}
@@ -1577,6 +1755,9 @@
     line-height: 1.6;
     overflow-wrap: anywhere;
   }
+  .podcast-episode-notes--empty {
+    margin: 0;
+  }
   /* Feed markup arrives with its own block structure; only the outer edges are ours. */
   .podcast-episode-notes :global(> :first-child) {
     margin-top: 0;
@@ -1738,6 +1919,13 @@
     font-family: var(--font-mono);
     font-size: 10px;
   }
+  .podcast-card-text .podcast-card-alert {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 3px;
+    color: var(--fg);
+  }
   .podcast-card-actions {
     display: flex;
     align-items: center;
@@ -1868,6 +2056,7 @@
   .podcast-request-form input:focus-visible,
   .podcast-request-form textarea:focus-visible,
   .podcast-settings-form input:focus-visible,
+  .podcast-notification-controls select:focus-visible,
   .podcast-decision-note input:focus-visible,
   .podcast-card-open:focus-visible {
     outline: 2px solid var(--fg);
@@ -1916,6 +2105,69 @@
     padding: 18px;
   }
 
+  .podcast-notification-panel {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) minmax(320px, 1.4fr);
+    gap: 12px 18px;
+    margin-bottom: 14px;
+    padding: 13px 14px;
+    border: 1px solid var(--border);
+    background: color-mix(
+      in oklch,
+      var(--page-surface, var(--surface)) 72%,
+      transparent
+    );
+  }
+  .podcast-notification-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .podcast-notification-copy strong {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 550;
+  }
+  .podcast-notification-copy p {
+    max-width: 46ch;
+    margin: 0;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.55;
+  }
+  .podcast-notification-controls {
+    display: grid;
+    grid-template-columns: auto minmax(160px, 1fr) auto;
+    align-items: end;
+    gap: 8px;
+  }
+  .podcast-notification-controls label {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+  }
+  .podcast-notification-controls select {
+    width: 100%;
+    min-height: 44px;
+    padding: 0 34px 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+  .podcast-notification-panel > .podcast-feedback,
+  .podcast-notification-panel > .podcast-episode-error {
+    grid-column: 1 / -1;
+  }
+
   .podcast-show-bulk {
     display: flex;
     align-items: center;
@@ -1961,6 +2213,14 @@
     }
     .podcast-settings-form {
       grid-template-columns: 1fr;
+    }
+    .podcast-notification-panel,
+    .podcast-notification-controls {
+      grid-template-columns: 1fr;
+    }
+    .podcast-notification-controls > .ui-toggle-button,
+    .podcast-notification-controls > .ui-button {
+      width: 100%;
     }
   }
 

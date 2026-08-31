@@ -2,6 +2,7 @@
   import AudioLines from "lucide-svelte/icons/audio-lines";
   import Check from "lucide-svelte/icons/check";
   import RotateCcw from "lucide-svelte/icons/rotate-ccw";
+  import PandanColorPicker from "$lib/components/PandanColorPicker.svelte";
   import {
     AUDIO_VISUALIZATION_GROUPS,
     AUDIO_VISUALIZATION_STYLES,
@@ -157,7 +158,10 @@
         <strong>Animation</strong>
         <span>{AUDIO_VISUALIZATION_STYLES.length} styles</span>
       </div>
-      <label class="audio-visualizer-select-label" for="audio-visualization-mode">
+      <label
+        class="audio-visualizer-select-label"
+        for="audio-visualization-mode"
+      >
         <span class="sr-only">Visualization animation</span>
         <select
           id="audio-visualization-mode"
@@ -177,7 +181,8 @@
         </select>
       </label>
       <p class="audio-visualizer-style-note">
-        {currentStyle?.description ?? "Disable the ambient visualization layer."}
+        {currentStyle?.description ??
+          "Disable the ambient visualization layer."}
       </p>
     </section>
 
@@ -194,7 +199,7 @@
         {#each paletteOptions as option (option.palette)}
           {@const colors = audioVisualizationPaletteColors(
             option.palette,
-            podcastPlayer.visualizationHue,
+            podcastPlayer.visualizationColor,
           )}
           <button
             class="audio-visualizer-palette"
@@ -220,6 +225,16 @@
           </button>
         {/each}
       </div>
+    </section>
+
+    <section class="audio-visualizer-section">
+      <PandanColorPicker
+        id="audio-visualization-color"
+        label="Base color"
+        value={podcastPlayer.visualizationColor}
+        helpText="The palette derives from this exact color."
+        onchange={(value) => podcastPlayer.setVisualizationColor(value)}
+      />
     </section>
 
     <section class="audio-visualizer-section audio-visualizer-ranges">
@@ -314,30 +329,6 @@
             )}
         />
       </label>
-
-      <label for="audio-visualization-hue">
-        <span>
-          <strong>Base hue</strong>
-          <output for="audio-visualization-hue">
-            {Math.round(podcastPlayer.visualizationHue)}&deg;
-          </output>
-        </span>
-        <input
-          id="audio-visualization-hue"
-          data-od-id="audio-visualization-hue"
-          class="audio-visualizer-hue"
-          type="range"
-          min="0"
-          max="360"
-          step="1"
-          value={podcastPlayer.visualizationHue}
-          aria-valuetext={`${Math.round(podcastPlayer.visualizationHue)} degrees`}
-          oninput={(event) =>
-            podcastPlayer.setVisualizationHue(
-              Number(event.currentTarget.value),
-            )}
-        />
-      </label>
     </section>
 
     <section class="audio-visualizer-section">
@@ -390,7 +381,7 @@
     right: 0;
     bottom: calc(100% + 9px);
     z-index: 3;
-    width: min(380px, calc(100vw - 24px));
+    width: min(520px, calc(100vw - 24px));
     max-height: min(680px, calc(100dvh - 120px - env(safe-area-inset-top)));
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -634,10 +625,6 @@
     min-height: 30px;
     width: 100%;
     accent-color: var(--accent);
-  }
-
-  .audio-visualizer-hue {
-    accent-color: var(--fg);
   }
 
   .audio-visualizer-error {

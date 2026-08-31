@@ -5,12 +5,14 @@ mod announcements;
 mod jellyfin;
 mod kanban;
 mod podcasts;
+mod trading;
 mod walls;
 mod youtube_downloads;
 pub use announcements::*;
 pub use jellyfin::*;
 pub use kanban::*;
 pub use podcasts::*;
+pub use trading::*;
 pub use walls::*;
 pub use youtube_downloads::*;
 
@@ -308,6 +310,16 @@ pub struct EmbeddedPage {
 }
 
 #[derive(Debug, Clone, FromRow, PartialEq, Eq)]
+pub struct EmbeddedPageIconCache {
+    pub icon_kind: String,
+    pub page_url: String,
+    pub icon_value: Option<String>,
+    pub content_type: Option<String>,
+    pub data: Option<Vec<u8>>,
+    pub fetched_at: Option<String>,
+}
+
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
 pub struct OidcAuthorization {
     pub state: String,
     pub pkce_verifier: String,
@@ -333,9 +345,11 @@ pub struct RssSubscription {
     pub url: String,
     pub base_url: String,
     pub title: String,
+    pub custom_name: Option<String>,
     pub category: String,
     pub auto_delete_days: Option<i64>,
     pub auto_delete_mode: String,
+    pub current_entry_limit: i64,
     pub last_fetched_at: Option<String>,
     pub last_error: Option<String>,
     pub refresh_generation: i64,
@@ -366,9 +380,11 @@ pub struct RssSubscriptionDraft {
     pub url: String,
     pub base_url: String,
     pub title: String,
+    pub custom_name: Option<String>,
     pub category: String,
     pub auto_delete_days: Option<i64>,
     pub auto_delete_mode: String,
+    pub current_entry_limit: i64,
 }
 
 #[derive(Debug, Clone, FromRow, PartialEq, Eq)]
@@ -480,6 +496,7 @@ pub struct CalendarSubscription {
     pub url: String,
     pub name: String,
     pub color: String,
+    pub display_mode: String,
     pub last_fetched_at: Option<String>,
     pub last_error: Option<String>,
     pub created_at: String,
@@ -641,6 +658,20 @@ pub struct CodingProject {
     pub has_credential: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct CodingCategory {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct CodingProjectCategoryAssignment {
+    pub project_id: String,
+    pub category_id: String,
 }
 
 #[derive(Debug, Clone, FromRow, PartialEq, Eq)]

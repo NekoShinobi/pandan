@@ -32,10 +32,11 @@ use tokio::{
 use crate::network_policy::{NetworkAccessScope, NetworkPolicy};
 
 const CACHE_DURATION: Duration = Duration::from_secs(15 * 60);
-const CODING_CACHE_DURATION: Duration = Duration::from_secs(60 * 60);
 const MAX_RESPONSE_BYTES: usize = 2_000_000;
+const MAX_RSS_REDIRECTS: usize = 3;
 const MAX_FAVICON_DOCUMENT_BYTES: usize = 256 * 1024;
 const MAX_FAVICON_CANDIDATES: usize = 8;
+const MAX_YAHOO_QUOTE_PAGE_BYTES: usize = 768 * 1024;
 const MAX_YOUTUBE_CHANNEL_METADATA_BYTES: usize = 1_000_000;
 const MAX_OWNED_REPOSITORIES: usize = 500;
 const MAX_PROVIDER_PAGES: usize = 100;
@@ -66,7 +67,6 @@ struct CodingCache {
 }
 
 struct CachedCodingData {
-    stored_at: Instant,
     value: CodingResponse,
 }
 
@@ -156,6 +156,21 @@ pub struct CodingPipeline {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarketQuote {
+    pub symbol: String,
+    pub name: Option<String>,
+    pub price: String,
+    pub previous_close: Option<String>,
+    pub day_open: Option<String>,
+    pub day_high: Option<String>,
+    pub day_low: Option<String>,
+    pub change_percent: Option<String>,
+    pub currency: String,
+    pub market_state: Option<String>,
+    pub quoted_at: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct NtfyMessage {
     pub id: String,
@@ -188,6 +203,27 @@ pub struct NtfyAction {
     pub value: Option<String>,
     #[serde(default)]
     pub clear: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct NtfyPublishPayload<'a> {
+    topic: &'a str,
+    title: &'a str,
+    message: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    click: Option<&'a str>,
+    tags: [&'static str; 2],
+}
+
+/// Account-scoped outbound ntfy message prepared by a server-owned worker.
+pub(crate) struct NtfyPublishRequest<'a> {
+    pub account_id: &'a str,
+    pub base_url: &'a str,
+    pub topic: &'a str,
+    pub title: &'a str,
+    pub message: &'a str,
+    pub click: Option<&'a str>,
+    pub encrypted_token: Option<&'a str>,
 }
 
 const fn default_ntfy_priority() -> i64 {
@@ -322,16 +358,46 @@ impl WidgetIntegrationService {
         // Reddit rejects anonymous JSON listing requests from servers, while its public Atom
         // endpoints remain available. Normalize both new `.rss` sources and older saved `.json`
         // sources here so existing subscriptions recover without a data migration.
-        let response = if let Some(request_url) = reddit_rss_source(&url) {
+        let bytes = if let Some(request_url) = reddit_rss_source(&url) {
             let (client, request_url) = self
                 .client_for(request_url.as_str(), NetworkAccessScope::Rss)
                 .await?;
-            self.fetch_reddit_rss(&client, request_url).await?
+            response_bytes(self.fetch_reddit_rss(&client, request_url).await?).await?
         } else {
-            client.get(url).send().await.map_err(request_error)?
+            self.fetch_rss_bytes(client, url).await?
         };
-        let bytes = response_bytes(response).await?;
         parse_rss_feed_snapshot(&bytes)
+    }
+
+    /// Fetches an RSS response while revalidating and pinning every redirect destination.
+    async fn fetch_rss_bytes(&self, mut client: Client, mut url: Url) -> Result<Vec<u8>, String> {
+        for redirect_count in 0..=MAX_RSS_REDIRECTS {
+            let response = client
+                .get(url.clone())
+                .send()
+                .await
+                .map_err(request_error)?;
+            if !response.status().is_redirection() {
+                return response_bytes(response).await;
+            }
+            if redirect_count == MAX_RSS_REDIRECTS {
+                return Err("RSS feed redirected too many times".to_owned());
+            }
+            let location = response
+                .headers()
+                .get(header::LOCATION)
+                .ok_or_else(|| "RSS feed redirect was missing a destination".to_owned())?
+                .to_str()
+                .map_err(|_| "RSS feed redirect destination was invalid".to_owned())?;
+            let next = url
+                .join(location)
+                .map_err(|_| "RSS feed redirect destination was invalid".to_owned())?;
+            drop(response);
+            (client, url) = self
+                .client_for(next.as_str(), NetworkAccessScope::Rss)
+                .await?;
+        }
+        Err("RSS feed redirected too many times".to_owned())
     }
 
     /// Serializes anonymous Reddit feed requests and retries one throttled response after the
@@ -842,6 +908,45 @@ impl WidgetIntegrationService {
         parse_ntfy_messages(&body)
     }
 
+    /// Publishes one server-owned notification through an account's guarded ntfy connection.
+    pub(crate) async fn publish_ntfy_notification(
+        &self,
+        notification: &NtfyPublishRequest<'_>,
+    ) -> Result<(), String> {
+        let endpoint = Url::parse(notification.base_url)
+            .map_err(|_| "ntfy server URL is invalid".to_owned())?;
+        let (client, endpoint) = self
+            .client_for(endpoint.as_str(), NetworkAccessScope::Notifications)
+            .await?;
+        let token = notification
+            .encrypted_token
+            .map(|value| self.decrypt_secret(value))
+            .transpose()?;
+        let has_token = token.as_deref().is_some_and(|value| !value.is_empty());
+        let context =
+            NtfyRequestLogContext::new(notification.account_id, "publish", &endpoint, 1, has_token);
+        let payload = NtfyPublishPayload {
+            topic: notification.topic,
+            title: notification.title,
+            message: notification.message,
+            click: notification.click,
+            tags: ["studio_microphone", "new"],
+        };
+        let mut request = client.post(endpoint).json(&payload);
+        if let Some(token) = token.as_deref().filter(|value| !value.is_empty()) {
+            request = request.bearer_auth(token);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| ntfy_transport_error(error, &context))?;
+        log_ntfy_response(&response, &context);
+        response
+            .error_for_status()
+            .map_err(|error| ntfy_publish_request_error(error, has_token))?;
+        Ok(())
+    }
+
     /// Opens a long-lived ntfy JSON subscription without exposing the stored token to the browser.
     pub async fn open_ntfy_stream(
         &self,
@@ -1139,7 +1244,10 @@ impl WidgetIntegrationService {
         self.cache.write().await.remove(widget_id);
     }
 
-    /// Returns the current generation and any fresh Coding response for one account.
+    /// Returns the current generation and latest Coding response for one account.
+    ///
+    /// The background worker owns freshness. Readers keep seeing the last completed snapshot
+    /// while the next provider refresh is in flight.
     pub async fn coding_cache_snapshot(&self, account_id: &str) -> (u64, Option<CodingResponse>) {
         let cache = self.coding_cache.read().await;
         let generation = cache
@@ -1150,7 +1258,6 @@ impl WidgetIntegrationService {
         let response = cache
             .entries
             .get(account_id)
-            .filter(|cached| cached.stored_at.elapsed() < CODING_CACHE_DURATION)
             .map(|cached| cached.value.clone());
         (generation, response)
     }
@@ -1181,7 +1288,6 @@ impl WidgetIntegrationService {
             cache.entries.insert(
                 account_id.to_owned(),
                 CachedCodingData {
-                    stored_at: Instant::now(),
                     value: response.clone(),
                 },
             );
@@ -1372,15 +1478,186 @@ impl WidgetIntegrationService {
         if symbols.is_empty() {
             return Err("add at least one market symbol".to_owned());
         }
+        let items = self
+            .fetch_yahoo_stock_quotes(&symbols)
+            .await?
+            .into_iter()
+            .map(|quote| {
+                let title = quote.name.unwrap_or_else(|| quote.symbol.clone());
+                let url = format!("https://finance.yahoo.com/quote/{}", quote.symbol);
+                json!({
+                    "title": title,
+                    "symbol": quote.symbol,
+                    "value": quote.price,
+                    "change": quote.change_percent,
+                    "currency": quote.currency,
+                    "url": url
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(json!({ "items": items }))
+    }
+
+    /// Fetches recent Yahoo Finance prices through the guarded widget network policy.
+    ///
+    /// The undocumented batch endpoint is attempted first. Missing symbols fall back to their
+    /// bounded public quote pages because Yahoo may rate-limit both JSON query hosts together.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe provider error when neither the batch endpoint nor any bounded quote-page
+    /// fallback produces a usable quote.
+    pub async fn fetch_yahoo_stock_quotes(
+        &self,
+        symbols: &[String],
+    ) -> Result<Vec<MarketQuote>, String> {
+        if symbols.is_empty() {
+            return Ok(Vec::new());
+        }
+        let batch_result: Result<Vec<MarketQuote>, String> = async {
+            let (client, url) = self
+                .client_for(
+                    "https://query1.finance.yahoo.com/v7/finance/quote",
+                    NetworkAccessScope::Widgets,
+                )
+                .await?;
+            let payload: Value = client
+                .get(url)
+                .query(&[("symbols", symbols.join(","))])
+                .send()
+                .await
+                .map_err(request_error)?
+                .error_for_status()
+                .map_err(request_error)?
+                .json()
+                .await
+                .map_err(request_error)?;
+            Ok(payload["quoteResponse"]["result"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(parse_yahoo_quote)
+                .collect())
+        }
+        .await;
+        let batch_error = batch_result.as_ref().err().cloned();
+        let mut quotes = batch_result
+            .unwrap_or_default()
+            .into_iter()
+            .map(|quote| (quote.symbol.clone(), quote))
+            .collect::<HashMap<_, _>>();
+        let missing = symbols
+            .iter()
+            .map(|symbol| symbol.to_ascii_uppercase())
+            .filter(|symbol| !quotes.contains_key(symbol))
+            .collect::<Vec<_>>();
+        let requests = missing.into_iter().map(|symbol| {
+            let service = self.clone();
+            async move { service.fetch_yahoo_quote_page(&symbol).await }
+        });
+        let results = stream::iter(requests)
+            .buffer_unordered(2)
+            .collect::<Vec<_>>()
+            .await;
+        let first_error = results
+            .iter()
+            .find_map(|result| result.as_ref().err().cloned())
+            .or(batch_error);
+        quotes.extend(
+            results
+                .into_iter()
+                .filter_map(Result::ok)
+                .map(|quote| (quote.symbol.clone(), quote)),
+        );
+        let ordered = symbols
+            .iter()
+            .filter_map(|symbol| quotes.remove(&symbol.to_ascii_uppercase()))
+            .collect::<Vec<_>>();
+        if ordered.is_empty() {
+            Err(first_error.unwrap_or_else(|| "Yahoo Finance returned no quotes".to_owned()))
+        } else {
+            Ok(ordered)
+        }
+    }
+
+    async fn fetch_yahoo_quote_page(&self, symbol: &str) -> Result<MarketQuote, String> {
+        let mut endpoint = Url::parse("https://finance.yahoo.com/quote/")
+            .map_err(|_| "Yahoo Finance endpoint is invalid".to_owned())?;
+        endpoint
+            .path_segments_mut()
+            .map_err(|()| "Yahoo Finance endpoint is invalid".to_owned())?
+            .push(symbol)
+            .push("");
+        endpoint
+            .query_pairs_mut()
+            .append_pair("lang", "en-US")
+            .append_pair("region", "US");
+        let (client, url) = self
+            .client_for(endpoint.as_str(), NetworkAccessScope::Widgets)
+            .await?;
+        let response = client
+            .get(url)
+            .header(
+                header::ACCEPT,
+                "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
+            )
+            .send()
+            .await
+            .map_err(request_error)?;
+        let document = response_prefix_text(response, MAX_YAHOO_QUOTE_PAGE_BYTES).await?;
+        parse_yahoo_quote_page(symbol, &document)
+            .ok_or_else(|| format!("Yahoo Finance returned no quote for {symbol}"))
+    }
+
+    /// Fetches the latest Finnhub REST quote for each symbol using an encrypted account key.
+    ///
+    /// Trading exposes these snapshots as a browser-scoped SSE feed. The provider requests stop
+    /// when that page connection closes; there is no background market-data worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe provider or credential error when no requested symbol produces a usable
+    /// quote.
+    pub async fn fetch_finnhub_stock_quotes(
+        &self,
+        symbols: &[String],
+        encrypted_api_key: &str,
+    ) -> Result<Vec<MarketQuote>, String> {
+        if symbols.is_empty() {
+            return Ok(Vec::new());
+        }
+        let token: Arc<str> = Arc::from(self.decrypt_secret(encrypted_api_key)?);
+        let requests = symbols.iter().cloned().map(|symbol| {
+            let service = self.clone();
+            let token = Arc::clone(&token);
+            async move { service.fetch_finnhub_quote(&symbol, &token).await }
+        });
+        let results = join_all(requests).await;
+        let first_error = results
+            .iter()
+            .find_map(|result| result.as_ref().err().cloned());
+        let quotes = results
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        if quotes.is_empty() {
+            Err(first_error.unwrap_or_else(|| "Finnhub returned no quotes".to_owned()))
+        } else {
+            Ok(quotes)
+        }
+    }
+
+    async fn fetch_finnhub_quote(&self, symbol: &str, token: &str) -> Result<MarketQuote, String> {
         let (client, url) = self
             .client_for(
-                "https://query1.finance.yahoo.com/v7/finance/quote",
+                "https://finnhub.io/api/v1/quote",
                 NetworkAccessScope::Widgets,
             )
             .await?;
         let payload: Value = client
             .get(url)
-            .query(&[("symbols", symbols.join(","))])
+            .header("X-Finnhub-Token", token)
+            .query(&[("symbol", symbol)])
             .send()
             .await
             .map_err(request_error)?
@@ -1389,23 +1666,8 @@ impl WidgetIntegrationService {
             .json()
             .await
             .map_err(request_error)?;
-        let items = payload["quoteResponse"]["result"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|quote| {
-                json!({
-                    "title": quote["shortName"].as_str().unwrap_or_else(|| quote["symbol"].as_str().unwrap_or("Symbol")),
-                    "symbol": quote["symbol"],
-                    "value": quote["regularMarketPrice"],
-                    "change": quote["regularMarketChangePercent"],
-                    "currency": quote["currency"],
-                    "url": format!("https://finance.yahoo.com/quote/{}", quote["symbol"].as_str().unwrap_or(""))
-                })
-            })
-            .collect::<Vec<_>>();
-        Ok(json!({ "items": items }))
+        parse_finnhub_quote(symbol, &payload)
+            .ok_or_else(|| format!("Finnhub returned no quote for {symbol}"))
     }
 
     async fn fetch_releases(&self, config: &Value, secret: Option<&str>) -> Result<Value, String> {
@@ -3244,6 +3506,18 @@ fn ntfy_request_error(error: reqwest::Error, has_token: bool) -> String {
     )
 }
 
+fn ntfy_publish_request_error(error: reqwest::Error, has_token: bool) -> String {
+    let status = error.status();
+    if status == Some(StatusCode::FORBIDDEN) {
+        return if has_token {
+            "ntfy access token cannot publish to the selected topic".to_owned()
+        } else {
+            "the selected ntfy topic requires an access token for publishing".to_owned()
+        };
+    }
+    ntfy_request_error(error, has_token)
+}
+
 fn ntfy_status_error(status: StatusCode, has_token: bool) -> String {
     match status {
         StatusCode::UNAUTHORIZED if has_token => "ntfy access token was rejected".to_owned(),
@@ -3345,6 +3619,173 @@ fn value_string(value: &Value, key: &str) -> String {
     value[key].as_str().unwrap_or_default().to_owned()
 }
 
+fn parse_yahoo_quote(quote: &Value) -> Option<MarketQuote> {
+    let symbol = quote["symbol"].as_str()?.trim().to_ascii_uppercase();
+    let price = decimal_string(&quote["regularMarketPrice"])?;
+    Some(MarketQuote {
+        symbol: symbol.clone(),
+        name: clean_market_name(
+            quote["shortName"]
+                .as_str()
+                .or_else(|| quote["longName"].as_str()),
+        ),
+        price,
+        previous_close: decimal_string(&quote["regularMarketPreviousClose"]),
+        day_open: decimal_string(&quote["regularMarketOpen"]),
+        day_high: decimal_string(&quote["regularMarketDayHigh"]),
+        day_low: decimal_string(&quote["regularMarketDayLow"]),
+        change_percent: decimal_string(&quote["regularMarketChangePercent"]),
+        currency: quote["currency"].as_str().unwrap_or("USD").to_owned(),
+        market_state: quote["marketState"].as_str().map(str::to_owned),
+        quoted_at: epoch_rfc3339(&quote["regularMarketTime"])
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+    })
+}
+
+fn parse_yahoo_quote_page(symbol: &str, document: &str) -> Option<MarketQuote> {
+    let price = yahoo_html_text_value(document, "data-testid=\"qsp-price\"")
+        .and_then(normalize_yahoo_decimal)?;
+    let previous_close = yahoo_html_field_value(document, "regularMarketPreviousClose")
+        .and_then(|value| normalize_yahoo_decimal(&value));
+    let day_open = yahoo_html_field_value(document, "regularMarketOpen")
+        .and_then(|value| normalize_yahoo_decimal(&value));
+    let (day_low, day_high) = yahoo_html_field_value(document, "regularMarketDayRange")
+        .and_then(|range| {
+            let (low, high) = range.split_once(" - ")?;
+            Some((normalize_yahoo_decimal(low), normalize_yahoo_decimal(high)))
+        })
+        .unwrap_or_default();
+    Some(MarketQuote {
+        symbol: symbol.to_ascii_uppercase(),
+        name: yahoo_html_quote_name(document, symbol),
+        price,
+        previous_close,
+        day_open,
+        day_high,
+        day_low,
+        change_percent: yahoo_html_text_value(document, "data-testid=\"qsp-price-change-percent\"")
+            .and_then(normalize_yahoo_decimal),
+        // The semantic page markup does not expose a dependable currency attribute. Trading
+        // retains the last batch-provided currency instead of guessing one.
+        currency: String::new(),
+        market_state: None,
+        quoted_at: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+fn yahoo_html_text_value<'a>(document: &'a str, marker: &str) -> Option<&'a str> {
+    let marker_start = document.find(marker)?;
+    let value_start = marker_start + document[marker_start..].find('>')? + 1;
+    let value_end = value_start + document[value_start..].find('<')?;
+    Some(document[value_start..value_end].trim())
+}
+
+fn yahoo_html_field_value(document: &str, field: &str) -> Option<String> {
+    let marker = format!("data-field=\"{field}\"");
+    let marker_start = document.find(&marker)?;
+    let tag_start = document[..marker_start].rfind('<')?;
+    let tag_end = marker_start + document[marker_start..].find('>')?;
+    html_attribute_case_insensitive(&document[tag_start..=tag_end], "data-value").map(str::to_owned)
+}
+
+fn yahoo_html_quote_name(document: &str, symbol: &str) -> Option<String> {
+    let mut offset = 0;
+    while let Some(relative_start) = document[offset..].find("<h1") {
+        let start = offset + relative_start;
+        let Some(relative_tag_end) = document[start..].find('>') else {
+            break;
+        };
+        let tag_end = start + relative_tag_end;
+        let tag = &document[start..=tag_end];
+        if !tag.to_ascii_lowercase().contains("heading") {
+            offset = tag_end + 1;
+            continue;
+        }
+        let value_start = tag_end + 1;
+        let value_end = value_start + document[value_start..].find("</h1>")?;
+        let decoded = quick_xml::escape::unescape(document[value_start..value_end].trim()).ok()?;
+        let symbol_suffix = format!(" ({})", symbol.to_ascii_uppercase());
+        let name = decoded
+            .strip_suffix(&symbol_suffix)
+            .unwrap_or(decoded.as_ref())
+            .trim();
+        return clean_market_name(Some(name));
+    }
+    None
+}
+
+fn normalize_yahoo_decimal(value: &str) -> Option<String> {
+    let mut value = value.trim();
+    if value.starts_with('(') && value.ends_with(')') {
+        value = &value[1..value.len() - 1];
+    }
+    value = value.strip_suffix('%').unwrap_or(value).trim();
+    if value.is_empty() || value.len() > 64 {
+        return None;
+    }
+    let normalized = value.replace(',', "");
+    let mut saw_digit = false;
+    let mut saw_decimal = false;
+    for (index, character) in normalized.chars().enumerate() {
+        match character {
+            '+' | '-' if index == 0 => {}
+            '.' if !saw_decimal => saw_decimal = true,
+            '0'..='9' => saw_digit = true,
+            _ => return None,
+        }
+    }
+    saw_digit.then_some(normalized)
+}
+
+fn parse_finnhub_quote(symbol: &str, quote: &Value) -> Option<MarketQuote> {
+    let price = decimal_string(&quote["c"])?;
+    if decimal_is_zero(&price) {
+        return None;
+    }
+    Some(MarketQuote {
+        symbol: symbol.to_ascii_uppercase(),
+        name: None,
+        price,
+        previous_close: decimal_string(&quote["pc"]),
+        day_open: decimal_string(&quote["o"]),
+        day_high: decimal_string(&quote["h"]),
+        day_low: decimal_string(&quote["l"]),
+        change_percent: decimal_string(&quote["dp"]),
+        // Finnhub's quote response does not identify the instrument currency. Keep this empty so
+        // Trading can retain the last Yahoo-provided currency instead of inventing one.
+        currency: String::new(),
+        market_state: None,
+        quoted_at: epoch_rfc3339(&quote["t"]).unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+    })
+}
+
+fn decimal_string(value: &Value) -> Option<String> {
+    if let Some(number) = value.as_number() {
+        return Some(number.to_string());
+    }
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn decimal_is_zero(value: &str) -> bool {
+    value
+        .chars()
+        .all(|character| matches!(character, '0' | '.' | '-' | '+'))
+}
+
+fn clean_market_name(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    (!value.is_empty() && value.chars().count() <= 120 && !value.chars().any(char::is_control))
+        .then(|| value.to_owned())
+}
+
+fn epoch_rfc3339(value: &Value) -> Option<String> {
+    chrono::DateTime::from_timestamp(value.as_i64()?, 0).map(|value| value.to_rfc3339())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3366,7 +3807,99 @@ mod tests {
             credentials: Vec::new(),
             secret_storage_enabled: false,
             provider_errors: Vec::new(),
+            cached_at: None,
         }
+    }
+
+    #[test]
+    fn yahoo_quote_parser_preserves_provider_decimal_values() {
+        let quote = json!({
+            "symbol": "aapl",
+            "shortName": "Apple Inc.",
+            "regularMarketPrice": 229.31,
+            "regularMarketPreviousClose": 227.76,
+            "regularMarketOpen": 228.12,
+            "regularMarketDayHigh": 230.45,
+            "regularMarketDayLow": 227.9,
+            "regularMarketChangePercent": 0.68054,
+            "currency": "USD",
+            "marketState": "REGULAR",
+            "regularMarketTime": 1_725_000_000
+        });
+
+        let parsed = parse_yahoo_quote(&quote).expect("Yahoo quote parses");
+
+        assert_eq!(parsed.symbol, "AAPL");
+        assert_eq!(parsed.name.as_deref(), Some("Apple Inc."));
+        assert_eq!(parsed.price, "229.31");
+        assert_eq!(parsed.previous_close.as_deref(), Some("227.76"));
+        assert_eq!(parsed.change_percent.as_deref(), Some("0.68054"));
+        assert_eq!(parsed.currency, "USD");
+    }
+
+    #[test]
+    fn yahoo_quote_page_parser_recovers_when_query_endpoints_are_rate_limited() {
+        let document = r#"
+            <h1 class="heading yf-test">Acme &amp; Co. (ACME)</h1>
+            <span data-testid="qsp-price">1,234.50 </span>
+            <span data-testid="qsp-price-change-percent">(-1.27%) </span>
+            <fin-streamer data-value="1,250.00" data-field="regularMarketPreviousClose">
+                1,250.00
+            </fin-streamer>
+            <fin-streamer data-field="regularMarketOpen" data-value="1,245.25">
+                1,245.25
+            </fin-streamer>
+            <fin-streamer data-value="1,220.10 - 1,260.75" data-field="regularMarketDayRange">
+                1,220.10 - 1,260.75
+            </fin-streamer>
+        "#;
+
+        let parsed = parse_yahoo_quote_page("acme", document).expect("quote page parses");
+
+        assert_eq!(parsed.symbol, "ACME");
+        assert_eq!(parsed.name.as_deref(), Some("Acme & Co."));
+        assert_eq!(parsed.price, "1234.50");
+        assert_eq!(parsed.previous_close.as_deref(), Some("1250.00"));
+        assert_eq!(parsed.day_open.as_deref(), Some("1245.25"));
+        assert_eq!(parsed.day_low.as_deref(), Some("1220.10"));
+        assert_eq!(parsed.day_high.as_deref(), Some("1260.75"));
+        assert_eq!(parsed.change_percent.as_deref(), Some("-1.27"));
+        assert!(parsed.currency.is_empty());
+    }
+
+    #[test]
+    fn yahoo_quote_page_parser_rejects_missing_or_non_decimal_prices() {
+        assert!(parse_yahoo_quote_page("AAPL", "<h1>Apple Inc. (AAPL)</h1>").is_none());
+        assert!(
+            parse_yahoo_quote_page(
+                "AAPL",
+                r#"<span data-testid="qsp-price">not available</span>"#,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn finnhub_quote_parser_rejects_missing_prices_and_does_not_invent_currency() {
+        assert!(parse_finnhub_quote("AAPL", &json!({ "c": 0 })).is_none());
+
+        let parsed = parse_finnhub_quote(
+            "AAPL",
+            &json!({
+                "c": 229.31,
+                "pc": 227.76,
+                "o": 228.12,
+                "h": 230.45,
+                "l": 227.9,
+                "dp": 0.68054,
+                "t": 1_725_000_000
+            }),
+        )
+        .expect("Finnhub quote parses");
+
+        assert_eq!(parsed.price, "229.31");
+        assert!(parsed.currency.is_empty());
+        assert!(parsed.market_state.is_none());
     }
 
     #[test]
@@ -3401,8 +3934,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn coding_cache_is_account_scoped_and_expires_after_one_hour() {
-        assert_eq!(CODING_CACHE_DURATION, Duration::from_secs(60 * 60));
+    async fn coding_cache_is_account_scoped_and_keeps_the_last_completed_snapshot() {
         let service = test_service().await;
         let response = empty_coding_response();
         let (generation, cached) = service.coding_cache_snapshot("account-a").await;
@@ -3413,18 +3945,6 @@ mod tests {
             .await;
         assert!(service.coding_cache_snapshot("account-a").await.1.is_some());
         assert!(service.coding_cache_snapshot("account-b").await.1.is_none());
-
-        service
-            .coding_cache
-            .write()
-            .await
-            .entries
-            .get_mut("account-a")
-            .expect("cached response exists")
-            .stored_at = Instant::now()
-            .checked_sub(CODING_CACHE_DURATION)
-            .expect("cache duration fits in Instant");
-        assert!(service.coding_cache_snapshot("account-a").await.1.is_none());
     }
 
     #[tokio::test]
@@ -3646,6 +4166,84 @@ mod tests {
             normalized.as_str(),
             "https://www.reddit.com/r/selfhosted/top.rss?limit=25&t=week"
         );
+    }
+
+    #[tokio::test]
+    async fn rss_fetch_revalidates_and_follows_relative_redirects() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+
+        let pool = db::connect("sqlite::memory:")
+            .await
+            .expect("test database connects");
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("test server binds");
+        let address = listener.local_addr().expect("test address resolves");
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO network_access_rules (\
+             id, action, scheme, host, port, integration, created_at, updated_at\
+             ) VALUES ('allow-rss-redirect-test', 'allow', 'http', '127.0.0.1', ?, 'rss', ?, ?)",
+        )
+        .bind(i64::from(address.port()))
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("RSS test allow rule inserts");
+
+        let server = tokio::spawn(async move {
+            for redirected in [false, true] {
+                let (mut socket, _) = listener.accept().await.expect("request accepts");
+                let mut request = [0_u8; 2048];
+                let request_len = socket.read(&mut request).await.expect("request reads");
+                let request = String::from_utf8_lossy(&request[..request_len]);
+                if redirected {
+                    assert!(request.starts_with("GET /rss/ HTTP/1.1"));
+                    let body = r#"<?xml version="1.0" encoding="UTF-8"?>
+                      <rss version="2.0"><channel><title>Redirected feed</title>
+                      <link>http://example.test/</link><description>Example</description>
+                      <item><guid>entry-1</guid><title>Redirected entry</title>
+                      <link>http://example.test/entry</link>
+                      <pubDate>Mon, 31 Aug 2026 08:00:00 GMT</pubDate></item>
+                      </channel></rss>"#;
+                    let headers = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/rss+xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    socket
+                        .write_all(headers.as_bytes())
+                        .await
+                        .expect("response headers write");
+                    socket
+                        .write_all(body.as_bytes())
+                        .await
+                        .expect("response body writes");
+                } else {
+                    assert!(request.starts_with("GET /rss HTTP/1.1"));
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 301 Moved Permanently\r\nLocation: /rss/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .expect("redirect writes");
+                }
+            }
+        });
+
+        let snapshot = WidgetIntegrationService::for_tests(pool)
+            .expect("service initializes")
+            .fetch_rss_feed(&format!("http://{address}/rss"))
+            .await
+            .expect("redirected RSS parses");
+        server.await.expect("test server completes");
+
+        assert_eq!(snapshot.title, "Redirected feed");
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(snapshot.items[0].title, "Redirected entry");
     }
 
     #[test]

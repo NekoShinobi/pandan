@@ -8770,6 +8770,19 @@ body
   background-repeat: no-repeat;
 }
 
+.welcome-overlay:not(.is-animation-ready) {
+  background-image: none;
+}
+
+.welcome-overlay:not(.is-animation-ready) .welcome-copy,
+.welcome-overlay:not(.is-animation-ready) .welcome-loading-track i,
+.welcome-overlay:not(.is-animation-ready) .welcome-boot-log samp,
+.welcome-overlay:not(.is-animation-ready)
+  .welcome-boot-log
+  samp:last-child::after {
+  animation-play-state: paused;
+}
+
 .welcome-overlay.is-leaving {
   opacity: 0;
   transform: translateY(-100%);
@@ -12169,39 +12182,16 @@ body
   background: var(--muted);
 }
 
-.is-accent {
-  background: var(--accent) !important;
-}
-
-.is-blue {
-  background: oklch(62% 0.14 245) !important;
-}
-
-.is-amber {
-  background: oklch(72% 0.14 78) !important;
-}
-
-.is-red {
-  background: var(--danger) !important;
-}
-
-.is-violet {
-  background: oklch(58% 0.12 315) !important;
-}
-
-.is-gray {
-  background: var(--muted) !important;
-}
-
 .kanban-new-label {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 92px 36px;
+  grid-template-columns: minmax(0, 1fr) 44px;
   align-items: stretch;
 }
 
-.kanban-new-label select {
-  width: 92px;
+.kanban-new-label .kanban-icon-button {
+  width: 44px;
+  height: 44px;
 }
 
 .kanban-upload {
@@ -13085,6 +13075,7 @@ body
   .embedded-pages-dialog-body,
   .settings-category-rail,
   .settings-section-body,
+  .day-events,
   .calendar-dialog > form,
   .youtube-dialog > form,
   .sidebar-utility-form,
@@ -13096,6 +13087,7 @@ body
   .ntfy-topic-list,
   .ntfy-feed,
   .rss-subscription-scroll,
+  .rss-sources-dialog-body,
   .dashboard-main,
   .tasks-focus-panel,
   .focus-settings-panel,
@@ -13103,6 +13095,7 @@ body
   .integration-widget.is-rail .stream-grid,
   .rss-widget-source-picker,
   .downloads-media-body,
+  .coding-category-dialog-body,
   .ui-dialog,
   .kanban-card-dialog {
     overflow-y: scroll;

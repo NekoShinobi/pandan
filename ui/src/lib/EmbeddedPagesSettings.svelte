@@ -335,7 +335,8 @@
         >
           <div class="embedded-page-settings-icon" aria-hidden="true">
             <EmbeddedPageIcon
-              pageUrl={page.url}
+              pageId={page.id}
+              updatedAt={page.updated_at}
               iconKind={page.icon_kind}
               iconValue={page.icon_value}
               size={18}
@@ -634,15 +635,16 @@
             data-od-id="embedded-page-custom-icon-url"
           />
           <p class="field-note">
-            Use a direct credential-free HTTPS image URL.
+            Use a direct credential-free HTTPS image URL. Pandan fetches and
+            stores a local copy.
           </p>
         {:else}
           <p class="field-note">
-            Pandan uses the conventional /favicon.ico at the page's origin.
+            Pandan discovers the site's favicon and stores a local copy.
           </p>
         {/if}
         <p class="field-note">
-          If a remote image cannot load, Pandan shows the default custom-page
+          If a remote image cannot be cached, Pandan shows the default custom-page
           icon.
         </p>
 

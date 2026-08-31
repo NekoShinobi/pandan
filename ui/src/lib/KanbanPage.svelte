@@ -24,7 +24,10 @@
   import X from "lucide-svelte/icons/x";
   import { onDestroy, onMount, untrack } from "svelte";
   import { MediaQuery } from "svelte/reactivity";
+  import PandanColorPicker from "$lib/components/PandanColorPicker.svelte";
   import PandanDatePicker from "$lib/components/PandanDatePicker.svelte";
+  import type { HexColor } from "$lib/color";
+  import { kanbanLabelColorCss } from "$lib/kanbanLabelColor";
   import { createViewSwap } from "$lib/viewSwap.svelte";
   import KanbanCardSortable from "$lib/KanbanCardSortable.svelte";
   import TypedHeading from "$lib/TypedHeading.svelte";
@@ -68,7 +71,6 @@
     type KanbanCard,
     type KanbanColumn,
     type KanbanDirectoryUser,
-    type KanbanLabelColor,
     type KanbanOverview,
     type KanbanRole,
     type KanbanSection,
@@ -110,14 +112,6 @@
         "member:remove",
       ],
     },
-  ];
-  const labelColors: KanbanLabelColor[] = [
-    "accent",
-    "blue",
-    "amber",
-    "red",
-    "violet",
-    "gray",
   ];
   const configurableRoles: Array<"member" | "guest"> = ["member", "guest"];
   const kanbanSensors = [
@@ -186,7 +180,10 @@
   let addCardColumnId = $state("");
   let addCardTitle = $state("");
   let openColumnMenuId = $state("");
-  let newColumnName = $state("");
+  let columnDialogMode = $state<"create" | "edit">("create");
+  let editingColumnId = $state("");
+  let originalColumnName = $state("");
+  let columnName = $state("");
   /** Deleting a column is confirmed by pressing its control a second time. */
   let pendingColumnDelete = $state("");
   /**
@@ -226,7 +223,8 @@
   let checklistDraft = $state("");
   let checklistItemDraft = $state<Record<string, string>>({});
   let labelName = $state("");
-  let labelColor = $state<KanbanLabelColor>("accent");
+  let labelColor = $state<HexColor>("#2DD4BF");
+  let labelColorValid = $state(true);
   let memberQuery = $state("");
   let inviteRole = $state<KanbanRole>("member");
   let cardDragSnapshot: Record<string, KanbanCard[]> | null = null;
@@ -459,7 +457,7 @@
   }
 
   async function openBoard(id: string) {
-    closeAddColumn();
+    closeColumnDialog();
     pendingColumnDelete = "";
     let opened: KanbanBoard | null = null;
     const pending = run(async () => {
@@ -496,17 +494,37 @@
   });
 
   function openAddColumn() {
-    newColumnName = "";
+    columnDialogMode = "create";
+    editingColumnId = "";
+    originalColumnName = "";
+    columnName = "";
     columnDialog?.showModal();
-    columnNameInput?.focus();
+    queueMicrotask(() => columnNameInput?.focus());
   }
 
-  function closeAddColumn() {
+  function openEditColumn(column: KanbanColumn) {
+    if (!canEditColumn) return;
+    closeColumnMenu();
+    columnDialogMode = "edit";
+    editingColumnId = column.id;
+    originalColumnName = column.name;
+    columnName = column.name;
+    columnDialog?.showModal();
+    queueMicrotask(() => {
+      columnNameInput?.focus();
+      columnNameInput?.select();
+    });
+  }
+
+  function closeColumnDialog() {
     columnDialog?.close();
   }
 
-  function resetAddColumn() {
-    newColumnName = "";
+  function resetColumnDialog() {
+    columnDialogMode = "create";
+    editingColumnId = "";
+    originalColumnName = "";
+    columnName = "";
   }
 
   /**
@@ -525,10 +543,18 @@
 
   async function submitColumn(event: SubmitEvent) {
     event.preventDefault();
-    if (!board || !newColumnName.trim()) return;
+    const name = columnName.trim();
+    if (!board || !name) return;
+    if (columnDialogMode === "edit" && !editingColumnId) return;
     await run(async () => {
-      const created = await createKanbanColumn(board!.id, newColumnName);
-      closeAddColumn();
+      if (columnDialogMode === "edit") {
+        await updateKanbanColumn(editingColumnId, { name });
+        closeColumnDialog();
+        await refreshBoard();
+        return;
+      }
+      const created = await createKanbanColumn(board!.id, name);
+      closeColumnDialog();
       await refreshBoard();
       markEntering("", created.id);
     });
@@ -992,7 +1018,7 @@
   }
 
   async function addLabel() {
-    if (!board || !labelName.trim()) return;
+    if (!board || !labelName.trim() || !labelColorValid) return;
     await run(async () => {
       const label = await createKanbanLabel(board!.id, labelName, labelColor);
       labelName = "";
@@ -1284,7 +1310,7 @@
                     class="ui-button ui-button--secondary"
                     type="button"
                     aria-haspopup="dialog"
-                    aria-controls="kanban-add-column-dialog"
+                    aria-controls="kanban-column-dialog"
                     onclick={openAddColumn}
                     data-od-id="show-add-kanban-column"
                     ><Plus size={15} />Add Column</button
@@ -1383,7 +1409,7 @@
                             >{visibleCards(column.cards).length}</span
                           ></button
                         >
-                        {#if canCreateCard || canDeleteColumn}
+                        {#if canCreateCard || canEditColumn || canDeleteColumn}
                           <div class="kanban-column-actions kanban-column-menu">
                             <button
                               class="kanban-icon-button kanban-column-menu-trigger"
@@ -1408,15 +1434,27 @@
                                     ><Plus size={15} />Add Card</button
                                   >
                                 {/if}
+                                {#if canEditColumn}
+                                  <button
+                                    type="button"
+                                    aria-haspopup="dialog"
+                                    aria-controls="kanban-column-dialog"
+                                    onclick={() => openEditColumn(column)}
+                                    data-od-id={`edit-kanban-column-${column.id}`}
+                                    ><Pencil size={15} />Edit Column</button
+                                  >
+                                {/if}
                                 {#if canDeleteColumn}
                                   <button
                                     class="kanban-column-menu-delete"
-                                    class:confirm={pendingColumnDelete === column.id}
+                                    class:confirm={pendingColumnDelete ===
+                                      column.id}
                                     type="button"
                                     disabled={busy}
                                     onclick={() => void removeColumn(column)}
-                                    ><Trash2 size={15} />{pendingColumnDelete ===
-                                    column.id
+                                    ><Trash2
+                                      size={15}
+                                    />{pendingColumnDelete === column.id
                                       ? "Confirm Delete"
                                       : "Delete Column"}</button
                                   >
@@ -1721,50 +1759,71 @@
 
 <dialog
   class="ui-dialog kanban-dialog kanban-board-workflow-dialog"
-  id="kanban-add-column-dialog"
+  id="kanban-column-dialog"
   bind:this={columnDialog}
-  aria-labelledby="kanban-add-column-title"
-  aria-describedby="kanban-add-column-description"
-  onclose={resetAddColumn}
+  aria-labelledby="kanban-column-dialog-title"
+  aria-describedby="kanban-column-dialog-description"
+  onclose={resetColumnDialog}
   onclick={(event) => {
-    if (event.target === event.currentTarget) closeAddColumn();
+    if (event.target === event.currentTarget) closeColumnDialog();
   }}
-  data-od-id="add-kanban-column"
+  data-od-id={columnDialogMode === "edit"
+    ? "edit-kanban-column"
+    : "add-kanban-column"}
 >
   <form method="dialog" class="dialog-close-row">
-    <button class="kanban-icon-button" aria-label="Close Add Column"
-      ><X size={18} /></button
+    <button
+      class="kanban-icon-button"
+      aria-label={columnDialogMode === "edit"
+        ? "Close Edit Column"
+        : "Close Add Column"}><X size={18} /></button
     >
   </form>
   <form class="kanban-dialog-form" onsubmit={submitColumn}>
-    <span class="kanban-kicker">BOARD STRUCTURE</span>
-    <h3 id="kanban-add-column-title">Create a new column</h3>
-    <p id="kanban-add-column-description">
-      Add the next stage to the end of this board.
+    <span class="kanban-kicker"
+      >{columnDialogMode === "edit"
+        ? "COLUMN SETTINGS"
+        : "BOARD STRUCTURE"}</span
+    >
+    <h3 id="kanban-column-dialog-title">
+      {columnDialogMode === "edit" ? "Rename column" : "Create a new column"}
+    </h3>
+    <p id="kanban-column-dialog-description">
+      {columnDialogMode === "edit"
+        ? "Update this stage name without moving its cards."
+        : "Add the next stage to the end of this board."}
     </p>
-    <label for="kanban-column-name">
+    <label for="kanban-column-dialog-name">
       Column name
       <input
-        id="kanban-column-name"
+        id="kanban-column-dialog-name"
         required
         maxlength="80"
         placeholder="e.g. Review"
         bind:this={columnNameInput}
-        bind:value={newColumnName}
+        bind:value={columnName}
       />
     </label>
     <div class="kanban-add-column-actions">
       <button
         class="ui-button ui-button--ghost"
         type="button"
-        onclick={closeAddColumn}
-        data-od-id="cancel-add-kanban-column">Cancel</button
+        onclick={closeColumnDialog}
+        data-od-id={columnDialogMode === "edit"
+          ? "cancel-edit-kanban-column"
+          : "cancel-add-kanban-column"}>Cancel</button
       >
       <button
         class="ui-button ui-button--primary"
         type="submit"
-        disabled={busy || !newColumnName.trim()}
-        data-od-id="create-kanban-column">Create Column</button
+        disabled={busy ||
+          !columnName.trim() ||
+          (columnDialogMode === "edit" &&
+            columnName.trim() === originalColumnName)}
+        data-od-id={columnDialogMode === "edit"
+          ? "save-kanban-column-name"
+          : "create-kanban-column"}
+        >{columnDialogMode === "edit" ? "Save Name" : "Create Column"}</button
       >
     </div>
   </form>
@@ -2167,25 +2226,33 @@
                 onclick={() => toggleCardLabel(label.id)}
                 ><span class="ui-toggle-indicator" aria-hidden="true"
                   >{#if selected}<Check size={13} />{/if}</span
-                ><i class={`kanban-label-dot is-${label.color}`}></i><span
-                  >{label.name}</span
-                ></button
-              >{/each}{#if canEditCard}<div class="kanban-new-label">
+                ><i
+                  class="kanban-label-dot"
+                  style:background-color={kanbanLabelColorCss(label.color)}
+                ></i><span>{label.name}</span></button
+              >{/each}{#if canEditCard}
+              <div class="kanban-new-label">
                 <input
                   placeholder="New label"
                   maxlength="40"
                   bind:value={labelName}
-                /><select aria-label="Label color" bind:value={labelColor}
-                  >{#each labelColors as color (color)}<option value={color}
-                      >{color}</option
-                    >{/each}</select
-                ><button
+                />
+                <button
                   class="kanban-icon-button"
                   type="button"
                   aria-label="Create Label"
+                  disabled={!labelName.trim() || !labelColorValid}
                   onclick={addLabel}><Plus size={15} /></button
                 >
-              </div>{/if}
+              </div>
+              <PandanColorPicker
+                id="kanban-label-color"
+                label="Label color"
+                bind:value={labelColor}
+                helpText="The new label uses this color."
+                onvaliditychange={(valid) => (labelColorValid = valid)}
+              />
+            {/if}
           </section>
           <section>
             <h4>Attachments</h4>

@@ -1,16 +1,16 @@
 use crate::entities::{
     AccountSession, AppMetadata, AuthenticationSettings, Bookmark, BookmarkFavicon, CalendarEvent,
-    CalendarEventDraft, CalendarSubscription, CodingCredential, CodingProject, DashboardWidget,
-    EmbeddedPage, FeedItem, JournalNode, KanbanActivity, KanbanAttachment, KanbanBoard,
-    KanbanBoardSummary, KanbanCard, KanbanCardDraft, KanbanChecklist, KanbanChecklistItem,
-    KanbanColumn, KanbanComment, KanbanDirectoryUser, KanbanInvitation, KanbanLabel, KanbanMember,
-    KanbanMemberPermission, KanbanOverview, KanbanRolePermission, KanbanWorkspace,
-    KanbanWorkspaceSettings, LineAuthorProfile, LinePost, LinePostAttachment, LinePostDraft,
-    LinePostReaction, LoggingSettings, LoginAppearance, ManagedUser, NetworkAccessRule,
-    OidcAuthorization, PaymentSubscription, RssItem, RssItemDraft, RssRefreshTarget,
-    RssSubscription, RssSubscriptionDraft, SessionAccount, Task, TaskAttachment, TaskDraft,
-    TaskSubtask, User, UserAppearance, UserAvatar, UserBackground, UserCredentials, UserSettings,
-    Workspace,
+    CalendarEventDraft, CalendarSubscription, CodingCategory, CodingCredential, CodingProject,
+    CodingProjectCategoryAssignment, DashboardWidget, EmbeddedPage, EmbeddedPageIconCache,
+    FeedItem, JournalNode, KanbanActivity, KanbanAttachment, KanbanBoard, KanbanBoardSummary,
+    KanbanCard, KanbanCardDraft, KanbanChecklist, KanbanChecklistItem, KanbanColumn, KanbanComment,
+    KanbanDirectoryUser, KanbanInvitation, KanbanLabel, KanbanMember, KanbanMemberPermission,
+    KanbanOverview, KanbanRolePermission, KanbanWorkspace, KanbanWorkspaceSettings,
+    LineAuthorProfile, LinePost, LinePostAttachment, LinePostDraft, LinePostReaction,
+    LoggingSettings, LoginAppearance, ManagedUser, NetworkAccessRule, OidcAuthorization,
+    PaymentSubscription, RssItem, RssItemDraft, RssRefreshTarget, RssSubscription,
+    RssSubscriptionDraft, SessionAccount, Task, TaskAttachment, TaskDraft, TaskSubtask, User,
+    UserAppearance, UserAvatar, UserBackground, UserCredentials, UserSettings, Workspace,
 };
 pub use crate::podcast_queries::*;
 pub use crate::youtube_queries::*;
@@ -1368,7 +1368,12 @@ pub async fn delete_user_content(
                 .execute(&mut *transaction)
                 .await?
                 .rows_affected();
-            projects + credentials
+            let categories = sqlx::query("DELETE FROM coding_categories WHERE user_id = ?")
+                .bind(user_id)
+                .execute(&mut *transaction)
+                .await?
+                .rows_affected();
+            projects + credentials + categories
         }
         // The catalogue and cached audio are shared instance resources: clearing one
         // listener's data must never delete an episode another is midway through.
@@ -1411,8 +1416,9 @@ pub async fn list_calendar_subscriptions(
     user_id: &str,
 ) -> Result<Vec<CalendarSubscription>, sqlx::Error> {
     sqlx::query_as::<_, CalendarSubscription>(
-        "SELECT id, url, name, color_value AS color, last_fetched_at, last_error, created_at, updated_at \
-         FROM calendar_subscriptions WHERE user_id = ? ORDER BY name COLLATE NOCASE ASC",
+        "SELECT id, url, COALESCE(custom_name, name) AS name, color_value AS color, display_mode, \
+         last_fetched_at, last_error, created_at, updated_at FROM calendar_subscriptions \
+         WHERE user_id = ? ORDER BY COALESCE(custom_name, name) COLLATE NOCASE ASC",
     )
     .bind(user_id)
     .fetch_all(pool)
@@ -1425,7 +1431,8 @@ pub async fn list_calendar_events(
     user_id: &str,
 ) -> Result<Vec<CalendarEvent>, sqlx::Error> {
     sqlx::query_as::<_, CalendarEvent>(
-        "SELECT e.id, e.subscription_id, s.name AS calendar_name, s.color_value AS calendar_color, \
+        "SELECT e.id, e.subscription_id, COALESCE(s.custom_name, s.name) AS calendar_name, \
+         s.color_value AS calendar_color, \
          e.title, e.description, e.location, e.url, e.start_at, e.end_at, e.all_day \
          FROM calendar_events e JOIN calendar_subscriptions s ON s.id = e.subscription_id \
          WHERE s.user_id = ? ORDER BY e.start_at ASC, e.title COLLATE NOCASE ASC",
@@ -1442,8 +1449,9 @@ pub async fn get_calendar_subscription(
     id: &str,
 ) -> Result<Option<CalendarSubscription>, sqlx::Error> {
     sqlx::query_as::<_, CalendarSubscription>(
-        "SELECT id, url, name, color_value AS color, last_fetched_at, last_error, created_at, updated_at \
-         FROM calendar_subscriptions WHERE id = ? AND user_id = ?",
+        "SELECT id, url, COALESCE(custom_name, name) AS name, color_value AS color, display_mode, \
+         last_fetched_at, last_error, created_at, updated_at FROM calendar_subscriptions \
+         WHERE id = ? AND user_id = ?",
     )
     .bind(id)
     .bind(user_id)
@@ -1566,6 +1574,93 @@ pub async fn set_calendar_refresh_error(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Updates how one user-owned calendar renders events in the month grid.
+pub async fn update_calendar_subscription_display_mode(
+    pool: &SqlitePool,
+    user_id: &str,
+    id: &str,
+    display_mode: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "UPDATE calendar_subscriptions SET display_mode = ?, updated_at = ? \
+         WHERE id = ? AND user_id = ?",
+    )
+    .bind(display_mode)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(id)
+    .bind(user_id)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
+/// Updates editable listing metadata without refetching an unchanged source.
+pub async fn update_calendar_subscription_settings(
+    pool: &SqlitePool,
+    user_id: &str,
+    id: &str,
+    custom_name: &str,
+    color: &str,
+    display_mode: &str,
+) -> Result<Option<CalendarSubscription>, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE calendar_subscriptions SET custom_name = ?, color_value = ?, display_mode = ?, \
+         updated_at = ? WHERE id = ? AND user_id = ?",
+    )
+    .bind(custom_name)
+    .bind(color)
+    .bind(display_mode)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    get_calendar_subscription(pool, user_id, id).await
+}
+
+/// Replaces a calendar source, listing metadata, and fetched events atomically.
+pub async fn replace_calendar_subscription_source(
+    pool: &SqlitePool,
+    user_id: &str,
+    id: &str,
+    url: &str,
+    source_name: &str,
+    custom_name: &str,
+    color: &str,
+    display_mode: &str,
+    events: &[CalendarEventDraft],
+) -> Result<Option<CalendarSubscription>, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut transaction = pool.begin().await?;
+    let result = sqlx::query(
+        "UPDATE calendar_subscriptions SET url = ?, name = ?, custom_name = ?, color_value = ?, \
+         display_mode = ?, last_fetched_at = ?, last_error = NULL, updated_at = ? \
+         WHERE id = ? AND user_id = ?",
+    )
+    .bind(url)
+    .bind(source_name)
+    .bind(custom_name)
+    .bind(color)
+    .bind(display_mode)
+    .bind(&now)
+    .bind(&now)
+    .bind(id)
+    .bind(user_id)
+    .execute(&mut *transaction)
+    .await?;
+    if result.rows_affected() == 0 {
+        transaction.rollback().await?;
+        return Ok(None);
+    }
+    replace_calendar_events(&mut transaction, id, events, &now).await?;
+    transaction.commit().await?;
+    get_calendar_subscription(pool, user_id, id).await
 }
 
 /// Deletes one user-owned calendar and its events.
@@ -1728,6 +1823,17 @@ pub async fn list_coding_projects(
     .await
 }
 
+/// Lists the accounts that have provider-backed Coding data to refresh.
+pub async fn list_coding_account_ids(pool: &SqlitePool) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT user_id FROM coding_projects \
+         UNION SELECT user_id FROM coding_credentials \
+         ORDER BY user_id ASC",
+    )
+    .fetch_all(pool)
+    .await
+}
+
 /// Creates one user-owned software project subscription.
 pub async fn create_coding_project(
     pool: &SqlitePool,
@@ -1779,6 +1885,168 @@ pub async fn delete_coding_project(
             .rows_affected()
             > 0,
     )
+}
+
+/// Lists repository categories owned by one account.
+pub async fn list_coding_categories(
+    pool: &SqlitePool,
+    user_id: &str,
+) -> Result<Vec<CodingCategory>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT id, name, created_at, updated_at FROM coding_categories \
+         WHERE user_id = ? ORDER BY name COLLATE NOCASE ASC, created_at ASC, id ASC",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Lists repository-to-category assignments owned by one account.
+pub async fn list_coding_project_category_assignments(
+    pool: &SqlitePool,
+    user_id: &str,
+) -> Result<Vec<CodingProjectCategoryAssignment>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT pc.project_id, pc.category_id FROM coding_project_categories pc \
+         INNER JOIN coding_projects p ON p.id = pc.project_id \
+         INNER JOIN coding_categories c ON c.id = pc.category_id \
+         WHERE p.user_id = ? AND c.user_id = ? \
+         ORDER BY p.created_at ASC, c.name COLLATE NOCASE ASC, c.id ASC",
+    )
+    .bind(user_id)
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Creates one account-owned repository category.
+pub async fn create_coding_category(
+    pool: &SqlitePool,
+    user_id: &str,
+    name: &str,
+) -> Result<CodingCategory, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO coding_categories (id, user_id, name, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(user_id)
+    .bind(name)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    sqlx::query_as(
+        "SELECT id, name, created_at, updated_at FROM coding_categories \
+         WHERE id = ? AND user_id = ?",
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+}
+
+/// Renames one account-owned repository category.
+pub async fn update_coding_category(
+    pool: &SqlitePool,
+    user_id: &str,
+    category_id: &str,
+    name: &str,
+) -> Result<Option<CodingCategory>, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let result = sqlx::query(
+        "UPDATE coding_categories SET name = ?, updated_at = ? \
+         WHERE id = ? AND user_id = ?",
+    )
+    .bind(name)
+    .bind(&now)
+    .bind(category_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    sqlx::query_as(
+        "SELECT id, name, created_at, updated_at FROM coding_categories \
+         WHERE id = ? AND user_id = ?",
+    )
+    .bind(category_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Deletes one account-owned repository category and its assignments.
+pub async fn delete_coding_category(
+    pool: &SqlitePool,
+    user_id: &str,
+    category_id: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(
+        sqlx::query("DELETE FROM coding_categories WHERE id = ? AND user_id = ?")
+            .bind(category_id)
+            .bind(user_id)
+            .execute(pool)
+            .await?
+            .rows_affected()
+            > 0,
+    )
+}
+
+/// Replaces every category assignment for one account-owned repository atomically.
+///
+/// Returns `false` when the project or any category does not belong to the account.
+pub async fn replace_coding_project_categories(
+    pool: &SqlitePool,
+    user_id: &str,
+    project_id: &str,
+    category_ids: &[String],
+) -> Result<bool, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    let project_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM coding_projects WHERE id = ? AND user_id = ?",
+    )
+    .bind(project_id)
+    .bind(user_id)
+    .fetch_one(&mut *transaction)
+    .await?
+        == 1;
+    if !project_exists {
+        return Ok(false);
+    }
+
+    for category_id in category_ids {
+        let category_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM coding_categories WHERE id = ? AND user_id = ?",
+        )
+        .bind(category_id)
+        .bind(user_id)
+        .fetch_one(&mut *transaction)
+        .await?
+            == 1;
+        if !category_exists {
+            return Ok(false);
+        }
+    }
+
+    sqlx::query("DELETE FROM coding_project_categories WHERE project_id = ?")
+        .bind(project_id)
+        .execute(&mut *transaction)
+        .await?;
+    for category_id in category_ids {
+        sqlx::query(
+            "INSERT INTO coding_project_categories (project_id, category_id) VALUES (?, ?)",
+        )
+        .bind(project_id)
+        .bind(category_id)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    Ok(true)
 }
 
 /// Lists encrypted code-host credentials without exposing them through API models.
@@ -1861,9 +2129,10 @@ pub async fn list_rss_subscriptions(
     user_id: &str,
 ) -> Result<Vec<RssSubscription>, sqlx::Error> {
     sqlx::query_as::<_, RssSubscription>(
-        "SELECT id, url, base_url, title, category, auto_delete_days, auto_delete_mode, \
-         last_fetched_at, last_error, refresh_generation, created_at, updated_at \
-         FROM rss_subscriptions WHERE user_id = ? ORDER BY title COLLATE NOCASE ASC",
+        "SELECT id, url, base_url, title, custom_name, category, auto_delete_days, auto_delete_mode, \
+         current_entry_limit, last_fetched_at, last_error, refresh_generation, created_at, updated_at \
+         FROM rss_subscriptions WHERE user_id = ? \
+         ORDER BY COALESCE(custom_name, title) COLLATE NOCASE ASC",
     )
     .bind(user_id)
     .fetch_all(pool)
@@ -1877,14 +2146,26 @@ pub async fn list_rss_subscriptions(
 /// Returns the underlying `SQLx` error when entries cannot be loaded.
 pub async fn list_rss_items(pool: &SqlitePool, user_id: &str) -> Result<Vec<RssItem>, sqlx::Error> {
     sqlx::query_as::<_, RssItem>(
-        "SELECT i.id, i.subscription_id, s.title AS source, s.category, s.base_url, i.url, \
+        "WITH ranked_current AS (\
+         SELECT i.id, ROW_NUMBER() OVER (\
+         PARTITION BY i.subscription_id \
+         ORDER BY datetime(i.published_at) DESC, i.fetched_at DESC, i.id DESC\
+         ) AS current_rank \
+         FROM rss_items i JOIN rss_subscriptions current ON current.id = i.subscription_id \
+         WHERE current.user_id = ? AND current.refresh_generation > 0 \
+         AND i.last_seen_generation = current.refresh_generation\
+         ) \
+         SELECT i.id, i.subscription_id, COALESCE(s.custom_name, s.title) AS source, \
+         s.category, s.base_url, i.url, \
          i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at, \
-         CASE WHEN s.refresh_generation > 0 AND i.last_seen_generation = s.refresh_generation \
+         CASE WHEN ranked_current.current_rank <= s.current_entry_limit \
               THEN 1 ELSE 0 END AS is_current \
          FROM rss_items i JOIN rss_subscriptions s ON s.id = i.subscription_id \
          LEFT JOIN rss_read_later rl ON rl.item_id = i.id AND rl.user_id = ? \
+         LEFT JOIN ranked_current ON ranked_current.id = i.id \
          WHERE s.user_id = ? ORDER BY datetime(i.published_at) DESC, i.fetched_at DESC",
     )
+    .bind(user_id)
     .bind(user_id)
     .bind(user_id)
     .fetch_all(pool)
@@ -1906,19 +2187,31 @@ pub async fn list_current_rss_items(
         return Ok(Vec::new());
     }
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT i.id, i.subscription_id, s.title AS source, s.category, s.base_url, i.url, \
+        "WITH ranked_current AS (\
+         SELECT i.id, ROW_NUMBER() OVER (\
+         PARTITION BY i.subscription_id \
+         ORDER BY datetime(i.published_at) DESC, i.fetched_at DESC, i.id DESC\
+         ) AS current_rank \
+         FROM rss_items i JOIN rss_subscriptions current ON current.id = i.subscription_id \
+         WHERE current.user_id = ",
+    );
+    query.push_bind(user_id);
+    query.push(
+        " AND current.refresh_generation > 0 \
+         AND i.last_seen_generation = current.refresh_generation\
+         ) \
+         SELECT i.id, i.subscription_id, COALESCE(s.custom_name, s.title) AS source, \
+         s.category, s.base_url, i.url, \
          i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at, \
-         1 AS is_current FROM rss_items i \
+         1 AS is_current FROM ranked_current \
+         JOIN rss_items i ON i.id = ranked_current.id \
          JOIN rss_subscriptions s ON s.id = i.subscription_id \
          LEFT JOIN rss_read_later rl ON rl.item_id = i.id AND rl.user_id = ",
     );
     query.push_bind(user_id);
     query.push(" WHERE s.user_id = ");
     query.push_bind(user_id);
-    query.push(
-        " AND s.refresh_generation > 0 \
-         AND i.last_seen_generation = s.refresh_generation AND s.id IN (",
-    );
+    query.push(" AND ranked_current.current_rank <= s.current_entry_limit AND s.id IN (");
     {
         let mut separated = query.separated(", ");
         for subscription_id in subscription_ids {
@@ -1941,8 +2234,8 @@ pub async fn get_rss_subscription(
     id: &str,
 ) -> Result<Option<RssSubscription>, sqlx::Error> {
     sqlx::query_as::<_, RssSubscription>(
-        "SELECT id, url, base_url, title, category, auto_delete_days, auto_delete_mode, \
-         last_fetched_at, last_error, refresh_generation, created_at, updated_at \
+        "SELECT id, url, base_url, title, custom_name, category, auto_delete_days, auto_delete_mode, \
+         current_entry_limit, last_fetched_at, last_error, refresh_generation, created_at, updated_at \
          FROM rss_subscriptions WHERE id = ? AND user_id = ?",
     )
     .bind(id)
@@ -2051,18 +2344,20 @@ pub async fn create_rss_subscription(
     let mut transaction = pool.begin().await?;
     sqlx::query(
         "INSERT INTO rss_subscriptions \
-         (id, user_id, url, base_url, title, category, auto_delete_days, auto_delete_mode, \
-          last_fetched_at, last_attempted_at, refresh_generation, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+         (id, user_id, url, base_url, title, custom_name, category, auto_delete_days, auto_delete_mode, \
+          current_entry_limit, last_fetched_at, last_attempted_at, refresh_generation, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
     )
     .bind(&id)
     .bind(user_id)
     .bind(&draft.url)
     .bind(&draft.base_url)
     .bind(&draft.title)
+    .bind(&draft.custom_name)
     .bind(&draft.category)
     .bind(draft.auto_delete_days)
     .bind(&draft.auto_delete_mode)
+    .bind(draft.current_entry_limit)
     .bind(&now)
     .bind(&now)
     .bind(&now)
@@ -2076,7 +2371,7 @@ pub async fn create_rss_subscription(
         .ok_or(sqlx::Error::RowNotFound)
 }
 
-/// Updates category and retention settings for one user-owned subscription.
+/// Updates the custom name, category, Current, and retention settings for one user-owned subscription.
 ///
 /// # Errors
 ///
@@ -2085,18 +2380,26 @@ pub async fn update_rss_subscription(
     pool: &SqlitePool,
     user_id: &str,
     id: &str,
+    custom_name: Option<&Option<String>>,
     category: &str,
     auto_delete_days: Option<i64>,
     auto_delete_mode: &str,
+    current_entry_limit: Option<i64>,
 ) -> Result<Option<RssSubscription>, sqlx::Error> {
     let updated_at = chrono::Utc::now().to_rfc3339();
     let result = sqlx::query(
-        "UPDATE rss_subscriptions SET category = ?, auto_delete_days = ?, \
-         auto_delete_mode = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+        "UPDATE rss_subscriptions SET \
+         custom_name = CASE WHEN ? THEN ? ELSE custom_name END, \
+         category = ?, auto_delete_days = ?, \
+         auto_delete_mode = ?, current_entry_limit = COALESCE(?, current_entry_limit), \
+         updated_at = ? WHERE id = ? AND user_id = ?",
     )
+    .bind(custom_name.is_some())
+    .bind(custom_name.and_then(|value| value.as_deref()))
     .bind(category)
     .bind(auto_delete_days)
     .bind(auto_delete_mode)
+    .bind(current_entry_limit)
     .bind(updated_at)
     .bind(id)
     .bind(user_id)
@@ -2223,14 +2526,26 @@ pub async fn set_rss_item_read(
         return Ok(None);
     }
     sqlx::query_as::<_, RssItem>(
-        "SELECT i.id, i.subscription_id, s.title AS source, s.category, s.base_url, i.url, \
+        "WITH ranked_current AS (\
+         SELECT i.id, ROW_NUMBER() OVER (\
+         PARTITION BY i.subscription_id \
+         ORDER BY datetime(i.published_at) DESC, i.fetched_at DESC, i.id DESC\
+         ) AS current_rank \
+         FROM rss_items i JOIN rss_subscriptions current ON current.id = i.subscription_id \
+         WHERE current.user_id = ? AND current.refresh_generation > 0 \
+         AND i.last_seen_generation = current.refresh_generation\
+         ) \
+         SELECT i.id, i.subscription_id, COALESCE(s.custom_name, s.title) AS source, \
+         s.category, s.base_url, i.url, \
          i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at, \
-         CASE WHEN s.refresh_generation > 0 AND i.last_seen_generation = s.refresh_generation \
+         CASE WHEN ranked_current.current_rank <= s.current_entry_limit \
               THEN 1 ELSE 0 END AS is_current \
          FROM rss_items i JOIN rss_subscriptions s ON s.id = i.subscription_id \
          LEFT JOIN rss_read_later rl ON rl.item_id = i.id AND rl.user_id = ? \
+         LEFT JOIN ranked_current ON ranked_current.id = i.id \
          WHERE i.id = ? AND s.user_id = ?",
     )
+    .bind(user_id)
     .bind(user_id)
     .bind(id)
     .bind(user_id)
@@ -2278,14 +2593,26 @@ pub async fn set_rss_item_saved(
             .await?;
     }
     sqlx::query_as::<_, RssItem>(
-        "SELECT i.id, i.subscription_id, s.title AS source, s.category, s.base_url, i.url, \
+        "WITH ranked_current AS (\
+         SELECT i.id, ROW_NUMBER() OVER (\
+         PARTITION BY i.subscription_id \
+         ORDER BY datetime(i.published_at) DESC, i.fetched_at DESC, i.id DESC\
+         ) AS current_rank \
+         FROM rss_items i JOIN rss_subscriptions current ON current.id = i.subscription_id \
+         WHERE current.user_id = ? AND current.refresh_generation > 0 \
+         AND i.last_seen_generation = current.refresh_generation\
+         ) \
+         SELECT i.id, i.subscription_id, COALESCE(s.custom_name, s.title) AS source, \
+         s.category, s.base_url, i.url, \
          i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at, \
-         CASE WHEN s.refresh_generation > 0 AND i.last_seen_generation = s.refresh_generation \
+         CASE WHEN ranked_current.current_rank <= s.current_entry_limit \
               THEN 1 ELSE 0 END AS is_current \
          FROM rss_items i JOIN rss_subscriptions s ON s.id = i.subscription_id \
          LEFT JOIN rss_read_later rl ON rl.item_id = i.id AND rl.user_id = ? \
+         LEFT JOIN ranked_current ON ranked_current.id = i.id \
          WHERE i.id = ? AND s.user_id = ?",
     )
+    .bind(user_id)
     .bind(user_id)
     .bind(id)
     .bind(user_id)
@@ -2300,17 +2627,27 @@ pub async fn set_rss_item_saved(
 /// Returns the underlying `SQLx` error when expired entries cannot be removed.
 pub async fn apply_rss_retention(pool: &SqlitePool, user_id: &str) -> Result<u64, sqlx::Error> {
     Ok(sqlx::query(
-        "DELETE FROM rss_items WHERE NOT EXISTS (\
+        "WITH ranked_current AS (\
+         SELECT i.id, current.current_entry_limit, ROW_NUMBER() OVER (\
+         PARTITION BY i.subscription_id \
+         ORDER BY datetime(i.published_at) DESC, i.fetched_at DESC, i.id DESC\
+         ) AS current_rank \
+         FROM rss_items i JOIN rss_subscriptions current ON current.id = i.subscription_id \
+         WHERE current.user_id = ? AND current.refresh_generation > 0 \
+         AND i.last_seen_generation = current.refresh_generation\
+         ) \
+         DELETE FROM rss_items WHERE NOT EXISTS (\
          SELECT 1 FROM rss_read_later rl WHERE rl.item_id = rss_items.id AND rl.user_id = ?) \
-         AND NOT EXISTS (SELECT 1 FROM rss_subscriptions current \
-         WHERE current.id = rss_items.subscription_id AND current.refresh_generation > 0 \
-         AND rss_items.last_seen_generation = current.refresh_generation) \
+         AND NOT EXISTS (SELECT 1 FROM ranked_current current \
+         WHERE current.id = rss_items.id \
+         AND current.current_rank <= current.current_entry_limit) \
          AND EXISTS (\
          SELECT 1 FROM rss_subscriptions s WHERE s.id = rss_items.subscription_id \
          AND s.user_id = ? AND s.auto_delete_days IS NOT NULL \
          AND datetime(rss_items.published_at) < datetime('now', '-' || s.auto_delete_days || ' days') \
          AND (s.auto_delete_mode = 'all' OR rss_items.read_at IS NOT NULL))",
     )
+    .bind(user_id)
     .bind(user_id)
     .bind(user_id)
     .execute(pool)
@@ -2330,16 +2667,26 @@ pub async fn prune_rss_items(
     mode: &str,
 ) -> Result<u64, sqlx::Error> {
     Ok(sqlx::query(
-        "DELETE FROM rss_items WHERE NOT EXISTS (\
+        "WITH ranked_current AS (\
+         SELECT i.id, current.current_entry_limit, ROW_NUMBER() OVER (\
+         PARTITION BY i.subscription_id \
+         ORDER BY datetime(i.published_at) DESC, i.fetched_at DESC, i.id DESC\
+         ) AS current_rank \
+         FROM rss_items i JOIN rss_subscriptions current ON current.id = i.subscription_id \
+         WHERE current.user_id = ? AND current.refresh_generation > 0 \
+         AND i.last_seen_generation = current.refresh_generation\
+         ) \
+         DELETE FROM rss_items WHERE NOT EXISTS (\
          SELECT 1 FROM rss_read_later rl WHERE rl.item_id = rss_items.id AND rl.user_id = ?) \
-         AND NOT EXISTS (SELECT 1 FROM rss_subscriptions current \
-         WHERE current.id = rss_items.subscription_id AND current.refresh_generation > 0 \
-         AND rss_items.last_seen_generation = current.refresh_generation) \
+         AND NOT EXISTS (SELECT 1 FROM ranked_current current \
+         WHERE current.id = rss_items.id \
+         AND current.current_rank <= current.current_entry_limit) \
          AND EXISTS (\
          SELECT 1 FROM rss_subscriptions s WHERE s.id = rss_items.subscription_id AND s.user_id = ?) \
          AND datetime(published_at) < datetime('now', '-' || ? || ' days') \
          AND (? = 'all' OR read_at IS NOT NULL)",
     )
+    .bind(user_id)
     .bind(user_id)
     .bind(user_id)
     .bind(days)
@@ -3175,6 +3522,71 @@ pub async fn list_personal_embedded_pages(
     .await
 }
 
+/// Loads one locally stored embedded-page icon only when the page is visible to the account.
+///
+/// The returned source fields let the server hydrate pre-cache rows without exposing another
+/// account's personal page or trusting stale data after a concurrent edit.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the query cannot be completed.
+pub async fn get_visible_embedded_page_icon_cache(
+    pool: &SqlitePool,
+    user_id: &str,
+    page_id: &str,
+) -> Result<Option<EmbeddedPageIconCache>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT icon_kind, url AS page_url, icon_value, \
+         icon_content_type AS content_type, icon_data AS data, icon_fetched_at AS fetched_at \
+         FROM embedded_pages WHERE id = ? AND ( \
+         (scope = 'global' AND owner_user_id IS NULL) OR \
+         (scope = 'user' AND owner_user_id = ?))",
+    )
+    .bind(page_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Stores one embedded-page icon fetch attempt when its source has not changed.
+///
+/// A failed attempt stores only `icon_fetched_at`, preventing every render from retrying a broken
+/// provider. Editing the page clears the attempt and allows the new source to be fetched once.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the update cannot be completed.
+pub async fn store_embedded_page_icon_attempt(
+    pool: &SqlitePool,
+    page_id: &str,
+    page_url: &str,
+    icon_kind: &str,
+    icon_value: Option<&str>,
+    icon: Option<(&str, &[u8])>,
+) -> Result<bool, sqlx::Error> {
+    let fetched_at = chrono::Utc::now().to_rfc3339();
+    let has_icon = icon.is_some();
+    let (content_type, data) = icon.map_or((None, None), |(content_type, data)| {
+        (Some(content_type), Some(data))
+    });
+    let result = sqlx::query(
+        "UPDATE embedded_pages SET icon_content_type = ?, icon_data = ?, icon_fetched_at = ? \
+         WHERE id = ? AND url = ? AND icon_kind = ? AND icon_value IS ? \
+         AND (icon_fetched_at IS NULL OR (? AND icon_data IS NULL))",
+    )
+    .bind(content_type)
+    .bind(data)
+    .bind(&fetched_at)
+    .bind(page_id)
+    .bind(page_url)
+    .bind(icon_kind)
+    .bind(icon_value)
+    .bind(has_icon)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// Counts the instance-wide embedded pages.
 ///
 /// # Errors
@@ -3375,8 +3787,8 @@ pub async fn update_personal_embedded_page(
     let updated_at = chrono::Utc::now().to_rfc3339();
     let result = sqlx::query(
         "UPDATE embedded_pages SET title = ?, description = ?, url = ?, icon_kind = ?, \
-         icon_value = ?, allow_scripts = ?, allow_same_origin = ?, iframe_height = ?, \
-         updated_at = ? \
+         icon_value = ?, icon_content_type = NULL, icon_data = NULL, icon_fetched_at = NULL, \
+         allow_scripts = ?, allow_same_origin = ?, iframe_height = ?, updated_at = ? \
          WHERE id = ? AND scope = 'user' AND owner_user_id = ?",
     )
     .bind(title)
@@ -3427,8 +3839,8 @@ pub async fn update_global_embedded_page(
     let updated_at = chrono::Utc::now().to_rfc3339();
     let result = sqlx::query(
         "UPDATE embedded_pages SET title = ?, description = ?, url = ?, icon_kind = ?, \
-         icon_value = ?, allow_scripts = ?, allow_same_origin = ?, iframe_height = ?, \
-         updated_at = ? \
+         icon_value = ?, icon_content_type = NULL, icon_data = NULL, icon_fetched_at = NULL, \
+         allow_scripts = ?, allow_same_origin = ?, iframe_height = ?, updated_at = ? \
          WHERE id = ? AND scope = 'global' AND owner_user_id IS NULL",
     )
     .bind(title)

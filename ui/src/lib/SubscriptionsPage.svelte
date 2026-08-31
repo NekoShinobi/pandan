@@ -9,6 +9,11 @@
   import { onMount, tick } from "svelte";
   import PandanDatePicker from "$lib/components/PandanDatePicker.svelte";
   import { motionPopover } from "$lib/motion.svelte";
+  import {
+    annualPaymentOccurrences,
+    nextPaymentDateKey,
+    paymentFrequency,
+  } from "$lib/paymentSchedule";
   import TypedHeading from "$lib/TypedHeading.svelte";
   import {
     createPaymentSubscription,
@@ -95,7 +100,7 @@
   let costTotals = $derived.by(() => {
     const totals: Record<string, number> = {};
     for (const subscription of subscriptions) {
-      const occurrences = annualOccurrences(subscription);
+      const occurrences = annualPaymentOccurrences(subscription);
       if (occurrences === null || subscription.amount_micros <= 0) continue;
       totals[subscription.currency] =
         (totals[subscription.currency] ?? 0) +
@@ -121,7 +126,7 @@
       yearly: number;
     }> = [];
     for (const subscription of subscriptions) {
-      const occurrences = annualOccurrences(subscription);
+      const occurrences = annualPaymentOccurrences(subscription);
       if (occurrences === null || subscription.amount_micros <= 0) continue;
       const yearlyMicros = Math.round(subscription.amount_micros * occurrences);
       rows.push({
@@ -144,7 +149,7 @@
     subscriptions.filter(
       (subscription) =>
         subscription.amount_micros > 0 &&
-        annualOccurrences(subscription) === null,
+        annualPaymentOccurrences(subscription) === null,
     ).length,
   );
 
@@ -203,7 +208,7 @@
     editingId = subscription.id;
     service = subscription.service;
     description = subscription.description;
-    const parts = frequencyParts(subscription);
+    const parts = paymentFrequency(subscription);
     frequencyInterval = String(parts?.interval ?? 1);
     frequencyUnit = parts?.unit ?? "month";
     amount = amountInputValue(subscription.amount_micros);
@@ -387,43 +392,6 @@
       : null;
   }
 
-  function frequencyParts(
-    subscription: PaymentSubscription,
-  ): { interval: number; unit: PaymentFrequencyUnit } | null {
-    if (
-      subscription.frequency_interval !== null &&
-      subscription.frequency_interval >= 1 &&
-      subscription.frequency_interval <= 999 &&
-      subscription.frequency_unit !== null
-    ) {
-      return {
-        interval: subscription.frequency_interval,
-        unit: subscription.frequency_unit,
-      };
-    }
-    return parseFrequency(subscription.frequency);
-  }
-
-  function parseFrequency(
-    value: string,
-  ): { interval: number; unit: PaymentFrequencyUnit } | null {
-    const normalized = value.trim().toLowerCase();
-    const preset = frequencyPresets.find(
-      (option) => option.label.toLowerCase() === normalized,
-    );
-    if (preset) {
-      return { interval: preset.interval, unit: preset.unit };
-    }
-    const match = normalized.match(
-      /^every\s+([1-9]\d{0,2})\s+(days?|weeks?|months?|years?)$/,
-    );
-    if (!match) return null;
-    const interval = Number(match[1]);
-    const unit = match[2]?.replace(/s$/, "") as
-      PaymentFrequencyUnit | undefined;
-    return unit ? { interval, unit } : null;
-  }
-
   function formatFrequency(interval: number, unit: PaymentFrequencyUnit) {
     if (interval === 1) {
       if (unit === "day") return "Daily";
@@ -433,18 +401,6 @@
     }
     if (interval === 3 && unit === "month") return "Quarterly";
     return `Every ${interval} ${unit}s`;
-  }
-
-  function annualOccurrences(subscription: PaymentSubscription): number | null {
-    const parts = frequencyParts(subscription);
-    if (!parts) return null;
-    const yearlyOccurrences = {
-      day: 365,
-      week: 52,
-      month: 12,
-      year: 1,
-    } satisfies Record<PaymentFrequencyUnit, number>;
-    return yearlyOccurrences[parts.unit] / parts.interval;
   }
 
   function parseAmountMicros(value: string): number | null {
@@ -646,12 +602,15 @@
     <header>
       <span>Service</span><span>Description</span><span>Cost</span><span
         >Frequency</span
-      ><span>First paid</span><span class="sr-only">Menu</span>
+      ><span>First paid</span><span>Next payment</span><span class="sr-only"
+        >Menu</span
+      >
     </header>
     {#if loading}
       <div class="subscriptions-status">Loading subscriptions…</div>
     {:else}
       {#each filteredSubscriptions as subscription (subscription.id)}
+        {@const nextPaymentOn = nextPaymentDateKey(subscription)}
         <article
           class={menuId === subscription.id ? "has-open-menu" : ""}
           data-od-id={`subscription-entry-${subscription.id}`}
@@ -691,9 +650,21 @@
                 aria-hidden="true"
               /><span>{subscription.frequency}</span>
             </span>
-            <time datetime={subscription.first_paid_on}
-              >{formatDate(subscription.first_paid_on)}</time
-            >
+            <span class="date-cell">
+              <small>First paid</small>
+              <time datetime={subscription.first_paid_on}
+                >{formatDate(subscription.first_paid_on)}</time
+              >
+            </span>
+            <span class="date-cell next-payment-cell">
+              <small>Next payment</small>
+              {#if nextPaymentOn}
+                <time datetime={nextPaymentOn}>{formatDate(nextPaymentOn)}</time
+                >
+              {:else}
+                <span>Schedule unavailable</span>
+              {/if}
+            </span>
           </button>
           <div
             class="subscription-row-menu"
@@ -1230,8 +1201,9 @@
   .subscriptions-table > header {
     display: grid;
     grid-template-columns:
-      minmax(160px, 1.1fr) minmax(200px, 1.5fr) minmax(120px, 0.75fr)
-      minmax(120px, 0.75fr) minmax(120px, 0.75fr) 60px;
+      minmax(150px, 1.1fr) minmax(170px, 1.35fr) minmax(110px, 0.75fr)
+      minmax(110px, 0.75fr) minmax(110px, 0.75fr) minmax(110px, 0.75fr)
+      60px;
     align-items: center;
     gap: 16px;
     min-height: 42px;
@@ -1263,8 +1235,8 @@
     min-width: 0;
     min-height: 72px;
     grid-template-columns:
-      minmax(160px, 1.1fr) minmax(200px, 1.5fr) minmax(120px, 0.75fr)
-      minmax(120px, 0.75fr) minmax(120px, 0.75fr);
+      minmax(150px, 1.1fr) minmax(170px, 1.35fr) minmax(110px, 0.75fr)
+      minmax(110px, 0.75fr) minmax(110px, 0.75fr) minmax(110px, 0.75fr);
     align-items: center;
     gap: 16px;
     border: 0;
@@ -1331,10 +1303,26 @@
     font-family: var(--font-mono);
     font-size: 10px;
   }
-  .subscription-row-edit time {
-    color: var(--muted);
+  .date-cell {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
     font-family: var(--font-mono);
     font-size: 10px;
+  }
+  .date-cell small {
+    display: none;
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .date-cell time,
+  .date-cell > span {
+    color: var(--muted);
+  }
+  .next-payment-cell time {
+    color: var(--fg);
   }
   .subscription-row-menu {
     position: relative;
@@ -1596,7 +1584,7 @@
     outline: 2px solid var(--fg);
     outline-offset: 2px;
   }
-  @media (max-width: 900px) {
+  @media (max-width: 1100px) {
     .subscriptions-table > header {
       display: none;
     }
@@ -1607,6 +1595,9 @@
       grid-template-columns: 1fr;
       gap: 10px;
       padding: 14px 0 14px 14px;
+    }
+    .date-cell small {
+      display: block;
     }
     .subscription-row-menu {
       grid-column: 2;

@@ -119,7 +119,7 @@ export interface LineThread {
 export type KanbanRole = "admin" | "member" | "guest";
 export type KanbanSection = "boards" | "workspaces" | "invitations";
 export type KanbanLabelColor =
-  "accent" | "blue" | "amber" | "red" | "violet" | "gray";
+  `#${string}` | "accent" | "blue" | "amber" | "red" | "violet" | "gray";
 
 export interface KanbanWorkspace {
   id: string;
@@ -309,9 +309,11 @@ export interface RssSubscription {
   url: string;
   base_url: string;
   title: string;
+  custom_name: string | null;
   category: string;
   auto_delete_days: number | null;
   auto_delete_mode: RssRetentionMode;
+  current_entry_limit: number;
   last_fetched_at: string | null;
   last_error: string | null;
   refresh_generation: number;
@@ -343,9 +345,11 @@ export interface RssReaderResponse {
 
 export interface RssSubscriptionInput {
   url: string;
+  custom_name: string;
   category: string;
   auto_delete_days: number | null;
   auto_delete_mode: RssRetentionMode;
+  current_entry_limit: number;
 }
 
 export type YoutubeDisplayMode = "thumbnails" | "compact";
@@ -421,6 +425,8 @@ export interface PodcastSummary {
   auto_download_count: number;
   max_retained_episodes: number;
   subscribed: boolean;
+  ntfy_notifications_enabled: boolean;
+  ntfy_topic_id: string | null;
   episode_count: number;
   downloaded_count: number;
   latest_published_at: string | null;
@@ -493,6 +499,19 @@ export interface PodcastPolicy {
   max_pending_requests_per_user: number;
 }
 
+export interface PodcastNtfyTopic {
+  id: string;
+  topic: string;
+  label: string;
+}
+
+export interface PodcastNotificationSettings {
+  enabled: boolean;
+  topic_id: string | null;
+  topic: string | null;
+  topic_label: string | null;
+}
+
 export interface PodcastOverview {
   podcasts: PodcastSummary[];
   queue: PodcastEpisode[];
@@ -501,6 +520,8 @@ export interface PodcastOverview {
   in_progress: PodcastEpisode[];
   requests: PodcastRequest[];
   policy: PodcastPolicy;
+  ntfy_connected: boolean;
+  ntfy_topics: PodcastNtfyTopic[];
 }
 
 export interface PodcastAdminSettings {
@@ -522,12 +543,14 @@ export interface PodcastRequestOutcome {
 }
 
 export type CalendarColor = `#${string}`;
+export type CalendarDisplayMode = "full" | "dot";
 
 export interface CalendarSubscription {
   id: string;
   url: string;
   name: string;
   color: CalendarColor;
+  display_mode: CalendarDisplayMode;
   last_fetched_at: string | null;
   last_error: string | null;
   created_at: string;
@@ -551,6 +574,13 @@ export interface CalendarEvent {
 export interface CalendarResponse {
   subscriptions: CalendarSubscription[];
   events: CalendarEvent[];
+}
+
+export interface CalendarSubscriptionUpdate {
+  url: string;
+  name: string;
+  color: CalendarColor;
+  display_mode: CalendarDisplayMode;
 }
 
 export interface ContactMethod {
@@ -661,6 +691,46 @@ export interface PaymentSubscriptionInput {
   first_paid_on: string;
 }
 
+export type TradingProvider = "yahoo" | "finnhub";
+
+export interface TradingQuote {
+  symbol: string;
+  name: string;
+  price: string;
+  previous_close: string | null;
+  day_open: string | null;
+  day_high: string | null;
+  day_low: string | null;
+  change_percent: string | null;
+  currency: string;
+  market_state: string | null;
+  source: TradingProvider;
+  quoted_at: string;
+  refreshed_at: string;
+}
+
+export interface TradingWatchlistItem {
+  id: string;
+  symbol: string;
+  position: number;
+  quote: TradingQuote | null;
+}
+
+export interface TradingResponse {
+  watchlist: TradingWatchlistItem[];
+  provider: TradingProvider;
+  has_finnhub_api_key: boolean;
+  secret_storage_enabled: boolean;
+  last_refresh_at: string | null;
+  last_refresh_error: string | null;
+  stream_interval_seconds: number | null;
+}
+
+export interface TradingStreamEvent {
+  kind: "snapshot";
+  snapshot: TradingResponse;
+}
+
 export type CodingProvider =
   "github" | "gitlab" | "codeberg" | "gitea" | "forgejo";
 
@@ -672,6 +742,28 @@ export interface CodingProject {
   has_credential: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface CodingCategory {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CodingProjectCategoryAssignment {
+  project_id: string;
+  category_id: string;
+}
+
+export interface CodingCategoryState {
+  categories: CodingCategory[];
+  assignments: CodingProjectCategoryAssignment[];
+}
+
+export interface CodingProjectCategoryUpdate {
+  project_id: string;
+  category_ids: string[];
 }
 
 export interface CodingRelease {
@@ -725,6 +817,7 @@ export interface CodingResponse {
   credentials: CodingCredential[];
   secret_storage_enabled: boolean;
   provider_errors: string[];
+  cached_at: string | null;
 }
 
 export interface CreateJournalNodeInput {
@@ -2883,6 +2976,36 @@ export function refreshCalendarSubscription(
   );
 }
 
+export function updateCalendarSubscriptionDisplayMode(
+  id: string,
+  displayMode: CalendarDisplayMode,
+): Promise<CalendarResponse> {
+  return requestJson<CalendarResponse>(
+    `/api/calendar/subscriptions/${encodeURIComponent(id)}/display`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ display_mode: displayMode }),
+    },
+  );
+}
+
+export function updateCalendarSubscription(
+  id: string,
+  update: CalendarSubscriptionUpdate,
+): Promise<CalendarResponse> {
+  return requestJson<CalendarResponse>(
+    `/api/calendar/subscriptions/${encodeURIComponent(id)}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(update),
+    },
+  );
+}
+
 export async function deleteCalendarSubscription(id: string): Promise<void> {
   const response = await fetch(
     `/api/calendar/subscriptions/${encodeURIComponent(id)}`,
@@ -3102,6 +3225,104 @@ export function fetchCoding(refresh = false): Promise<CodingResponse> {
     refresh ? "/api/coding?refresh=true" : "/api/coding",
     {
       credentials: "same-origin",
+    },
+  );
+}
+
+export function fetchCodingCategories(): Promise<CodingCategoryState> {
+  return requestJson<CodingCategoryState>("/api/coding/categories", {
+    credentials: "same-origin",
+  });
+}
+
+export function fetchTrading(): Promise<TradingResponse> {
+  return requestJson<TradingResponse>("/api/trading", {
+    credentials: "same-origin",
+  });
+}
+
+export function refreshTrading(): Promise<TradingResponse> {
+  return requestJson<TradingResponse>("/api/trading/refresh", {
+    method: "POST",
+    credentials: "same-origin",
+  });
+}
+
+export function createTradingSymbol(symbol: string): Promise<TradingResponse> {
+  return requestJson<TradingResponse>("/api/trading/symbols", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ symbol }),
+  });
+}
+
+export function deleteTradingSymbol(id: string): Promise<TradingResponse> {
+  return requestJson<TradingResponse>(
+    `/api/trading/symbols/${encodeURIComponent(id)}`,
+    {
+      method: "DELETE",
+      credentials: "same-origin",
+    },
+  );
+}
+
+export function saveTradingFinnhubKey(
+  apiKey: string,
+): Promise<TradingResponse> {
+  return requestJson<TradingResponse>("/api/trading/finnhub-key", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+}
+
+export function deleteTradingFinnhubKey(): Promise<TradingResponse> {
+  return requestJson<TradingResponse>("/api/trading/finnhub-key", {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+}
+
+export const tradingEventsUrl = "/api/trading/events";
+
+export function createCodingCategory(name: string): Promise<CodingCategory> {
+  return requestJson<CodingCategory>("/api/coding/categories", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function deleteCodingCategory(id: string): Promise<void> {
+  const response = await fetch(
+    `/api/coding/categories/${encodeURIComponent(id)}`,
+    { method: "DELETE", credentials: "same-origin" },
+  );
+  if (!response.ok) {
+    const payload = (await response
+      .json()
+      .catch(() => ({}))) as ApiErrorResponse;
+    throw new ApiError(
+      payload.error ?? `Request failed with status ${response.status}`,
+      response.status,
+    );
+  }
+}
+
+export function updateCodingProjectCategories(
+  projectId: string,
+  categoryIds: string[],
+): Promise<CodingProjectCategoryUpdate> {
+  return requestJson<CodingProjectCategoryUpdate>(
+    `/api/coding/projects/${encodeURIComponent(projectId)}/categories`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ category_ids: categoryIds }),
     },
   );
 }
@@ -3713,6 +3934,13 @@ export function fetchPodcasts(): Promise<PodcastOverview> {
   return requestJson<PodcastOverview>("/api/podcasts");
 }
 
+export function refreshPodcasts(): Promise<void> {
+  return requestEmpty("/api/podcasts/refresh", {
+    method: "POST",
+    credentials: "same-origin",
+  });
+}
+
 export function fetchPodcastEpisodes(
   podcastId: string,
   options: { limit?: number; offset?: number } = {},
@@ -3756,6 +3984,21 @@ export function unsubscribeFromPodcast(podcastId: string): Promise<void> {
   return requestEmpty(
     `/api/podcasts/${encodeURIComponent(podcastId)}/subscription`,
     { method: "DELETE", credentials: "same-origin" },
+  );
+}
+
+export function updatePodcastNotificationSettings(
+  podcastId: string,
+  input: { enabled: boolean; topic_id: string | null },
+): Promise<PodcastNotificationSettings> {
+  return requestJson<PodcastNotificationSettings>(
+    `/api/podcasts/${encodeURIComponent(podcastId)}/notifications`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(input),
+    },
   );
 }
 

@@ -129,6 +129,15 @@ fn default_visibility() -> String {
     "private".to_owned()
 }
 
+fn valid_label_color(value: &str) -> bool {
+    matches!(
+        value,
+        "accent" | "blue" | "amber" | "red" | "violet" | "gray"
+    ) || value
+        .strip_prefix('#')
+        .is_some_and(|hex| hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
 pub fn configure(config: &mut web::ServiceConfig) {
     config.service(
         web::scope("/kanban")
@@ -883,15 +892,17 @@ async fn create_label(
     let workspace_id = board_workspace(&state, &board_id).await?;
     require_permission(&state, &account.id, &workspace_id, "card:edit").await?;
     let name = text(&payload.name, "label name is required", 40)?;
-    if !matches!(
-        payload.color.as_str(),
-        "accent" | "blue" | "amber" | "red" | "violet" | "gray"
-    ) {
+    let color = payload.color.trim();
+    if !valid_label_color(color) {
         return Err(ApiError::BadRequest("label color is invalid"));
     }
-    Ok(HttpResponse::Created().json(
-        db::queries::create_kanban_label(&state.pool, &board_id, &name, &payload.color).await?,
-    ))
+    let color = if color.starts_with('#') {
+        color.to_ascii_uppercase()
+    } else {
+        color.to_owned()
+    };
+    Ok(HttpResponse::Created()
+        .json(db::queries::create_kanban_label(&state.pool, &board_id, &name, &color).await?))
 }
 async fn delete_label(
     state: web::Data<AppState>,
@@ -1104,4 +1115,25 @@ async fn delete_attachment(
     require_permission(&state, &account.id, &workspace_id, "card:edit").await?;
     db::queries::delete_kanban_attachment(&state.pool, &attachment_id).await?;
     Ok(HttpResponse::NoContent().finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_label_color;
+
+    #[test]
+    fn label_colors_accept_hex_and_legacy_values() {
+        assert!(valid_label_color("#2DD4BF"));
+        assert!(valid_label_color("#a3e635"));
+        assert!(valid_label_color("accent"));
+        assert!(valid_label_color("gray"));
+    }
+
+    #[test]
+    fn label_colors_reject_malformed_values() {
+        assert!(!valid_label_color("2DD4BF"));
+        assert!(!valid_label_color("#2DD4B"));
+        assert!(!valid_label_color("#2DD4BFG"));
+        assert!(!valid_label_color("var(--accent)"));
+    }
 }

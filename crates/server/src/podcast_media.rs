@@ -19,6 +19,7 @@ use chrono::{Duration as ChronoDuration, Utc};
 use db::entities::{
     PodcastArtworkDraft, PodcastEpisodeDraft, PodcastFeedPreview, PodcastRefreshTarget,
 };
+use futures_util::{StreamExt, stream};
 use quick_xml::{Reader, events::Event};
 use reqwest::{Client, ClientBuilder, Response, StatusCode, header};
 use sqlx::SqlitePool;
@@ -48,9 +49,14 @@ const REFRESH_HOURS: i64 = 4;
 const REFRESH_LEASE_MINUTES: i64 = 15;
 const REFRESH_BATCH_SIZE: i64 = 25;
 const REFRESH_IDLE_SECONDS: u64 = 600;
+const MANUAL_REFRESH_COOLDOWN_SECONDS: i64 = 30;
+const MANUAL_REFRESH_CONCURRENCY: usize = 4;
 const DOWNLOAD_IDLE_SECONDS: u64 = 20;
 const DOWNLOAD_LEASE_MINUTES: i64 = 60;
 const DOWNLOAD_MAX_ATTEMPTS: i64 = 3;
+const NOTIFICATION_IDLE_SECONDS: u64 = 20;
+const NOTIFICATION_LEASE_MINUTES: i64 = 5;
+const NOTIFICATION_MAX_ATTEMPTS: i64 = 3;
 const ARTWORK_CACHE_HOURS: i64 = 24;
 const MAX_EPISODES_PER_REFRESH: usize = 500;
 
@@ -774,7 +780,7 @@ pub async fn reconcile_media(state: &AppState) {
 // Workers
 // ---------------------------------------------------------------------------
 
-/// Starts the feed refresh and episode download workers.
+/// Starts the feed refresh, episode download, and notification workers.
 ///
 /// Reconciliation runs to completion before either worker starts. The orphan sweep
 /// removes every file no `ready` row points at, so a download finishing while the sweep
@@ -797,6 +803,20 @@ pub fn spawn_podcast_workers(state: web::Data<AppState>) {
             }
         });
 
+        let notification_state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                match run_next_notification(&notification_state).await {
+                    Ok(true) => sleep(Duration::from_secs(1)).await,
+                    Ok(false) => sleep(Duration::from_secs(NOTIFICATION_IDLE_SECONDS)).await,
+                    Err(error) => {
+                        warn!(%error, "podcast notification worker failed");
+                        sleep(Duration::from_secs(NOTIFICATION_IDLE_SECONDS)).await;
+                    }
+                }
+            }
+        });
+
         loop {
             let refreshed = run_refresh_batch(&state).await;
             if refreshed == 0 {
@@ -804,6 +824,69 @@ pub fn spawn_podcast_workers(state: web::Data<AppState>) {
             }
         }
     });
+}
+
+/// Publishes at most one due new-episode notification through the listener's ntfy route.
+async fn run_next_notification(state: &AppState) -> Result<bool, String> {
+    let abandoned_before =
+        (Utc::now() - ChronoDuration::minutes(NOTIFICATION_LEASE_MINUTES)).to_rfc3339();
+    let Some(job) = db::queries::claim_podcast_notification(
+        &state.pool,
+        &abandoned_before,
+        NOTIFICATION_MAX_ATTEMPTS,
+    )
+    .await
+    .map_err(|_| "podcast notification could not be claimed".to_owned())?
+    else {
+        return Ok(false);
+    };
+
+    let title = format!("New episode · {}", job.podcast_title);
+    let click = url::Url::parse(&job.episode_url).ok().and_then(|url| {
+        (matches!(url.scheme(), "http" | "https")
+            && url.username().is_empty()
+            && url.password().is_none())
+        .then_some(job.episode_url.as_str())
+    });
+    match state
+        .widget_integrations
+        .publish_ntfy_notification(&crate::widget_integrations::NtfyPublishRequest {
+            account_id: &job.user_id,
+            base_url: &job.base_url,
+            topic: &job.topic,
+            title: &title,
+            message: &job.episode_title,
+            click,
+            encrypted_token: job.token_ciphertext.as_deref(),
+        })
+        .await
+    {
+        Ok(()) => {
+            db::queries::mark_podcast_notification_delivered(
+                &state.pool,
+                &job.user_id,
+                &job.episode_id,
+            )
+            .await
+            .map_err(|_| "podcast notification delivery could not be recorded".to_owned())?;
+            info!(episode = %job.episode_id, "published podcast ntfy notification");
+        }
+        Err(error) => {
+            let retry_at =
+                (Utc::now() + ChronoDuration::minutes(job.attempts.clamp(1, 10))).to_rfc3339();
+            db::queries::mark_podcast_notification_failed(
+                &state.pool,
+                &job.user_id,
+                &job.episode_id,
+                &error,
+                &retry_at,
+            )
+            .await
+            .map_err(|_| "podcast notification failure could not be recorded".to_owned())?;
+            warn!(episode = %job.episode_id, attempt = job.attempts, "podcast ntfy publish failed");
+        }
+    }
+    Ok(true)
 }
 
 /// Refreshes one batch of due podcasts, reporting how many were processed.
@@ -858,6 +941,69 @@ async fn run_refresh_batch(state: &AppState) -> usize {
         sleep(Duration::from_secs(1)).await;
     }
     processed
+}
+
+/// Immediately refreshes the feeds the authenticated listener is subscribed to.
+///
+/// The normal worker retains its four-hour cadence. This path bypasses that cadence for
+/// an explicit user action, while the database still enforces subscription ownership,
+/// the cross-process lease, and a short repeat-request cooldown.
+///
+/// Upstream failures remain isolated per show and are exposed through the existing
+/// `last_error` field. Database failures are returned to the request handler.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when targets, claims, or refresh state cannot be
+/// read or stored.
+pub async fn refresh_subscribed_podcasts(
+    state: &AppState,
+    user_id: &str,
+) -> Result<usize, sqlx::Error> {
+    let targets = db::queries::list_subscribed_podcasts_for_refresh(&state.pool, user_id).await?;
+    let refreshed_before =
+        (Utc::now() - ChronoDuration::seconds(MANUAL_REFRESH_COOLDOWN_SECONDS)).to_rfc3339();
+    let abandoned_before =
+        (Utc::now() - ChronoDuration::minutes(REFRESH_LEASE_MINUTES)).to_rfc3339();
+
+    let outcomes = stream::iter(targets)
+        .map(|target| {
+            let refreshed_before = refreshed_before.clone();
+            let abandoned_before = abandoned_before.clone();
+            async move {
+                if !db::queries::claim_subscribed_podcast_refresh(
+                    &state.pool,
+                    user_id,
+                    &target.id,
+                    &refreshed_before,
+                    &abandoned_before,
+                )
+                .await?
+                {
+                    return Ok(false);
+                }
+
+                let outcome = refresh_podcast(state, &target).await;
+                let error = outcome.err();
+                if let Some(message) = error.as_deref() {
+                    warn!(podcast = %target.id, %message, "manual podcast refresh failed");
+                }
+                db::queries::finish_podcast_refresh(&state.pool, &target.id, error.as_deref())
+                    .await?;
+                Ok(true)
+            }
+        })
+        .buffer_unordered(MANUAL_REFRESH_CONCURRENCY)
+        .collect::<Vec<Result<bool, sqlx::Error>>>()
+        .await;
+
+    let mut processed = 0;
+    for outcome in outcomes {
+        if outcome? {
+            processed += 1;
+        }
+    }
+    Ok(processed)
 }
 
 /// Re-indexes one podcast, then applies its retention and auto-download settings.

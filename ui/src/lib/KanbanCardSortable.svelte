@@ -6,6 +6,7 @@
   import Paperclip from "lucide-svelte/icons/paperclip";
   import Pilcrow from "lucide-svelte/icons/pilcrow";
   import type { KanbanCard } from "$lib/api";
+  import { kanbanLabelColorCss } from "$lib/kanbanLabelColor";
 
   const CARD_GROUP_PREFIX = "kanban-cards:";
 
@@ -78,7 +79,10 @@
   onclick={() => onopen(card)}
   oncontextmenu={(event) => oncontextmenu(card, event)}
   onkeydown={(event) => {
-    if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) {
+    if (
+      event.key !== "ContextMenu" &&
+      !(event.shiftKey && event.key === "F10")
+    ) {
       return;
     }
     event.preventDefault();
@@ -94,18 +98,25 @@
   data-od-id={`kanban-card-${card.id}`}
   {@attach sortable.attach}
 >
-  <span class="kanban-card-grip" aria-hidden="true"><GripVertical size={14} /></span>
+  <span class="kanban-card-grip" aria-hidden="true"
+    ><GripVertical size={14} /></span
+  >
   {#if card.labels.length}
     <span class="kanban-card-labels">
       {#each card.labels as label (label.id)}
-        <i class={`is-${label.color}`} title={label.name}></i>
+        <i
+          style:background-color={kanbanLabelColorCss(label.color)}
+          title={label.name}
+        ></i>
       {/each}
     </span>
   {/if}
   <strong>{card.title}</strong>
   <footer>
     {#if card.description.trim()}
-      <span title="Has description" aria-hidden="true"><Pilcrow size={13} /></span>
+      <span title="Has description" aria-hidden="true"
+        ><Pilcrow size={13} /></span
+      >
     {/if}
     {#if card.due_date}
       <span class:overdue={new Date(`${card.due_date}T23:59:59`) < new Date()}

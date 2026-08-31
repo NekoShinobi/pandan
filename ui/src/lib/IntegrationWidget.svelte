@@ -1021,7 +1021,7 @@
               >
                 <span class="ui-toggle-indicator" aria-hidden="true"></span>
                 <span>
-                  <strong>{subscription.title}</strong>
+                  <strong>{subscription.custom_name || subscription.title}</strong>
                   <small>{subscription.category}</small>
                 </span>
               </button>

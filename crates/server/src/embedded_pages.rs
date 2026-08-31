@@ -1,7 +1,9 @@
 use actix_web::{HttpRequest, HttpResponse, http::StatusCode, web};
-use db::entities::EmbeddedPage;
+use db::entities::{EmbeddedPage, EmbeddedPageIconCache};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::time::Duration;
+use tokio::time::timeout;
 use url::Url;
 
 use super::{ApiError, AppState, authenticated_account, authenticated_administrator};
@@ -11,6 +13,7 @@ const MAX_TITLE_CHARACTERS: usize = 80;
 const MAX_DESCRIPTION_CHARACTERS: usize = 280;
 const MAX_URL_CHARACTERS: usize = 2_000;
 const MAX_ICON_URL_CHARACTERS: usize = 2_000;
+const MAX_ICON_BYTES: usize = 256 * 1024;
 const DEFAULT_IFRAME_HEIGHT: i64 = 720;
 const MIN_IFRAME_HEIGHT: i64 = 320;
 const MAX_IFRAME_HEIGHT: i64 = 2_400;
@@ -102,6 +105,10 @@ pub fn configure(config: &mut web::ServiceConfig) {
             web::put().to(reorder_personal_pages),
         )
         .route(
+            "/embedded-pages/{page_id}/icon",
+            web::get().to(embedded_page_icon),
+        )
+        .route(
             "/embedded-pages/{page_id}",
             web::patch().to(update_personal_page),
         )
@@ -147,6 +154,108 @@ async fn list_pages(
     Ok(web::Json(
         load_visible_pages(&state.pool, &account.id).await?,
     ))
+}
+
+async fn embedded_page_icon(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    page_id: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    let cache =
+        db::queries::get_visible_embedded_page_icon_cache(&state.pool, &account.id, &page_id)
+            .await?
+            .ok_or(ApiError::NotFound("embedded page icon not found"))?;
+    if let Some(response) = cached_icon_response(&cache) {
+        return Ok(response);
+    }
+    if cache.icon_kind == "lucide" || cache.fetched_at.is_some() {
+        return Err(ApiError::NotFound("embedded page icon not found"));
+    }
+
+    let icon = fetch_embedded_page_icon(&state, &account.id, &cache).await;
+    let icon_ref = icon
+        .as_ref()
+        .map(|(content_type, data)| (content_type.as_str(), data.as_slice()));
+    db::queries::store_embedded_page_icon_attempt(
+        &state.pool,
+        &page_id,
+        &cache.page_url,
+        &cache.icon_kind,
+        cache.icon_value.as_deref(),
+        icon_ref,
+    )
+    .await?;
+
+    let refreshed =
+        db::queries::get_visible_embedded_page_icon_cache(&state.pool, &account.id, &page_id)
+            .await?
+            .ok_or(ApiError::NotFound("embedded page icon not found"))?;
+    cached_icon_response(&refreshed).ok_or(ApiError::NotFound("embedded page icon not found"))
+}
+
+fn cached_icon_response(cache: &EmbeddedPageIconCache) -> Option<HttpResponse> {
+    let (Some(content_type), Some(data)) = (&cache.content_type, &cache.data) else {
+        return None;
+    };
+    Some(
+        HttpResponse::Ok()
+            .insert_header(("Cache-Control", "private, max-age=31536000, immutable"))
+            .insert_header(("Content-Type", content_type.as_str()))
+            .insert_header(("X-Content-Type-Options", "nosniff"))
+            .body(data.clone()),
+    )
+}
+
+async fn fetch_embedded_page_icon(
+    state: &AppState,
+    user_id: &str,
+    cache: &EmbeddedPageIconCache,
+) -> Option<(String, Vec<u8>)> {
+    let source = match cache.icon_kind.as_str() {
+        "favicon" => cache.page_url.as_str(),
+        "custom" => cache.icon_value.as_deref()?,
+        _ => return None,
+    };
+    let origin = Url::parse(source)
+        .ok()
+        .map(|url| url.origin().ascii_serialization())
+        .unwrap_or_else(|| "invalid".to_owned());
+    let fetch = async {
+        if cache.icon_kind == "favicon" {
+            state
+                .widget_integrations
+                .fetch_site_favicon(source, MAX_ICON_BYTES)
+                .await
+        } else {
+            state
+                .widget_integrations
+                .fetch_favicon(source, MAX_ICON_BYTES)
+                .await
+        }
+    };
+    match timeout(Duration::from_secs(6), fetch).await {
+        Ok(Ok(icon)) => Some(icon),
+        Ok(Err(_)) => {
+            tracing::warn!(
+                %user_id,
+                icon_kind = %cache.icon_kind,
+                %origin,
+                "embedded page icon fetch failed; keeping fallback"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                %user_id,
+                icon_kind = %cache.icon_kind,
+                %origin,
+                timeout_seconds = 6,
+                "embedded page icon fetch timed out; keeping fallback"
+            );
+            None
+        }
+    }
 }
 
 async fn create_personal_page(

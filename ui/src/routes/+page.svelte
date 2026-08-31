@@ -51,6 +51,10 @@
   import { onDestroy, onMount, tick } from "svelte";
   import { createViewSwap } from "$lib/viewSwap.svelte";
   import { motionDisclosure, motionPopover } from "$lib/motion.svelte";
+  import {
+    PAYMENT_CALENDAR_COLOR,
+    paymentDateKeysBetween,
+  } from "$lib/paymentSchedule";
   import { MediaQuery, SvelteMap, SvelteSet } from "svelte/reactivity";
   import AnimatedList from "$lib/components/AnimatedList.svelte";
   import PandanDatePicker from "$lib/components/PandanDatePicker.svelte";
@@ -84,6 +88,7 @@
   import RssReaderPage from "$lib/RssReaderPage.svelte";
   import SidebarUtilities from "$lib/SidebarUtilities.svelte";
   import SubscriptionsPage from "$lib/SubscriptionsPage.svelte";
+  import TradingPage from "$lib/TradingPage.svelte";
   import TypedHeading from "$lib/TypedHeading.svelte";
   import WallsPage from "$lib/WallsPage.svelte";
   import YoutubePage from "$lib/YoutubePage.svelte";
@@ -114,6 +119,7 @@
     fetchBrowserSessions,
     fetchCalendar,
     fetchDashboard,
+    fetchPaymentSubscriptions,
     fetchManagedUsers,
     forceSignOutSession,
     loginAccount,
@@ -142,6 +148,7 @@
     type LoginAppearance,
     type KanbanSection,
     type NtfyNotification,
+    type PaymentSubscription,
     type Task,
     type TaskAttachment,
     type TaskInput,
@@ -640,17 +647,6 @@
     },
   ] as const;
 
-  const placeholderPages = {
-    trading: {
-      description:
-        "A focused market workspace for watchlists and trade planning.",
-      primaryTitle: "Create a watchlist",
-      primaryCopy:
-        "Selected tickers, market notes, and position planning will be available here.",
-      modules: ["Watchlist", "Market notes", "Trade plan"],
-    },
-  } as const;
-
   let activePage = $state<ActivePage>({ kind: "builtin", id: "dashboard" });
   let embeddedPageReloadToken = $state(0);
   let activeSection = $derived(
@@ -675,6 +671,7 @@
   } | null>(null);
   let initialLoadingPending = $state(true);
   let welcomeLeaving = $state(false);
+  let welcomeAnimationReady = $state(false);
   let dashboard = $derived(data.dashboard);
   let activeEmbeddedPage = $derived.by<EmbeddedPageRecord | null>(() => {
     if (activePage.kind !== "embedded") return null;
@@ -722,6 +719,7 @@
     subscriptions: [],
     events: [],
   });
+  let dashboardPaymentSubscriptions = $state.raw<PaymentSubscription[]>([]);
   let hasLoadedDashboardCalendar = false;
   let focusSubject = $state("");
   let focusDurationMinutes = $state(25);
@@ -934,11 +932,6 @@
   let loadingOverlayVisible = $derived(
     (Boolean(dashboard) && initialLoadingPending) ||
       (authenticating && loadingScreenReady),
-  );
-  let placeholderPage = $derived(
-    activeSection && activeSection in placeholderPages
-      ? placeholderPages[activeSection as keyof typeof placeholderPages]
-      : null,
   );
   let commandItems = $derived.by<CommandItem[]>(() => {
     const items: CommandItem[] = productPages.map((page) => ({
@@ -1172,10 +1165,20 @@
       dashboardCalendarWeekStart,
     ),
   );
+  let dashboardSubscriptionPaymentDates = $derived.by(() => {
+    const firstDay = dashboardCalendarDays[0]?.key;
+    const lastDay =
+      dashboardCalendarDays[dashboardCalendarDays.length - 1]?.key;
+    if (!firstDay || !lastDay) return [];
+    return dashboardPaymentSubscriptions.flatMap((subscription) =>
+      paymentDateKeysBetween(subscription, firstDay, lastDay),
+    );
+  });
   let dashboardCalendarEventsByDate = $derived(
     summarizeDashboardCalendarEvents(
       tasks,
       dashboardCalendarData.events,
+      dashboardSubscriptionPaymentDates,
       dashboardTimezone,
     ),
   );
@@ -1382,6 +1385,7 @@
   function summarizeDashboardCalendarEvents(
     datedTasks: Task[],
     calendarEvents: CalendarEvent[],
+    subscriptionPaymentDates: string[],
     timezone: string,
   ) {
     const summaries: Record<string, DashboardCalendarEventSummary> = {};
@@ -1400,6 +1404,9 @@
     for (const event of calendarEvents) {
       add(dashboardCalendarEventDateKey(event, timezone), event.calendar_color);
     }
+    for (const paymentDate of subscriptionPaymentDates) {
+      add(paymentDate, PAYMENT_CALENDAR_COLOR);
+    }
     return summaries;
   }
 
@@ -1414,17 +1421,24 @@
   function clearDashboardCalendarState() {
     dashboardCalendarMonthOffset = 0;
     dashboardCalendarData = { subscriptions: [], events: [] };
+    dashboardPaymentSubscriptions = [];
     hasLoadedDashboardCalendar = false;
   }
 
   async function loadDashboardCalendar() {
     if (!dashboard) return;
     try {
-      dashboardCalendarData = await fetchCalendar();
+      const [nextCalendar, nextPaymentSubscriptions] = await Promise.all([
+        fetchCalendar(),
+        fetchPaymentSubscriptions().catch(() => []),
+      ]);
+      dashboardCalendarData = nextCalendar;
+      dashboardPaymentSubscriptions = nextPaymentSubscriptions;
       hasLoadedDashboardCalendar = true;
     } catch {
       if (!hasLoadedDashboardCalendar) {
         dashboardCalendarData = { subscriptions: [], events: [] };
+        dashboardPaymentSubscriptions = [];
       }
     }
   }
@@ -1614,15 +1628,17 @@
     loadingScreenReady = true;
     setLoadingWelcomeName();
     welcomeLeaving = false;
+    welcomeAnimationReady = false;
     try {
       await tick();
-      await Promise.all([prepareWelcomeWallpaper(), waitForLoadingScreen()]);
+      await runWelcomeAnimation();
       await finishLoadingScreen();
     } finally {
       initialLoadingPending = false;
       loadingScreenReady = false;
       authenticating = false;
       welcomeLeaving = false;
+      welcomeAnimationReady = false;
     }
   }
 
@@ -1639,6 +1655,13 @@
     return new Promise<void>((resolve) => {
       loadingAnimationMinimumTimer = setTimeout(resolve, 2_700);
     });
+  }
+
+  async function runWelcomeAnimation() {
+    await prepareWelcomeWallpaper();
+    welcomeAnimationReady = true;
+    await tick();
+    await waitForLoadingScreen();
   }
 
   function finishLoadingScreen() {
@@ -2804,6 +2827,7 @@
     authenticating = true;
     initialLoadingPending = false;
     loadingScreenReady = false;
+    welcomeAnimationReady = false;
     authError = "";
     try {
       if (authMode === "register") {
@@ -2820,10 +2844,7 @@
       welcomeLeaving = false;
       loadingScreenReady = true;
       await tick();
-      const loadingScreen = Promise.all([
-        prepareWelcomeWallpaper(),
-        waitForLoadingScreen(),
-      ]);
+      const loadingScreen = runWelcomeAnimation();
       const [nextDashboard] = await Promise.all([
         fetchDashboard(),
         loadingScreen,
@@ -2849,6 +2870,7 @@
       loadingScreenReady = false;
       authenticating = false;
       welcomeLeaving = false;
+      welcomeAnimationReady = false;
     }
   }
 
@@ -2859,6 +2881,7 @@
     authenticating = true;
     initialLoadingPending = false;
     loadingScreenReady = false;
+    welcomeAnimationReady = false;
     authError = "";
     try {
       await createAdministrator({
@@ -2871,10 +2894,7 @@
       welcomeLeaving = false;
       loadingScreenReady = true;
       await tick();
-      const loadingScreen = Promise.all([
-        prepareWelcomeWallpaper(),
-        waitForLoadingScreen(),
-      ]);
+      const loadingScreen = runWelcomeAnimation();
       const [nextDashboard] = await Promise.all([
         fetchDashboard(),
         loadingScreen,
@@ -2901,6 +2921,7 @@
       loadingScreenReady = false;
       authenticating = false;
       welcomeLeaving = false;
+      welcomeAnimationReady = false;
     }
   }
 
@@ -3542,6 +3563,7 @@
     class={[
       "welcome-overlay",
       "loading-welcome-overlay",
+      welcomeAnimationReady && "is-animation-ready",
       welcomeLeaving && "is-leaving",
     ]}
     style:--welcome-background={wallpaperBackground("welcome")}
@@ -4016,7 +4038,8 @@
                   <b class="sidebar-custom-marker" aria-hidden="true">G</b>
                   <span class="sidebar-custom-icon" aria-hidden="true">
                     <EmbeddedPageIcon
-                      pageUrl={page.url}
+                      pageId={page.id}
+                      updatedAt={page.updated_at}
                       iconKind={page.icon_kind}
                       iconValue={page.icon_value}
                       size={18}
@@ -4075,7 +4098,8 @@
                   <b class="sidebar-custom-marker" aria-hidden="true">U</b>
                   <span class="sidebar-custom-icon" aria-hidden="true">
                     <EmbeddedPageIcon
-                      pageUrl={page.url}
+                      pageId={page.id}
+                      updatedAt={page.updated_at}
                       iconKind={page.icon_kind}
                       iconValue={page.icon_value}
                       size={18}
@@ -6284,48 +6308,13 @@
                 onConfigurationChanged={() => (ntfyRevision += 1)}
               />
             {/key}
+          {:else if activeSection === "trading"}
+            <TradingPage />
           {:else if activeEmbeddedPage}
             <EmbeddedPage
               page={activeEmbeddedPage}
               reloadToken={embeddedPageReloadToken}
             />
-          {:else if placeholderPage}
-            <section
-              class="feature-page placeholder-page product-page"
-              data-od-id={`${activeSection}-page`}
-            >
-              <div class="feature-page-intro page-header">
-                <TypedHeading
-                  text={`$ ${activeSection} --init`}
-                  odId={`${activeSection}-heading`}
-                />
-                <p>{placeholderPage.description}</p>
-              </div>
-              <div class="placeholder-page-layout">
-                <section class="placeholder-primary-panel">
-                  <div class="placeholder-page-icon" aria-hidden="true">
-                    <ChartCandlestick size={28} strokeWidth={1.5} />
-                  </div>
-                  <p>{placeholderPage.primaryCopy}</p>
-                  <button
-                    type="button"
-                    onclick={() =>
-                      showToast("This page is ready for its next iteration")}
-                    >Set up this page</button
-                  >
-                </section>
-                <div class="placeholder-module-grid">
-                  {#each placeholderPage.modules as module (module)}
-                    <section>
-                      <span>{module}</span>
-                      <div class="placeholder-lines" aria-hidden="true">
-                        <i></i><i></i><i></i>
-                      </div>
-                    </section>
-                  {/each}
-                </div>
-              </div>
-            </section>
           {/if}
         </div>
       {/key}

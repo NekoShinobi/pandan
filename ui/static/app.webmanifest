@@ -1,6 +1,6 @@
 {
   "id": "/",
-  "name": "Pandan: Personal dashboard",
+  "name": "Pandan",
   "short_name": "Pandan",
   "description": "A private, self-hosted command center for tasks, boards, contacts, calendars, feeds, notes, and media.",
   "start_url": "/",

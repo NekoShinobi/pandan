@@ -40,12 +40,40 @@ pub struct PodcastSummary {
     pub auto_download_count: i64,
     pub max_retained_episodes: i64,
     pub subscribed: bool,
+    pub ntfy_notifications_enabled: bool,
+    pub ntfy_topic_id: Option<String>,
     pub episode_count: i64,
     pub downloaded_count: i64,
     pub latest_published_at: Option<String>,
     pub last_fetched_at: Option<String>,
     pub last_error: Option<String>,
     pub created_at: String,
+}
+
+/// One listener's outbound ntfy route for a subscribed podcast.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct PodcastNotificationSettings {
+    pub enabled: bool,
+    pub topic_id: Option<String>,
+    pub topic: Option<String>,
+    pub topic_label: Option<String>,
+}
+
+/// One leased outbound notification, resolved against the listener's current ntfy route.
+///
+/// The encrypted token never crosses the server boundary; it is decrypted only by the guarded
+/// integration client immediately before publishing.
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
+pub struct PodcastNotificationJob {
+    pub user_id: String,
+    pub episode_id: String,
+    pub podcast_title: String,
+    pub episode_title: String,
+    pub episode_url: String,
+    pub base_url: String,
+    pub token_ciphertext: Option<String>,
+    pub topic: String,
+    pub attempts: i64,
 }
 
 #[derive(Debug, Clone, FromRow, PartialEq, Eq)]
