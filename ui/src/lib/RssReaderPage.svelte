@@ -263,7 +263,7 @@
     sourcesDialog?.close();
   }
 
-  function manageFeedFromSources(subscription: RssSubscription) {
+  function editFeedFromSources(subscription: RssSubscription) {
     sourcesDialog?.close();
     openEditFeed(subscription);
   }
@@ -608,9 +608,9 @@
         onclick={openSources}
         data-od-id="rss-sources-menu-button"
       >
-        <RefreshCw size={16} strokeWidth={1.8} aria-hidden="true" />
+        <Settings2 size={16} strokeWidth={1.8} aria-hidden="true" />
         <span>
-          <strong>Sources</strong>
+          <strong>Edit sources</strong>
           <small>Latest cached {relativeTime(latestSnapshotAt)}</small>
         </span>
       </button>
@@ -838,9 +838,9 @@
     <header>
       <div>
         <span>[ {reader.subscriptions.length} SOURCES ]</span>
-        <h2 id="rss-sources-title">Feed sources</h2>
+        <h2 id="rss-sources-title">Edit sources</h2>
       </div>
-      <button class="ui-button ui-button--ghost ui-button--icon" type="button" aria-label="Close sources" onclick={() => sourcesDialog?.close()}>
+      <button class="ui-button ui-button--ghost ui-button--icon" type="button" aria-label="Close source editor" onclick={() => sourcesDialog?.close()}>
         <X size={18} strokeWidth={1.8} aria-hidden="true" />
       </button>
     </header>
@@ -850,9 +850,15 @@
         <strong>{relativeTime(latestSnapshotAt)}</strong>
         <small>{currentSourceCount} of {reader.subscriptions.length} sources ready</small>
       </div>
+      <p class="rss-sources-intro">
+        Choose a feed to edit its name, category, Current limit, auto-delete policy, or remove the subscription.
+      </p>
       <div class="rss-source-list">
         {#each reader.subscriptions as subscription (subscription.id)}
-          <article class={["rss-source", sourceFilter === subscription.id && "is-active"]}>
+          <article
+            class={["rss-source", sourceFilter === subscription.id && "is-active"]}
+            data-od-id={`rss-source-${subscription.id}`}
+          >
             <button
               class="rss-source-select"
               type="button"
@@ -892,9 +898,14 @@
                 />
                 Refresh
               </button>
-              <button type="button" onclick={() => manageFeedFromSources(subscription)}>
+              <button
+                class="rss-source-edit-button"
+                type="button"
+                onclick={() => editFeedFromSources(subscription)}
+                data-od-id={`rss-edit-source-${subscription.id}`}
+              >
                 <Settings2 size={14} strokeWidth={1.8} aria-hidden="true" />
-                Manage
+                Edit settings
               </button>
             </div>
           </article>
@@ -1019,7 +1030,7 @@
   >
     <header>
       <div>
-        <h2>{editingSubscription ? "Manage feed" : "Add Feed"}</h2>
+        <h2>{editingSubscription ? "Edit feed" : "Add Feed"}</h2>
       </div>
       <button class="ui-button ui-button--ghost ui-button--icon" type="button" aria-label="Close feed settings" onclick={closeSubscriptionDialog}>
         <X size={18} strokeWidth={1.8} aria-hidden="true" />
@@ -1155,25 +1166,65 @@
         {#each categories as category (category)}<option value={category}></option>{/each}
       </datalist>
 
-      <fieldset class="rss-current-settings" data-od-id="rss-current-entry-limit-setting">
-        <legend>Current View</legend>
-        <div class="rss-retention-setting">
-          <label class="rss-retention-setting-label" for="rss-current-entry-limit">Show latest</label>
-          <div class="rss-retention-age">
-            <input id="rss-current-entry-limit" type="number" bind:value={currentEntryLimit} min="1" max={MAX_CURRENT_ENTRY_LIMIT} required data-od-id="rss-current-entry-limit" />
-            <span>entries</span>
+      <div class="rss-setting-indicators" data-od-id="rss-feed-setting-indicators">
+        <div class="rss-indicator-setting" data-od-id="rss-current-entry-limit-setting">
+          <label class="rss-indicator-label" for="rss-current-entry-limit">Current view</label>
+          <div class="rss-indicator-controls">
+            <div class="rss-current-indicator">
+              <input
+                id="rss-current-entry-limit"
+                type="number"
+                bind:value={currentEntryLimit}
+                min="1"
+                max={MAX_CURRENT_ENTRY_LIMIT}
+                required
+                data-od-id="rss-current-entry-limit"
+              />
+              <span aria-hidden="true">items</span>
+            </div>
+            <span class="rss-help-control">
+              <button
+                class="rss-help-button"
+                type="button"
+                aria-label="About the Current view limit"
+                aria-describedby="rss-current-view-help"
+                data-od-id="rss-current-view-help-button"
+              >?</button>
+              <span class="rss-help-tooltip" id="rss-current-view-help" role="tooltip">
+                Shows this many latest entries per feed from its last successful refresh. Current items are protected from pruning.
+              </span>
+            </span>
           </div>
         </div>
-        <p class="rss-current-help">Per feed, from its latest successful refresh. These entries are marked Current and protected from pruning.</p>
-      </fieldset>
 
-      <button class="ui-toggle-button rss-check-row" type="button" aria-pressed={retentionEnabled} onclick={() => (retentionEnabled = !retentionEnabled)}>
-        <span class="ui-toggle-indicator" aria-hidden="true"></span>
-        <span class="rss-check-copy">
-          <strong>Auto-delete old items</strong>
-          <small>Applied whenever the reader loads or this feed refreshes. Current and Read Later items stay protected.</small>
-        </span>
-      </button>
+        <div class="rss-indicator-setting" data-od-id="rss-auto-delete-setting">
+          <span class="rss-indicator-label" id="rss-auto-delete-label">Auto-delete old items</span>
+          <div class="rss-indicator-controls">
+            <button
+              class="ui-toggle-button rss-indicator-toggle"
+              type="button"
+              aria-labelledby="rss-auto-delete-label"
+              aria-pressed={retentionEnabled}
+              onclick={() => (retentionEnabled = !retentionEnabled)}
+              data-od-id="rss-auto-delete-toggle"
+            >
+              <span class="ui-toggle-indicator" aria-hidden="true"></span>
+            </button>
+            <span class="rss-help-control">
+              <button
+                class="rss-help-button"
+                type="button"
+                aria-label="About auto-deleting old items"
+                aria-describedby="rss-auto-delete-help"
+                data-od-id="rss-auto-delete-help-button"
+              >?</button>
+              <span class="rss-help-tooltip" id="rss-auto-delete-help" role="tooltip">
+                Runs when the reader loads or this feed refreshes. Current and Read Later items are always protected.
+              </span>
+            </span>
+          </div>
+        </div>
+      </div>
 
       {#if retentionEnabled}
         <fieldset class="rss-retention-settings">
@@ -1343,11 +1394,13 @@
   .rss-sources-summary span, .rss-sources-summary small { color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
   .rss-sources-summary strong { color: var(--fg); font-family: var(--font-mono); font-size: 11px; font-weight: 560; }
   .rss-sources-summary small { grid-column: 1 / -1; }
+  .rss-sources-intro { max-width: 62ch; margin: -2px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .rss-source-actions .rss-source-edit-button { border-color: color-mix(in oklch, var(--fg) 32%, var(--border)); color: var(--fg); }
   .rss-sources-dialog > footer { justify-content: space-between; margin: 0; padding: 16px 20px max(16px, env(safe-area-inset-bottom)); background: var(--page-surface, var(--surface)); }
   .rss-subscription-dialog { overflow: hidden; }
   .rss-dialog .rss-subscription-form { max-height: calc(min(780px, calc(100dvh - 32px)) - 77px); grid-template-rows: minmax(0, 1fr) auto; gap: 0; overflow: hidden; padding: 0; }
   .rss-subscription-scroll { min-height: 0; display: grid; gap: 10px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 22px; }
-  .rss-subscription-scroll > label:not(.rss-check-row), .rss-dialog legend { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .05em; }
+  .rss-subscription-scroll > label, .rss-dialog legend { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .05em; }
   .rss-dialog input[type="url"], .rss-dialog input[type="text"], .rss-dialog input[list], .rss-dialog input[type="number"], .rss-dialog select { min-height: 44px; width: 100%; padding: 0 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font-family: var(--font-mono); font-size: 12px; }
   .rss-dialog input:disabled { color: var(--muted); }
   .rss-subscription-scroll > small { margin-top: -4px; color: var(--muted); font-size: 10px; }
@@ -1371,11 +1424,21 @@
   .rss-form-field { min-width: 0; display: grid; align-content: start; gap: 6px; }
   .rss-form-field > span { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .05em; }
   .rss-form-field > span small { margin-left: 5px; color: var(--muted); font-size: 8px; letter-spacing: .02em; }
-  .rss-check-row { width: 100%; box-sizing: border-box; display: flex; align-items: center; gap: 11px; margin-top: 10px; padding: 13px; border: 1px solid var(--border); }
-  .rss-check-copy { min-width: 0; flex: 1; display: grid; gap: 3px; line-height: 1.4; }
-  .rss-check-row strong { font-size: 12px; font-weight: 560; }
-  .rss-check-row small { overflow-wrap: anywhere; color: var(--muted); font-size: 10px; }
-  .rss-dialog .rss-current-settings, .rss-dialog .rss-retention-settings { gap: 0; padding: 14px; }
+  .rss-setting-indicators { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 2px; border: 1px solid var(--border); }
+  .rss-indicator-setting { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 12px; }
+  .rss-indicator-setting + .rss-indicator-setting { border-left: 1px solid var(--border); }
+  .rss-indicator-label { color: var(--fg); font-family: var(--font-mono); font-size: 10px; font-weight: 560; letter-spacing: .03em; line-height: 1.4; }
+  .rss-indicator-controls { display: flex; align-items: center; gap: 4px; }
+  .rss-current-indicator { display: grid; grid-template-columns: 52px auto; align-items: center; gap: 7px; }
+  .rss-dialog .rss-current-indicator input[type="number"] { padding: 0 7px; text-align: center; }
+  .rss-current-indicator > span { color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
+  .rss-indicator-toggle { width: 46px; justify-content: center; padding: 4px; }
+  .rss-help-control { position: relative; display: inline-grid; place-items: center; }
+  .rss-help-button { width: 44px; min-height: 44px; display: grid; place-items: center; border: 1px solid transparent; border-radius: 50%; color: var(--muted); font-family: var(--font-mono); font-size: 12px; font-weight: 600; }
+  .rss-help-button:hover, .rss-help-button:focus-visible { border-color: var(--border); background: var(--bg); color: var(--fg); }
+  .rss-help-tooltip { position: absolute; z-index: 4; right: 0; bottom: calc(100% + 7px); width: min(270px, 72vw); padding: 9px 10px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); box-shadow: 0 12px 36px rgba(0, 0, 0, .34); font-size: 10px; line-height: 1.5; opacity: 0; pointer-events: none; transform: translateY(3px); transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out); }
+  .rss-help-control:hover .rss-help-tooltip, .rss-help-control:focus-within .rss-help-tooltip { opacity: 1; transform: translateY(0); }
+  .rss-dialog .rss-retention-settings { gap: 0; padding: 14px; }
   .rss-retention-setting { display: grid; grid-template-columns: 88px minmax(0, 1fr); align-items: start; gap: 16px; }
   .rss-retention-setting + .rss-retention-setting { margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--border); }
   .rss-retention-setting-label { min-height: 44px; display: flex; align-items: center; }
@@ -1383,7 +1446,6 @@
   .rss-retention-scope .rss-retention-setting-label { min-height: 0; }
   .rss-dialog .rss-retention-setting-label, .rss-retention-age span { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .03em; }
   .rss-retention-age { display: grid; grid-template-columns: 100px auto; align-items: center; justify-content: start; gap: 9px; }
-  .rss-current-help { margin: 10px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
   .rss-retention-options { display: grid; gap: 9px; }
   .rss-retention-options label { min-height: 44px; }
   .rss-dialog fieldset { display: grid; gap: 8px; margin: 2px 0 8px; padding: 12px; border: 1px solid var(--border); }
@@ -1439,10 +1501,13 @@
     .rss-dialog footer .rss-danger-button:first-child { flex-basis: 100%; margin-right: 0; }
     .rss-reddit-options { grid-template-columns: 1fr; }
     .rss-feed-identity-grid { grid-template-columns: 1fr; }
+    .rss-setting-indicators { grid-template-columns: 1fr; }
+    .rss-indicator-setting + .rss-indicator-setting { border-top: 1px solid var(--border); border-left: 0; }
     .rss-retention-setting { grid-template-columns: 1fr; gap: 7px; }
     .rss-retention-setting-label { min-height: 0; }
   }
   @media (prefers-reduced-motion: reduce) {
     :global(.rss-loading-icon) { animation: none; }
+    .rss-help-tooltip { transition: none; }
   }
 </style>

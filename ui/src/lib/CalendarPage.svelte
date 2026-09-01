@@ -619,7 +619,7 @@
             {#if day.weekday}<span class="day-weekday" aria-hidden="true"
                 >{day.weekday}</span
               >{/if}
-            <span class="day-events">
+            <span class="day-events overlay-scroll-region">
               {#each listedDayEvents as event (event.id)}
                 <span
                   class="event-pill"

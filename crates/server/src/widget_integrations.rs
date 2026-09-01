@@ -13,7 +13,9 @@ use futures_util::{
     future::join_all,
     stream::{self, StreamExt},
 };
+use primp::{Client as BrowserClient, Impersonate, ImpersonateOS};
 use quick_xml::{Reader, de::from_str, events::Event};
+use regex::Regex;
 use reqwest::{Client, ClientBuilder, Method, StatusCode, Url, header};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -21,13 +23,11 @@ use sqlx::SqlitePool;
 use std::{
     cmp::Reverse,
     collections::HashMap,
-    sync::Arc,
+    net::IpAddr,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
-use tokio::{
-    sync::{RwLock, Semaphore},
-    time::sleep,
-};
+use tokio::sync::{RwLock, Semaphore};
 
 use crate::network_policy::{NetworkAccessScope, NetworkPolicy};
 
@@ -45,8 +45,12 @@ const MAX_YOUTUBE_CHANNEL_METADATA_BYTES: usize = 1_000_000;
 const MAX_OWNED_REPOSITORIES: usize = 500;
 const MAX_PROVIDER_PAGES: usize = 100;
 const PROVIDER_REQUEST_CONCURRENCY: usize = 8;
-const DEFAULT_REDDIT_RETRY_SECONDS: u64 = 15;
-const MAX_REDDIT_RETRY_SECONDS: u64 = 60;
+const REDDIT_LOID_CACHE_DURATION: Duration = Duration::from_secs(6 * 60 * 60);
+const REDDIT_LISTING_ORIGINS: [&str; 3] = [
+    "https://www.reddit.com",
+    "https://api.reddit.com",
+    "https://old.reddit.com",
+];
 
 #[derive(Clone)]
 pub struct WidgetIntegrationService {
@@ -55,6 +59,7 @@ pub struct WidgetIntegrationService {
     invidious_base_url: Option<Url>,
     invidious_allows_private_network: bool,
     reddit_request_gate: Arc<Semaphore>,
+    reddit_loid: Arc<RwLock<Option<CachedRedditLoid>>>,
     cache: Arc<RwLock<HashMap<String, CachedData>>>,
     coding_cache: Arc<RwLock<CodingCache>>,
 }
@@ -62,6 +67,11 @@ pub struct WidgetIntegrationService {
 struct CachedData {
     stored_at: Instant,
     value: Value,
+}
+
+struct CachedRedditLoid {
+    stored_at: Instant,
+    value: String,
 }
 
 #[derive(Default)]
@@ -88,6 +98,46 @@ pub struct RssFeedEntry {
     pub title: String,
     pub summary: String,
     pub published_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RedditListingPayload {
+    data: RedditListingData,
+}
+
+#[derive(Debug, Deserialize)]
+struct RedditListingData {
+    #[serde(default)]
+    children: Vec<RedditListingChild>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RedditListingChild {
+    data: RedditPost,
+}
+
+#[derive(Debug, Deserialize)]
+struct RedditPost {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    permalink: String,
+    #[serde(default)]
+    selftext: String,
+    #[serde(default)]
+    is_self: bool,
+    #[serde(default)]
+    created_utc: Option<serde_json::Number>,
+    #[serde(default)]
+    ups: i64,
+    #[serde(default)]
+    num_comments: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -313,6 +363,7 @@ impl WidgetIntegrationService {
             invidious_base_url: parse_invidious_base_url(invidious_base_url)?,
             invidious_allows_private_network,
             reddit_request_gate: Arc::new(Semaphore::new(1)),
+            reddit_loid: Arc::new(RwLock::new(None)),
             cache: Arc::new(RwLock::new(HashMap::new())),
             coding_cache: Arc::new(RwLock::new(CodingCache::default())),
         })
@@ -331,6 +382,41 @@ impl WidgetIntegrationService {
             "outbound destination validated"
         );
         let client = target.build_client(widget_client_builder())?;
+        Ok((client, target.into_url()))
+    }
+
+    async fn reddit_client_for(&self, source: &str) -> Result<(BrowserClient, Url), String> {
+        let target = self
+            .network_policy
+            .validate(source, NetworkAccessScope::Rss)
+            .await?;
+        tracing::debug!(
+            integration = NetworkAccessScope::Rss.as_str(),
+            origin = %target.url().origin().ascii_serialization(),
+            resolved_addresses = target.addresses().len(),
+            browser_profile = "firefox-140-linux",
+            "Reddit browser destination validated"
+        );
+        let host = target
+            .url()
+            .host_str()
+            .ok_or_else(|| "Reddit URL host is missing".to_owned())?;
+        let builder = BrowserClient::builder()
+            .impersonate(Impersonate::FirefoxV140)
+            .impersonate_os(ImpersonateOS::Linux)
+            .cookie_store(true)
+            .connect_timeout(Duration::from_secs(4))
+            .timeout(Duration::from_secs(10))
+            .redirect(primp::redirect::Policy::none())
+            .no_proxy();
+        let builder = if host.parse::<IpAddr>().is_ok() {
+            builder
+        } else {
+            builder.resolve_to_addrs(host, target.addresses())
+        };
+        let client = builder
+            .build()
+            .map_err(|error| format!("Reddit browser client failed: {error}"))?;
         Ok((client, target.into_url()))
     }
 
@@ -359,17 +445,15 @@ impl WidgetIntegrationService {
     /// Returns a safe provider error when URL validation, fetching, or feed parsing fails.
     pub async fn fetch_rss_feed(&self, source: &str) -> Result<RssFeedSnapshot, String> {
         let (client, url) = self.client_for(source, NetworkAccessScope::Rss).await?;
-        // Reddit rejects anonymous JSON listing requests from servers, while its public Atom
-        // endpoints remain available. Normalize both new `.rss` sources and older saved `.json`
-        // sources here so existing subscriptions recover without a data migration.
-        let bytes = if let Some(request_url) = reddit_rss_source(&url) {
-            let (client, request_url) = self
-                .client_for(request_url.as_str(), NetworkAccessScope::Rss)
-                .await?;
-            response_bytes(self.fetch_reddit_rss(&client, request_url).await?).await?
-        } else {
-            self.fetch_rss_bytes(client, url).await?
-        };
+        // Stored `.rss` sources and legacy `.json` sources both use Reddit's JSON listing. A
+        // Firefox transport plus the short-lived `loid` challenge cookie avoids the anonymous
+        // Atom/JSON rate-limit bucket while keeping the stored subscription format compatible.
+        if let Some(listing) = reddit_listing_source(&url) {
+            drop(client);
+            let payload = self.fetch_reddit_listing(&listing).await?;
+            return Ok(reddit_listing_snapshot(&listing, &payload));
+        }
+        let bytes = self.fetch_rss_bytes(client, url).await?;
         parse_rss_feed_snapshot(&bytes)
     }
 
@@ -404,49 +488,112 @@ impl WidgetIntegrationService {
         Err("RSS feed redirected too many times".to_owned())
     }
 
-    /// Serializes anonymous Reddit feed requests and retries one throttled response after the
-    /// provider-advertised reset window. Reddit currently gives unauthenticated server traffic a
-    /// very small shared allowance, so the background worker and an interactive subscription can
-    /// otherwise consume the same window.
-    async fn fetch_reddit_rss(
+    /// Serializes Reddit's browser challenge and listing requests so one cached `loid` cookie is
+    /// shared by background refreshes and interactive requests.
+    async fn fetch_reddit_listing(
         &self,
-        client: &Client,
-        url: Url,
-    ) -> Result<reqwest::Response, String> {
+        source: &RedditListingSource,
+    ) -> Result<RedditListingPayload, String> {
         let _permit = self
             .reddit_request_gate
             .acquire()
             .await
-            .map_err(|_| "Reddit feed request could not be scheduled".to_owned())?;
-        let send = || {
-            client
-                .get(url.clone())
-                .header(
-                    header::ACCEPT,
-                    "application/atom+xml, application/xml;q=0.9",
-                )
+            .map_err(|_| "Reddit request could not be scheduled".to_owned())?;
+        let loid = self.reddit_loid_cookie().await?;
+        let mut last_error = "Reddit listing could not be loaded".to_owned();
+        for origin in REDDIT_LISTING_ORIGINS {
+            let request_url = source.json_url(origin)?;
+            let (client, request_url) = match self.reddit_client_for(request_url.as_str()).await {
+                Ok(target) => target,
+                Err(error) => {
+                    last_error = error;
+                    continue;
+                }
+            };
+            let mut response = match client
+                .get(request_url)
+                .header("accept", "application/json")
+                .header("cookie", format!("loid={loid}"))
                 .send()
-        };
-        let mut response = send().await.map_err(request_error)?;
-        if response.status() == StatusCode::TOO_MANY_REQUESTS {
-            sleep(reddit_retry_delay(response.headers())).await;
-            response = send().await.map_err(request_error)?;
-        }
-        match response.status() {
-            status if status.is_success() => Ok(response),
-            StatusCode::TOO_MANY_REQUESTS => {
-                let seconds = reddit_retry_delay(response.headers()).as_secs();
-                Err(format!(
-                    "Reddit rate limit reached; retry in {seconds} seconds"
-                ))
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    last_error = reddit_request_error(&error);
+                    continue;
+                }
+            };
+            let status = response.status();
+            if status.is_success() {
+                let body = match reddit_response_bytes(&mut response).await {
+                    Ok(body) => body,
+                    Err(error) => {
+                        last_error = error;
+                        continue;
+                    }
+                };
+                if let Ok(payload) = serde_json::from_slice::<RedditListingPayload>(&body) {
+                    return Ok(payload);
+                }
+                last_error = "Reddit returned an invalid listing".to_owned();
+                continue;
             }
-            StatusCode::NOT_FOUND => Err("Reddit community or feed was not found".to_owned()),
-            StatusCode::FORBIDDEN => Err("Reddit refused the public feed request".to_owned()),
-            status => Err(format!(
-                "Reddit feed request failed with HTTP {}",
-                status.as_u16()
-            )),
+            last_error = reddit_status_error(status.as_u16());
         }
+        Err(last_error)
+    }
+
+    async fn reddit_loid_cookie(&self) -> Result<String, String> {
+        let cached = self
+            .reddit_loid
+            .read()
+            .await
+            .as_ref()
+            .filter(|cookie| cookie.stored_at.elapsed() < REDDIT_LOID_CACHE_DURATION)
+            .map(|cookie| cookie.value.clone());
+        if let Some(cookie) = cached {
+            return Ok(cookie);
+        }
+
+        let (client, challenge_url) = self.reddit_client_for("https://www.reddit.com/").await?;
+        let mut response = client
+            .get(challenge_url.clone())
+            .header("accept", "text/html,application/xhtml+xml")
+            .send()
+            .await
+            .map_err(|error| reddit_request_error(&error))?;
+        if let Some(cookie) = reddit_loid_from_headers(response.headers()) {
+            self.store_reddit_loid(cookie.clone()).await;
+            return Ok(cookie);
+        }
+        let challenge_body = reddit_response_bytes(&mut response).await?;
+        let challenge_body = String::from_utf8(challenge_body)
+            .map_err(|_| "Reddit challenge was not UTF-8".to_owned())?;
+        let (challenge, token) = parse_reddit_challenge(&challenge_body)
+            .ok_or_else(|| "Reddit browser challenge could not be parsed".to_owned())?;
+        let mut solution_url = challenge_url;
+        solution_url.query_pairs_mut().clear().extend_pairs([
+            ("solution", format!("{challenge}{challenge}")),
+            ("js_challenge", "1".to_owned()),
+            ("token", token),
+        ]);
+        let response = client
+            .get(solution_url)
+            .header("accept", "text/html,application/xhtml+xml")
+            .send()
+            .await
+            .map_err(|error| reddit_request_error(&error))?;
+        let cookie = reddit_loid_from_headers(response.headers())
+            .ok_or_else(|| "Reddit browser challenge did not issue a cookie".to_owned())?;
+        self.store_reddit_loid(cookie.clone()).await;
+        Ok(cookie)
+    }
+
+    async fn store_reddit_loid(&self, value: String) {
+        *self.reddit_loid.write().await = Some(CachedRedditLoid {
+            stored_at: Instant::now(),
+            value,
+        });
     }
 
     /// Fetches a channel through a configured `Invidious` API, then falls back to `YouTube`.
@@ -1407,8 +1554,13 @@ impl WidgetIntegrationService {
             Some("rising") => "rising",
             _ => "hot",
         };
-        let limit = config_limit(config, 15);
-        let mut request =
+        let source = RedditListingSource::new(
+            subreddit.clone(),
+            sort,
+            u16::try_from(config_limit(config, 15)).unwrap_or(15),
+            None,
+        );
+        let payload =
             if let (Some(client_id), Some(secret)) = (config_string(config, "client_id"), secret) {
                 let (client, token_url) = self
                     .client_for(
@@ -1437,41 +1589,40 @@ impl WidgetIntegrationService {
                         NetworkAccessScope::Rss,
                     )
                     .await?;
-                client.get(url).bearer_auth(access)
+                client
+                    .get(url)
+                    .bearer_auth(access)
+                    .query(&[
+                        ("limit", source.limit.to_string()),
+                        ("raw_json", "1".to_owned()),
+                    ])
+                    .send()
+                    .await
+                    .map_err(request_error)?
+                    .error_for_status()
+                    .map_err(request_error)?
+                    .json::<RedditListingPayload>()
+                    .await
+                    .map_err(request_error)?
             } else {
-                let (client, url) = self
-                    .client_for(
-                        &format!("https://www.reddit.com/r/{subreddit}/{sort}.json"),
-                        NetworkAccessScope::Rss,
-                    )
-                    .await?;
-                client.get(url)
+                self.fetch_reddit_listing(&source).await?
             };
-        request = request.query(&[("limit", limit.to_string()), ("raw_json", "1".to_owned())]);
-        let payload: Value = request
-            .send()
-            .await
-            .map_err(request_error)?
-            .error_for_status()
-            .map_err(request_error)?
-            .json()
-            .await
-            .map_err(request_error)?;
-        let items = payload["data"]["children"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|child| child.get("data"))
-            .map(|post| {
-                json!({
-                    "title": post["title"],
-                    "url": post["url"],
-                    "comments_url": format!("https://www.reddit.com{}", post["permalink"].as_str().unwrap_or("")),
-                    "score": post["ups"],
-                    "comments": post["num_comments"],
-                    "published_at": post["created_utc"],
+        let items = payload
+            .data
+            .children
+            .iter()
+            .filter_map(|child| {
+                let post = &child.data;
+                let (url, comments_url) = reddit_post_links(post)?;
+                Some(json!({
+                    "title": post.title,
+                    "url": url,
+                    "comments_url": comments_url,
+                    "score": post.ups,
+                    "comments": post.num_comments,
+                    "published_at": post.created_utc.as_ref(),
                     "source": format!("r/{subreddit}")
-                })
+                }))
             })
             .collect::<Vec<_>>();
         Ok(json!({ "items": items }))
@@ -1969,17 +2120,24 @@ fn html_attribute_case_insensitive<'a>(tag: &'a str, name: &str) -> Option<&'a s
         {
             cursor += 1;
         }
-        let quote = *lowercase.as_bytes().get(cursor)?;
-        if !matches!(quote, b'\'' | b'"') {
-            offset = cursor;
-            continue;
+        let delimiter = *lowercase.as_bytes().get(cursor)?;
+        if matches!(delimiter, b'\'' | b'"') {
+            cursor += 1;
+            let end = lowercase.as_bytes()[cursor..]
+                .iter()
+                .position(|value| *value == delimiter)?
+                + cursor;
+            return Some(&tag[cursor..end]);
         }
-        cursor += 1;
+
         let end = lowercase.as_bytes()[cursor..]
             .iter()
-            .position(|value| *value == quote)?
+            .position(|value| value.is_ascii_whitespace() || *value == b'>')?
             + cursor;
-        return Some(&tag[cursor..end]);
+        if end > cursor {
+            return Some(&tag[cursor..end]);
+        }
+        offset = cursor.saturating_add(1);
     }
     None
 }
@@ -3134,9 +3292,54 @@ fn parse_invidious_base_url(value: Option<&str>) -> Result<Option<Url>, String> 
     Ok(Some(url))
 }
 
-fn reddit_listing_source(url: &Url) -> Option<(String, &'static str)> {
-    if !matches!(url.host_str(), Some(host) if host.eq_ignore_ascii_case("reddit.com") || host.eq_ignore_ascii_case("www.reddit.com"))
-    {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RedditListingSource {
+    subreddit: String,
+    sort: &'static str,
+    limit: u16,
+    period: Option<String>,
+}
+
+impl RedditListingSource {
+    fn new(subreddit: String, sort: &'static str, limit: u16, period: Option<String>) -> Self {
+        Self {
+            subreddit,
+            sort,
+            limit: limit.clamp(1, 100),
+            period,
+        }
+    }
+
+    fn json_url(&self, origin: &str) -> Result<Url, String> {
+        let mut source = Url::parse(origin).map_err(|_| "Reddit origin is invalid".to_owned())?;
+        source.set_path(&format!(
+            "/r/{}/{sort}.json",
+            self.subreddit,
+            sort = self.sort
+        ));
+        {
+            let mut query = source.query_pairs_mut();
+            query.append_pair("limit", &self.limit.to_string());
+            query.append_pair("raw_json", "1");
+            if self.sort == "top"
+                && let Some(period) = &self.period
+            {
+                query.append_pair("t", period);
+            }
+        }
+        Ok(source)
+    }
+}
+
+fn reddit_listing_source(url: &Url) -> Option<RedditListingSource> {
+    if !matches!(
+        url.host_str(),
+        Some(host)
+            if matches!(
+                host.to_ascii_lowercase().as_str(),
+                "reddit.com" | "www.reddit.com" | "api.reddit.com" | "old.reddit.com"
+            )
+    ) {
         return None;
     }
     let segments = url.path_segments()?.collect::<Vec<_>>();
@@ -3156,21 +3359,12 @@ fn reddit_listing_source(url: &Url) -> Option<(String, &'static str)> {
         "rising" => "rising",
         _ => return None,
     };
-    Some(((*subreddit).to_owned(), sort))
-}
-
-fn reddit_rss_source(url: &Url) -> Option<Url> {
-    let (subreddit, sort) = reddit_listing_source(url)?;
-    let mut source =
-        Url::parse(&format!("https://www.reddit.com/r/{subreddit}/{sort}.rss")).ok()?;
     let limit = url
         .query_pairs()
         .find_map(|(key, value)| (key == "limit").then_some(value.into_owned()))
-        .filter(|value| {
-            value
-                .parse::<u16>()
-                .is_ok_and(|limit| (1..=100).contains(&limit))
-        });
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|limit| (1..=100).contains(limit))
+        .unwrap_or(25);
     let period = url
         .query_pairs()
         .find_map(|(key, value)| (key == "t").then_some(value.into_owned()))
@@ -3180,31 +3374,131 @@ fn reddit_rss_source(url: &Url) -> Option<Url> {
                 "hour" | "day" | "week" | "month" | "year" | "all"
             )
         });
-    {
-        let mut query = source.query_pairs_mut();
-        if let Some(limit) = limit {
-            query.append_pair("limit", &limit);
-        }
-        if sort == "top" {
-            if let Some(period) = period {
-                query.append_pair("t", &period);
-            }
-        }
-    }
-    Some(source)
+    Some(RedditListingSource::new(
+        (*subreddit).to_owned(),
+        sort,
+        limit,
+        period,
+    ))
 }
 
-fn reddit_retry_delay(headers: &header::HeaderMap) -> Duration {
-    let seconds = headers
-        .get(header::RETRY_AFTER)
-        .or_else(|| headers.get("x-ratelimit-reset"))
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<f64>().ok())
-        .filter(|value| value.is_finite() && *value >= 0.0)
-        .map_or(DEFAULT_REDDIT_RETRY_SECONDS, |value| value.ceil() as u64)
-        .saturating_add(1)
-        .clamp(1, MAX_REDDIT_RETRY_SECONDS);
-    Duration::from_secs(seconds)
+fn parse_reddit_challenge(body: &str) -> Option<(String, String)> {
+    static CHALLENGE_PATTERN: OnceLock<Regex> = OnceLock::new();
+    static TOKEN_PATTERN: OnceLock<Regex> = OnceLock::new();
+    let challenge_pattern = CHALLENGE_PATTERN.get_or_init(|| {
+        Regex::new(r#"await\(async \w+\s*=>\s*\w+\s*\+\s*\w+\)\(\"([^\"]+)\"\)"#)
+            .expect("Reddit challenge regex is valid")
+    });
+    let token_pattern = TOKEN_PATTERN.get_or_init(|| {
+        Regex::new(r#"name=[\"']token[\"'][^>]*value=[\"']([^\"']+)[\"']"#)
+            .expect("Reddit token regex is valid")
+    });
+    let challenge = challenge_pattern
+        .captures(body)?
+        .get(1)?
+        .as_str()
+        .to_owned();
+    let token = token_pattern.captures(body)?.get(1)?.as_str().to_owned();
+    Some((challenge, token))
+}
+
+fn reddit_loid_from_headers(headers: &primp::header::HeaderMap) -> Option<String> {
+    headers
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .filter_map(|value| value.split(';').next())
+        .filter_map(|cookie| cookie.split_once('='))
+        .find_map(|(name, value)| {
+            (name.trim().eq_ignore_ascii_case("loid")
+                && !value.is_empty()
+                && value.len() <= 512
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_graphic() && byte != b';'))
+            .then(|| value.to_owned())
+        })
+}
+
+fn reddit_listing_snapshot(
+    source: &RedditListingSource,
+    payload: &RedditListingPayload,
+) -> RssFeedSnapshot {
+    let items = payload
+        .data
+        .children
+        .iter()
+        .filter_map(|child| {
+            let post = &child.data;
+            let (url, comments_url) = reddit_post_links(post)?;
+            let published_at = reddit_published_at(post.created_utc.as_ref()?)?;
+            let external_id = if post.name.starts_with("t3_") {
+                post.name.clone()
+            } else if !post.id.is_empty() {
+                format!("t3_{}", post.id)
+            } else {
+                comments_url.clone()
+            };
+            let title = quick_xml::escape::unescape(&post.title)
+                .map_or_else(|_| post.title.clone(), std::borrow::Cow::into_owned);
+            Some(RssFeedEntry {
+                external_id,
+                url,
+                comments_url,
+                title,
+                summary: post.selftext.clone(),
+                published_at,
+            })
+        })
+        .collect();
+    RssFeedSnapshot {
+        title: format!("r/{}", source.subreddit),
+        items,
+    }
+}
+
+fn reddit_published_at(value: &serde_json::Number) -> Option<String> {
+    let seconds = value.as_i64().or_else(|| {
+        value
+            .to_string()
+            .split_once('.')
+            .and_then(|(seconds, _)| seconds.parse::<i64>().ok())
+    })?;
+    if seconds <= 0 {
+        return None;
+    }
+    chrono::DateTime::from_timestamp(seconds, 0).map(|value| value.to_rfc3339())
+}
+
+fn reddit_post_links(post: &RedditPost) -> Option<(String, String)> {
+    let reddit = Url::parse("https://www.reddit.com/").ok()?;
+    let comments_url = reddit.join(&post.permalink).ok()?;
+    if comments_url.host_str() != Some("www.reddit.com") {
+        return None;
+    }
+    let comments_url = comments_url.to_string();
+    if post.is_self {
+        return Some((comments_url.clone(), comments_url));
+    }
+    let article_url = Url::parse(&post.url)
+        .ok()
+        .filter(|url| {
+            matches!(url.scheme(), "http" | "https")
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+        })
+        .map_or_else(|| comments_url.clone(), |url| url.to_string());
+    Some((article_url, comments_url))
+}
+
+fn reddit_status_error(status: u16) -> String {
+    match status {
+        403 => "Reddit refused the browser listing request".to_owned(),
+        404 => "Reddit community or listing was not found".to_owned(),
+        429 => "Reddit rate limit reached".to_owned(),
+        status => format!("Reddit listing request failed with HTTP {status}"),
+    }
 }
 
 fn ntfy_endpoint(base_url: &str, topics: &[&str]) -> Result<Url, String> {
@@ -3317,6 +3611,64 @@ async fn response_bytes_with_limit(
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
+}
+
+async fn reddit_response_bytes(response: &mut primp::Response) -> Result<Vec<u8>, String> {
+    let max_response_bytes = u64::try_from(MAX_RESPONSE_BYTES).unwrap_or(u64::MAX);
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_response_bytes)
+    {
+        return Err("Reddit response was too large".to_owned());
+    }
+    let mut bytes = Vec::with_capacity(
+        response
+            .content_length()
+            .and_then(|length| usize::try_from(length).ok())
+            .unwrap_or_default()
+            .min(MAX_RESPONSE_BYTES),
+    );
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| reddit_request_error(&error))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            return Err("Reddit response was too large".to_owned());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn reddit_request_error(error: &primp::Error) -> String {
+    let timed_out = error.is_timeout();
+    let connect = error.is_connect();
+    let status = error.status().map(|status| status.as_u16());
+    let origin = error
+        .url()
+        .map(|url| url.origin().ascii_serialization())
+        .unwrap_or_else(|| "unknown".to_owned());
+    let error_kind = if timed_out {
+        "timeout"
+    } else if connect {
+        "connect"
+    } else if status.is_some() {
+        "http_status"
+    } else {
+        "transport"
+    };
+    tracing::warn!(
+        %origin,
+        ?status,
+        error_kind,
+        "Reddit browser request failed"
+    );
+    if timed_out {
+        "Reddit request timed out".to_owned()
+    } else {
+        "Reddit request failed".to_owned()
+    }
 }
 
 fn request_error(error: reqwest::Error) -> String {
@@ -3964,6 +4316,7 @@ mod tests {
         let document = r#"
             <LINK REL="apple-touch-icon" HREF="icons/touch.png">
             <link rel='shortcut icon' href='/assets/site.ico?version=2'>
+            <link rel=icon href=/assets/plain.svg>
             <link rel="icon" href="https://user:secret@example.com/private.png">
             <link rel="stylesheet" href="/assets/site.css">
         "#;
@@ -3973,6 +4326,7 @@ mod tests {
             vec![
                 "https://example.com/app/icons/touch.png",
                 "https://example.com/assets/site.ico?version=2",
+                "https://example.com/assets/plain.svg",
             ]
         );
     }
@@ -4191,13 +4545,23 @@ mod tests {
                 .unwrap();
         assert_eq!(
             reddit_listing_source(&source),
-            Some(("selfhosted".to_owned(), "top"))
+            Some(RedditListingSource::new(
+                "selfhosted".to_owned(),
+                "top",
+                25,
+                Some("week".to_owned())
+            ))
         );
         assert_eq!(
             reddit_listing_source(
                 &Url::parse("https://www.reddit.com/r/selfhosted/new.rss?limit=25").unwrap()
             ),
-            Some(("selfhosted".to_owned(), "new"))
+            Some(RedditListingSource::new(
+                "selfhosted".to_owned(),
+                "new",
+                25,
+                None
+            ))
         );
         assert!(
             reddit_listing_source(&Url::parse("https://www.reddit.com/search.json").unwrap())
@@ -4212,15 +4576,81 @@ mod tests {
     }
 
     #[test]
-    fn reddit_json_listings_are_normalized_to_the_public_atom_feed() {
+    fn reddit_saved_sources_preserve_listing_options_in_json_requests() {
         let source =
             Url::parse("https://reddit.com/r/selfhosted/top.json?limit=25&raw_json=1&t=week")
                 .unwrap();
-        let normalized = reddit_rss_source(&source).expect("listing normalizes");
+        let listing = reddit_listing_source(&source).expect("listing is recognized");
+        let normalized = listing
+            .json_url("https://www.reddit.com")
+            .expect("listing URL builds");
 
         assert_eq!(
             normalized.as_str(),
-            "https://www.reddit.com/r/selfhosted/top.rss?limit=25&t=week"
+            "https://www.reddit.com/r/selfhosted/top.json?limit=25&raw_json=1&t=week"
+        );
+    }
+
+    #[test]
+    fn reddit_browser_challenge_and_cookie_are_parsed() {
+        let body = r#"
+          <script>await(async value => value + value)("challenge-123")</script>
+          <input type="hidden" name="token" value="token-456">
+        "#;
+        assert_eq!(
+            parse_reddit_challenge(body),
+            Some(("challenge-123".to_owned(), "token-456".to_owned()))
+        );
+
+        let mut headers = primp::header::HeaderMap::new();
+        headers.append(
+            "set-cookie",
+            primp::header::HeaderValue::from_static("session=ignored; Path=/"),
+        );
+        headers.append(
+            "set-cookie",
+            primp::header::HeaderValue::from_static(
+                "loid=0000000000000example.2.1234567890; Domain=reddit.com; Path=/",
+            ),
+        );
+        assert_eq!(
+            reddit_loid_from_headers(&headers),
+            Some("0000000000000example.2.1234567890".to_owned())
+        );
+    }
+
+    #[test]
+    fn reddit_json_entries_keep_article_and_comments_destinations_separate() {
+        let payload: RedditListingPayload = serde_json::from_value(json!({
+            "data": {
+                "children": [{
+                    "data": {
+                        "id": "example",
+                        "name": "t3_example",
+                        "title": "Pandan &amp; Reddit",
+                        "url": "https://example.com/article",
+                        "permalink": "/r/selfhosted/comments/example/pandan_reddit/",
+                        "selftext": "A short summary",
+                        "is_self": false,
+                        "created_utc": 1788163200.0,
+                        "ups": 42,
+                        "num_comments": 7
+                    }
+                }]
+            }
+        }))
+        .expect("Reddit fixture parses");
+        let source = RedditListingSource::new("selfhosted".to_owned(), "new", 25, None);
+        let snapshot = reddit_listing_snapshot(&source, &payload);
+
+        assert_eq!(snapshot.title, "r/selfhosted");
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(snapshot.items[0].external_id, "t3_example");
+        assert_eq!(snapshot.items[0].title, "Pandan & Reddit");
+        assert_eq!(snapshot.items[0].url, "https://example.com/article");
+        assert_eq!(
+            snapshot.items[0].comments_url,
+            "https://www.reddit.com/r/selfhosted/comments/example/pandan_reddit/"
         );
     }
 
@@ -4373,19 +4803,6 @@ mod tests {
         let snapshot = parse_rss_feed_snapshot(xml).expect("Reddit Atom feed parses");
 
         assert_eq!(snapshot.items[0].comments_url, snapshot.items[0].url);
-    }
-
-    #[test]
-    fn reddit_retry_delay_honors_the_provider_reset_window() {
-        let mut headers = header::HeaderMap::new();
-        headers.insert("x-ratelimit-reset", header::HeaderValue::from_static("14"));
-        assert_eq!(reddit_retry_delay(&headers), Duration::from_secs(15));
-
-        headers.insert(header::RETRY_AFTER, header::HeaderValue::from_static("120"));
-        assert_eq!(
-            reddit_retry_delay(&headers),
-            Duration::from_secs(MAX_REDDIT_RETRY_SECONDS)
-        );
     }
 
     #[test]

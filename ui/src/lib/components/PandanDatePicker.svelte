@@ -177,6 +177,10 @@
     if (toggleEvent.newState === "closed") calendarOpen = false;
   }
 
+  function hidePopoverAfterExit() {
+    if (popover?.matches(":popover-open")) popover.hidePopover();
+  }
+
   function handleWindowKeydown(event: KeyboardEvent) {
     if (event.key !== "Escape" || !calendarOpen) return;
     event.preventDefault();
@@ -554,7 +558,10 @@
     data-od-id={`${odId ?? id}-calendar`}
     ontoggle={handlePopoverToggle}
     {@attach capturePopover}
-    {@attach motionPopover(calendarOpen, { closedY: -6 })}
+    {@attach motionPopover(calendarOpen, {
+      closedY: -6,
+      onExitComplete: hidePopoverAfterExit,
+    })}
   >
     <div class="pandan-date-panel">
       <header>

@@ -576,10 +576,13 @@ Curated feed entries shown in the dashboard's Feeds workspace.
 
 User-owned RSS, Atom, or generated Reddit listing sources for the dedicated reader. URLs are unique
 per user. New subscriptions default to deleting all unsaved items after seven days. Reddit helpers
-store a public `reddit.com/r/{subreddit}/{sort}.rss` Atom URL; older saved `.json` listing URLs are
-normalized to the same Atom endpoint when fetched. Fetching uses the server network policy; public
-HTTPS is implicit, while private or HTTP origins require an administrator allow rule. A normalized
-origin is stored separately to make base-URL filtering predictable.
+store a compatible `reddit.com/r/{subreddit}/{sort}.rss` URL, while the fetcher recognizes both that
+form and older saved `.json` listing URLs. Reddit listings use a Firefox-like transport, complete
+Reddit's JavaScript challenge, cache the issued `loid` cookie for six hours, and request the JSON
+listing through bounded fallback origins. Every challenge and listing destination still passes the
+server network policy and uses its validated pinned addresses. Public HTTPS is implicit, while
+private or HTTP origins require an administrator allow rule. A normalized origin is stored
+separately to make base-URL filtering predictable.
 An optional account-owned custom name controls how a source is labelled without replacing the
 title fetched from the feed, so later refreshes cannot overwrite the user's choice.
 

@@ -15,6 +15,7 @@ type DisclosureOptions = {
 type PopoverOptions = {
   closedY?: number;
   duration?: number;
+  onExitComplete?: () => void;
 };
 
 type SurfaceOptions = {
@@ -108,7 +109,7 @@ function settlePopover(element: HTMLElement, open: boolean, closedY: number) {
  */
 export function motionPopover(
   open: boolean,
-  { closedY = 6, duration = 0.18 }: PopoverOptions = {},
+  { closedY = 6, duration = 0.18, onExitComplete }: PopoverOptions = {},
 ) {
   return (element: HTMLElement) => {
     const initialized = element.dataset.motionPopover === "ready";
@@ -116,6 +117,7 @@ export function motionPopover(
 
     if (prefersReducedMotion.current || !initialized) {
       settlePopover(element, open, closedY);
+      if (!open) onExitComplete?.();
       return;
     }
 
@@ -140,7 +142,10 @@ export function motionPopover(
 
     void controls.finished
       .then(() => {
-        if (!cancelled) settlePopover(element, open, closedY);
+        if (!cancelled) {
+          settlePopover(element, open, closedY);
+          if (!open) onExitComplete?.();
+        }
       })
       .catch(() => undefined);
 

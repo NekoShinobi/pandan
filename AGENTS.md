@@ -184,11 +184,13 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
   account-owned subscriptions and read this cached Current projection; they must never fetch raw feed
   URLs on demand.
 - New RSS subscriptions default to auto-deleting read and unread items after seven days; Read Later
-  items stay exempt. Generated Reddit subscriptions use the public Atom `.rss` listing, and the
-  fetcher normalizes legacy `.json` listing URLs to Atom because Reddit rejects anonymous server-side
-  JSON requests. Preserve separate article and comments destinations when a feed exposes both; a
-  Reddit thread URL is the comments destination even when it is also the entry's canonical URL. Do
-  not restore direct anonymous JSON fetching.
+  items stay exempt. Generated Reddit subscriptions retain the compatible `.rss` URL shape, while
+  both `.rss` and legacy `.json` sources are fetched from Reddit's JSON listing with a Firefox-like
+  transport and a six-hour cached `loid` challenge cookie. Keep challenge and fallback origins under
+  the `rss` network policy with DNS pinning, bounded responses, no automatic redirects, and serialized
+  requests. Preserve separate article and comments destinations; a Reddit thread URL is the comments
+  destination even when it is also the entry's canonical URL. Do not regress to plain anonymous JSON
+  or Atom requests that share Reddit's restricted server-side rate-limit bucket.
 - YouTube channel metadata refreshes every two hours through configured Invidious first and the public YouTube feed second. Shared portrait images are stored in SQLite and refreshed at most every 24 hours; failed portrait responses must never populate the cache.
 - YouTube Downloads is account-private even for administrators. The browser submits only a credential-free public YouTube URL plus closed media/format/height enums; it never controls yt-dlp options, paths, filenames, headers, cookies, proxies, plugins, runtimes, or post-processors. Every extractor and media connection must traverse the loopback `youtube` network-policy proxy and use its validated pinned addresses. Keep configs, plugins, self-update, remote EJS components, playlists, live streams, credentials, and external downloaders disabled.
 - Download outputs live under `PANDAN_DOWNLOAD_DIR` in `.partial/<job-id>` and `files/<user-id>/<opaque-id>.<ext>`. Only authenticated, account-scoped handlers may serve a completed row: the file route downloads it as an attachment and the preview route serves it inline with Range support for the shell audio player and Downloads video dialog. Never mount the root statically or cache its `/api` responses. Cancellation, timeouts, output limits, account/content deletion, and quota failure stop the entire yt-dlp/FFmpeg process group and remove partial output. Startup reconciliation resets abandoned leases, removes partial/orphan files, and invalidates missing completed files.
