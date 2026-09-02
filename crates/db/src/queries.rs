@@ -4256,6 +4256,27 @@ async fn reorder_embedded_pages(
     Ok(())
 }
 
+async fn set_default_lines_visibility_if_supported(
+    transaction: &mut Transaction<'_, Sqlite>,
+    user_id: &str,
+) -> Result<(), sqlx::Error> {
+    let has_lines_visibility = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('user_settings') \
+         WHERE name = 'lines_default_visibility')",
+    )
+    .fetch_one(&mut **transaction)
+    .await?;
+    if has_lines_visibility {
+        sqlx::query(
+            "UPDATE user_settings SET lines_default_visibility = 'public' WHERE user_id = ?",
+        )
+        .bind(user_id)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    Ok(())
+}
+
 /// Creates an account, its settings, and a small starter task set atomically.
 ///
 /// # Errors
@@ -4292,6 +4313,7 @@ pub async fn create_account(
     .bind(&now)
     .execute(&mut *transaction)
     .await?;
+    set_default_lines_visibility_if_supported(&mut transaction, &user_id).await?;
 
     for (title, completed, priority) in [
         ("Review today’s notes", true, "none"),
@@ -4334,7 +4356,7 @@ pub async fn create_account(
             sidebar_timezones: vec!["UTC".to_owned()],
             calendar_week_start: "sunday".to_owned(),
             temperature_unit: "celsius".to_owned(),
-            lines_default_visibility: "private".to_owned(),
+            lines_default_visibility: "public".to_owned(),
             podcast_playback_rate: 1.0,
             updated_at: now,
         },
@@ -5638,6 +5660,7 @@ async fn insert_initial_administrator(
     .bind(&now)
     .execute(&mut **transaction)
     .await?;
+    set_default_lines_visibility_if_supported(transaction, &user_id).await?;
 
     for (title, completed, priority) in [
         ("Review today’s notes", true, "none"),
@@ -5677,7 +5700,7 @@ async fn insert_initial_administrator(
             sidebar_timezones: vec!["UTC".to_owned()],
             calendar_week_start: "sunday".to_owned(),
             temperature_unit: "celsius".to_owned(),
-            lines_default_visibility: "private".to_owned(),
+            lines_default_visibility: "public".to_owned(),
             podcast_playback_rate: 1.0,
             updated_at: now,
         },

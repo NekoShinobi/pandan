@@ -1,12 +1,12 @@
 ALTER TABLE user_settings
-ADD COLUMN lines_default_visibility TEXT NOT NULL DEFAULT 'private'
+ADD COLUMN lines_default_visibility TEXT NOT NULL DEFAULT 'public'
 CHECK(lines_default_visibility IN ('private', 'public'));
 
 CREATE TABLE line_posts (
     id TEXT PRIMARY KEY NOT NULL,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     content TEXT NOT NULL CHECK(length(trim(content)) BETWEEN 1 AND 2000),
-    visibility TEXT NOT NULL DEFAULT 'private'
+    visibility TEXT NOT NULL DEFAULT 'public'
         CHECK(visibility IN ('private', 'public')),
     reply_to_post_id TEXT REFERENCES line_posts(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL,

@@ -24,6 +24,7 @@
     { value: "youtube", label: "YouTube and Invidious" },
     { value: "widgets", label: "Other remote widgets" },
     { value: "jellyfin", label: "Jellyfin music" },
+    { value: "ai", label: "AI / Ollama" },
   ];
 
   let rules = $state.raw<NetworkAccessRule[]>([]);

@@ -1,5 +1,6 @@
 <script lang="ts">
   import Database from "lucide-svelte/icons/database";
+  import ExternalLink from "lucide-svelte/icons/external-link";
   import KeyRound from "lucide-svelte/icons/key-round";
   import Plus from "lucide-svelte/icons/plus";
   import Radio from "lucide-svelte/icons/radio";
@@ -285,6 +286,10 @@
   function sourceLabel(source: "yahoo" | "finnhub") {
     return source === "finnhub" ? "Finnhub" : "Yahoo Finance";
   }
+
+  function yahooQuoteUrl(symbol: string) {
+    return `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}/`;
+  }
 </script>
 
 <section class="trading-page product-page" data-od-id="trading-page">
@@ -494,17 +499,31 @@
                 <strong>{item.symbol}</strong>
                 <span>{item.quote?.name ?? "Waiting for the first quote"}</span>
               </div>
-              <button
-                class="ui-button ui-button--ghost ui-button--icon"
-                type="button"
-                aria-label={`Remove ${item.symbol} from the watchlist`}
-                title={`Remove ${item.symbol}`}
-                disabled={deletingSymbolId !== ""}
-                onclick={() => removeSymbol(item.id)}
-                data-od-id={`remove-trading-symbol-${item.symbol.toLowerCase()}`}
-              >
-                <Trash2 size={15} strokeWidth={1.8} aria-hidden="true" />
-              </button>
+              <div class="quote-card-actions">
+                <a
+                  class="ui-button ui-button--ghost quote-card-link"
+                  href={yahooQuoteUrl(item.symbol)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`Open ${item.symbol} on Yahoo Finance in a new tab`}
+                  title={`View ${item.symbol} on Yahoo Finance`}
+                  data-od-id={`open-yahoo-${item.symbol.toLowerCase()}`}
+                >
+                  <ExternalLink size={14} strokeWidth={1.8} aria-hidden="true" />
+                  Yahoo
+                </a>
+                <button
+                  class="ui-button ui-button--ghost ui-button--icon"
+                  type="button"
+                  aria-label={`Remove ${item.symbol} from the watchlist`}
+                  title={`Remove ${item.symbol}`}
+                  disabled={deletingSymbolId !== ""}
+                  onclick={() => removeSymbol(item.id)}
+                  data-od-id={`remove-trading-symbol-${item.symbol.toLowerCase()}`}
+                >
+                  <Trash2 size={15} strokeWidth={1.8} aria-hidden="true" />
+                </button>
+              </div>
             </header>
             {#if item.quote}
               <div class="quote-primary">
@@ -884,6 +903,19 @@
     font-size: 10px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .quote-card > header > .quote-card-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .quote-card-link {
+    padding-inline: 9px;
+    font-size: 9px;
+    letter-spacing: 0.04em;
   }
 
   .quote-card > header button {

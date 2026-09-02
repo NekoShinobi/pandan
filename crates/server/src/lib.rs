@@ -42,6 +42,7 @@ pub mod logging;
 pub mod network_policy;
 pub mod ntfy;
 pub mod oidc;
+pub mod ollama;
 pub mod podcast_media;
 mod podcasts;
 mod trading;
@@ -83,6 +84,7 @@ pub struct AppState {
     pub oidc: Option<oidc::OidcProvider>,
     pub widget_integrations: widget_integrations::WidgetIntegrationService,
     pub jellyfin: jellyfin::JellyfinService,
+    pub ollama: ollama::OllamaService,
     pub youtube_downloads: youtube_downloads::YoutubeDownloadService,
     pub podcast_media: podcast_media::PodcastMedia,
     pub ntfy_events: ntfy::NtfyEventHub,
@@ -3752,6 +3754,7 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
             .configure(coding_categories::configure)
             .configure(embedded_pages::configure)
             .configure(jellyfin::configure)
+            .configure(ollama::configure)
             .configure(network_policy::configure)
             .configure(logging::configure)
             .route("/widgets", web::post().to(create_widget))
@@ -4204,6 +4207,7 @@ mod tests {
             )
             .expect("test widget integrations initialize"),
             jellyfin: jellyfin::JellyfinService::new(pool.clone()),
+            ollama: ollama::OllamaService::new(pool.clone()),
             youtube_downloads: youtube_downloads::YoutubeDownloadService::for_tests(pool.clone()),
             podcast_media: podcast_media::PodcastMedia::with_root_and_pool(media_root, pool)
                 .expect("test podcast media initializes"),

@@ -83,6 +83,7 @@
   import NtfyPopover from "$lib/NtfyPopover.svelte";
   import NtfyPriority from "$lib/NtfyPriority.svelte";
   import NetworkAccessSettings from "$lib/NetworkAccessSettings.svelte";
+  import OllamaSettings from "$lib/OllamaSettings.svelte";
   import MusicPage from "$lib/MusicPage.svelte";
   import PodcastsPage from "$lib/PodcastsPage.svelte";
   import PwaInstallSettings from "$lib/PwaInstallSettings.svelte";
@@ -758,7 +759,7 @@
   let settingsTemperatureUnit =
     $state<UserSettings["temperature_unit"]>("celsius");
   let settingsLinesDefaultVisibility =
-    $state<UserSettings["lines_default_visibility"]>("private");
+    $state<UserSettings["lines_default_visibility"]>("public");
   // The shell owns the single audio element so playback survives section changes.
   let podcastAudio = $state<HTMLAudioElement>();
   let podcastVolumeOpen = $state(false);
@@ -3896,7 +3897,7 @@
   </main>
 {:else if !dashboard}
   <main
-    class="auth-shell"
+    class="auth-shell auth-shell--login"
     style:--login-background={wallpaperBackground("login")}
     style:--login-wallpaper-blur={`${authConfig.login_background_blur}px`}
     style:--login-wallpaper-brightness={`${authConfig.login_background_brightness}%`}
@@ -6456,6 +6457,7 @@
                       {:else if settingsCategory === "network-settings" && dashboard.user.role === "administrator"}
                         <div class="settings-section-stack">
                           <JellyfinSettings mode="admin" />
+                          <OllamaSettings />
                           <NetworkAccessSettings />
                         </div>
                       {:else if settingsCategory === "logs" && dashboard.user.role === "administrator"}

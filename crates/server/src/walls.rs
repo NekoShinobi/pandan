@@ -73,6 +73,12 @@ struct WallSelections {
     login: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct WallTagSuggestion {
+    tags: Vec<String>,
+    model: String,
+}
+
 /// A decoded submission, ready to store.
 struct PreparedImage {
     width: i64,
@@ -100,6 +106,7 @@ pub fn configure(config: &mut web::ServiceConfig) {
             .route("/{wall_id}/thumbnail", web::get().to(get_wall_thumbnail))
             .route("/{wall_id}/approve", web::post().to(approve_wall))
             .route("/{wall_id}/reject", web::post().to(reject_wall))
+            .route("/{wall_id}/suggest-tags", web::post().to(suggest_tags))
             .route("/{wall_id}/apply", web::put().to(apply_wall)),
     );
 }
@@ -367,6 +374,40 @@ async fn get_wall_thumbnail(
     ))
 }
 
+async fn suggest_tags(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    wall_id: web::Path<String>,
+) -> Result<web::Json<WallTagSuggestion>, ApiError> {
+    let administrator = authenticated_administrator(&state, &request).await?;
+    let wall = db::wall_queries::get_wall(&state.pool, &wall_id)
+        .await?
+        .ok_or(ApiError::NotFound("wall not found"))?;
+    let settings = db::ollama_queries::get_ollama_settings(&state.pool).await?;
+    if !settings.enabled {
+        return Err(ApiError::Conflict("Ollama wall tagging is not enabled"));
+    }
+    let image = db::wall_queries::find_wall_thumbnail(&state.pool, &wall.id)
+        .await?
+        .ok_or(ApiError::NotFound("wall image not found"))?;
+    let suggested = state
+        .ollama
+        .suggest_tags(&settings, &image.image_data)
+        .await?;
+    let tags = normalize_suggested_tags(suggested, settings.tag_count)?;
+    tracing::info!(
+        actor_user_id = %administrator.id,
+        wall_id = %wall.id,
+        model = %settings.model,
+        tag_count = tags.len(),
+        "administrator generated wall tag suggestions"
+    );
+    Ok(web::Json(WallTagSuggestion {
+        tags,
+        model: settings.model,
+    }))
+}
+
 async fn apply_wall(
     state: web::Data<AppState>,
     request: HttpRequest,
@@ -475,6 +516,21 @@ fn normalize_tags<'a>(values: impl Iterator<Item = &'a str>) -> Result<Vec<Strin
     Ok(tags)
 }
 
+fn normalize_suggested_tags(values: Vec<String>, expected: i64) -> Result<Vec<String>, ApiError> {
+    let lowercase = values
+        .into_iter()
+        .map(|value| value.trim().trim_start_matches('#').trim().to_lowercase())
+        .collect::<Vec<_>>();
+    let tags = normalize_tags(lowercase.iter().map(String::as_str))
+        .map_err(|_| ApiError::Integration("Ollama returned invalid wall tags".to_owned()))?;
+    if i64::try_from(tags.len()).ok() != Some(expected) {
+        return Err(ApiError::Integration(
+            "Ollama did not return the configured number of distinct tags".to_owned(),
+        ));
+    }
+    Ok(tags)
+}
+
 /// Decodes a submission and renders its gallery thumbnail.
 ///
 /// Decoding and resizing are CPU-bound and run on the blocking pool: a large AVIF or PNG
@@ -520,4 +576,24 @@ async fn prepare_image(image_data: Vec<u8>) -> Result<PreparedImage, ApiError> {
     })
     .await
     .map_err(|_| ApiError::Internal("wall image could not be processed"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suggested_tags_are_lowercase_and_exact() {
+        let tags =
+            normalize_suggested_tags(vec!["#Forest".to_owned(), " Night Sky ".to_owned()], 2)
+                .expect("valid suggestions");
+        assert_eq!(tags, vec!["forest", "night sky"]);
+    }
+
+    #[test]
+    fn suggested_tags_reject_duplicates_after_normalization() {
+        assert!(
+            normalize_suggested_tags(vec!["Forest".to_owned(), "forest".to_owned()], 2).is_err()
+        );
+    }
 }

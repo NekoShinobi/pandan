@@ -1300,7 +1300,8 @@ export type NetworkAccessIntegration =
   | "images"
   | "youtube"
   | "widgets"
-  | "jellyfin";
+  | "jellyfin"
+  | "ai";
 
 export interface NetworkAccessRule {
   id: string;
@@ -4230,6 +4231,55 @@ export function updatePodcastSettings(input: {
   });
 }
 
+// --- Ollama -----------------------------------------------------------------
+
+export interface OllamaSettings {
+  id: number;
+  enabled: boolean;
+  base_url: string;
+  model: string;
+  prompt: string;
+  tag_count: number;
+  configured_by_user_id: string | null;
+  last_verified_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OllamaModel {
+  name: string;
+  size: number;
+  parameter_size: string;
+}
+
+export function fetchOllamaSettings(): Promise<OllamaSettings> {
+  return requestJson<OllamaSettings>("/api/admin/ollama");
+}
+
+export function updateOllamaSettings(input: {
+  enabled: boolean;
+  base_url: string;
+  model: string;
+  prompt: string;
+  tag_count: number;
+}): Promise<OllamaSettings> {
+  return requestJson<OllamaSettings>("/api/admin/ollama", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(input),
+  });
+}
+
+export function fetchOllamaModels(baseUrl: string): Promise<OllamaModel[]> {
+  return requestJson<OllamaModel[]>("/api/admin/ollama/models", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ base_url: baseUrl }),
+  });
+}
+
 // --- Walls ------------------------------------------------------------------
 
 export type WallStatus = "pending" | "approved" | "rejected";
@@ -4260,6 +4310,11 @@ export interface Wall {
 export interface WallSelections {
   welcome: string | null;
   login: string | null;
+}
+
+export interface WallTagSuggestion {
+  tags: string[];
+  model: string;
 }
 
 export function wallThumbnailUrl(wallId: string): string {
@@ -4347,6 +4402,13 @@ export function rejectWall(wallId: string, note: string): Promise<Wall> {
     credentials: "same-origin",
     body: JSON.stringify({ note }),
   });
+}
+
+export function suggestWallTags(wallId: string): Promise<WallTagSuggestion> {
+  return requestJson<WallTagSuggestion>(
+    `/api/walls/${encodeURIComponent(wallId)}/suggest-tags`,
+    { method: "POST", credentials: "same-origin" },
+  );
 }
 
 export function applyWall(wallId: string, slot: WallSlot): Promise<void> {

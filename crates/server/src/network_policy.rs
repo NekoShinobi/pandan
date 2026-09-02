@@ -23,6 +23,7 @@ pub enum NetworkAccessScope {
     Youtube,
     Widgets,
     Jellyfin,
+    Ai,
 }
 
 impl NetworkAccessScope {
@@ -39,6 +40,7 @@ impl NetworkAccessScope {
             Self::Youtube => "youtube",
             Self::Widgets => "widgets",
             Self::Jellyfin => "jellyfin",
+            Self::Ai => "ai",
         }
     }
 
@@ -56,6 +58,7 @@ impl NetworkAccessScope {
                 | "youtube"
                 | "widgets"
                 | "jellyfin"
+                | "ai"
         )
     }
 }

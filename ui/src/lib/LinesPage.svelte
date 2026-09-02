@@ -98,11 +98,11 @@
   let hasLoaded = false;
   let error = $state("");
   let draftContent = $state("");
-  let draftVisibility = $state<LineVisibility>("private");
+  let draftVisibility = $state<LineVisibility>("public");
   let pendingFiles = $state.raw<File[]>([]);
   let replyingTo = $state<LinePost | null>(null);
   let replyContent = $state("");
-  let replyVisibility = $state<LineVisibility>("private");
+  let replyVisibility = $state<LineVisibility>("public");
   let replyFiles = $state.raw<File[]>([]);
   let replySubmitting = $state(false);
   let submitting = $state(false);

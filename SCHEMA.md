@@ -76,13 +76,34 @@ consult this table.
 | `scheme`             | TEXT    | Required, `http` or `https`                                                                                                |
 | `host`               | TEXT    | Required normalized hostname or IP, 1–253 characters                                                                       |
 | `port`               | INTEGER | Required, 1–65,535                                                                                                         |
-| `integration`        | TEXT    | `all`, `rss`, `calendar`, `contacts`, `podcasts`, `notifications`, `coding`, `images`, `youtube`, `widgets`, or `jellyfin` |
+| `integration`        | TEXT    | `all`, `rss`, `calendar`, `contacts`, `podcasts`, `notifications`, `coding`, `images`, `youtube`, `widgets`, `jellyfin`, or `ai` |
 | `created_by_user_id` | TEXT    | Optional administrator audit reference, set null on account delete                                                         |
 | `created_at`         | TEXT    | Required, RFC 3339 timestamp                                                                                               |
 | `updated_at`         | TEXT    | Required, RFC 3339 timestamp                                                                                               |
 
 The action, scheme, host, port, and integration tuple is unique. Instances are limited to 128 rows
 by the API.
+
+## `ollama_settings`
+
+Administrator-managed singleton for Pandan's direct Ollama integration. The integration is
+disabled by default. Enabling it verifies that the selected installed model advertises vision
+support. Private or HTTP destinations additionally require an exact `ai` network allow rule.
+Wall tagging is ad hoc: the server sends the bounded JPEG thumbnail, returns a structured set of
+suggestions, and does not write `wall_tags` until the administrator saves the wall details.
+
+| Column                  | Type    | Constraints                                                        |
+| ----------------------- | ------- | ------------------------------------------------------------------ |
+| `id`                    | INTEGER | Primary key; singleton value `1`                                   |
+| `enabled`               | INTEGER | Boolean `0` or `1`; defaults to `0`                                |
+| `base_url`              | TEXT    | Required credential-free HTTP(S) origin, 8–2,000 characters        |
+| `model`                 | TEXT    | Required installed vision model name, 1–120 characters             |
+| `prompt`                | TEXT    | Required wall-tagging instruction, 1–2,000 characters              |
+| `tag_count`             | INTEGER | Required number of distinct suggestions, 1–8; defaults to `5`      |
+| `configured_by_user_id` | TEXT    | Optional administrator audit reference, set null on account delete |
+| `last_verified_at`      | TEXT    | Optional RFC 3339 timestamp of the latest model verification       |
+| `created_at`            | TEXT    | Required, RFC 3339 timestamp                                       |
+| `updated_at`            | TEXT    | Required, RFC 3339 timestamp                                       |
 
 ## `jellyfin_server_settings`
 
@@ -162,7 +183,7 @@ One preference record per user.
 | `sidebar_timezones_json`   | TEXT | Valid JSON array containing 1–5 timezone names      |
 | `calendar_week_start`      | TEXT | `sunday` or `monday`; defaults to `sunday`          |
 | `temperature_unit`         | TEXT | `celsius` or `fahrenheit`                           |
-| `lines_default_visibility` | TEXT | `private` or `public`; defaults to `private`        |
+| `lines_default_visibility` | TEXT | `private` or `public`; defaults to `public`         |
 | `podcast_playback_rate`    | REAL | 0.5–3.0; defaults to 1.0                            |
 | `updated_at`               | TEXT | Required, RFC 3339 timestamp                        |
 
@@ -534,7 +555,7 @@ other accounts retain their content and clear a deleted parent reference.
 | `id`               | TEXT | Primary key                                                     |
 | `user_id`          | TEXT | Required, references `users` with cascade delete                |
 | `content`          | TEXT | Required, trimmed length 1–2,000                                |
-| `visibility`       | TEXT | `private` or `public`; defaults to `private`                    |
+| `visibility`       | TEXT | `private` or `public`; defaults to `public`                     |
 | `reply_to_post_id` | TEXT | Optional self-reference; set to null when the parent is deleted |
 | `created_at`       | TEXT | Required, RFC 3339 timestamp                                    |
 | `updated_at`       | TEXT | Required, RFC 3339 timestamp                                    |

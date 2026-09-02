@@ -4,6 +4,7 @@ pub mod contact_queries;
 pub mod entities;
 pub mod jellyfin_queries;
 pub mod ntfy_queries;
+pub mod ollama_queries;
 mod podcast_queries;
 pub mod queries;
 pub mod trading_queries;
@@ -283,6 +284,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "072_task_completion_events",
         include_str!("../migrations/072_task_completion_events.sql"),
+    ),
+    (
+        "073_ollama_settings",
+        include_str!("../migrations/073_ollama_settings.sql"),
     ),
 ];
 
@@ -2422,7 +2427,7 @@ mod tests {
         )
         .await
         .expect("Bob account creates");
-        assert_eq!(alice_settings.lines_default_visibility, "private");
+        assert_eq!(alice_settings.lines_default_visibility, "public");
 
         let public = queries::create_line_post(
             &pool,
@@ -4290,5 +4295,20 @@ mod tests {
             vec![0, 1, 2],
             "removal closes the gap it leaves behind"
         );
+    }
+
+    #[tokio::test]
+    async fn ollama_settings_start_disabled_with_small_wall_defaults() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+
+        let settings = ollama_queries::get_ollama_settings(&pool)
+            .await
+            .expect("Ollama settings load");
+
+        assert!(!settings.enabled);
+        assert_eq!(settings.base_url, "http://localhost:11434");
+        assert_eq!(settings.model, "gemma3:4b");
+        assert_eq!(settings.tag_count, 5);
+        assert!(settings.last_verified_at.is_none());
     }
 }

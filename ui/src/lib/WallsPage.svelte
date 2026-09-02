@@ -4,6 +4,7 @@
   import Pencil from "lucide-svelte/icons/pencil";
   import RefreshCw from "lucide-svelte/icons/refresh-cw";
   import Search from "lucide-svelte/icons/search";
+  import Tags from "lucide-svelte/icons/tags";
   import Trash2 from "lucide-svelte/icons/trash-2";
   import Wallpaper from "lucide-svelte/icons/wallpaper";
   import X from "lucide-svelte/icons/x";
@@ -17,6 +18,7 @@
     fetchWallSelections,
     fetchWalls,
     rejectWall,
+    suggestWallTags,
     submitWall,
     updateWall,
     wallImageUrl,
@@ -95,6 +97,8 @@
   let detailDialog = $state<HTMLDialogElement>();
   let detailBusy = $state(false);
   let detailError = $state("");
+  let detailNotice = $state("");
+  let suggestingTags = $state(false);
   let decisionNote = $state("");
   let editing = $state(false);
   let editTitle = $state("");
@@ -394,6 +398,30 @@
     }
   }
 
+  async function suggestTags(wall: Wall) {
+    if (detailBusy) return;
+    detailBusy = true;
+    suggestingTags = true;
+    detailError = "";
+    detailNotice = "";
+    try {
+      const suggestion = await suggestWallTags(wall.id);
+      editTitle = wall.title;
+      editDescription = wall.description;
+      editTags = suggestion.tags.join(", ");
+      editing = true;
+      detailNotice = `${suggestion.tags.length} tags suggested by ${suggestion.model}. Review them before saving.`;
+    } catch (error) {
+      detailError =
+        error instanceof Error
+          ? error.message
+          : "Unable to suggest tags for this wall";
+    } finally {
+      detailBusy = false;
+      suggestingTags = false;
+    }
+  }
+
   function toggleTag(tag: string) {
     activeTag = activeTag === tag ? "" : tag;
   }
@@ -418,12 +446,14 @@
     editDescription = wall.description;
     editTags = wall.tags.join(", ");
     detailError = "";
+    detailNotice = "";
     editing = true;
   }
 
   function cancelEditing() {
     editing = false;
     detailError = "";
+    detailNotice = "";
   }
 
   /**
@@ -451,6 +481,7 @@
       // Keep the already-rendered grid in step without refetching it.
       walls = walls.map((entry) => (entry.id === updated.id ? updated : entry));
       editing = false;
+      detailNotice = "";
     } catch (error) {
       detailError =
         error instanceof Error ? error.message : "Unable to save those details";
@@ -579,6 +610,7 @@
                 openWall = wall;
                 decisionNote = "";
                 detailError = "";
+                detailNotice = "";
                 editing = false;
               }}
               data-od-id={`wall-${wall.id}`}
@@ -707,6 +739,7 @@
   onclose={() => {
     openWall = null;
     editing = false;
+    detailNotice = "";
   }}
   data-od-id="wall-detail-dialog"
 >
@@ -781,6 +814,9 @@
       {#if detailError}
         <p class="wall-error" role="alert">{detailError}</p>
       {/if}
+      {#if detailNotice}
+        <p class="wall-notice" role="status">{detailNotice}</p>
+      {/if}
 
       {#if isAdministrator && openWall.status === "pending" && !editing}
         <label class="wall-field">
@@ -833,6 +869,18 @@
             >
               <Pencil size={15} strokeWidth={1.8} aria-hidden="true" />
               Edit
+            </button>
+          {/if}
+          {#if isAdministrator}
+            <button
+              class="ui-button ui-button--secondary"
+              type="button"
+              disabled={detailBusy}
+              onclick={() => openWall && suggestTags(openWall)}
+              data-od-id="suggest-wall-tags"
+            >
+              <Tags size={15} strokeWidth={1.8} aria-hidden="true" />
+              {suggestingTags ? "Analyzing…" : "Suggest tags"}
             </button>
           {/if}
           <span class="wall-actions-spacer"></span>
@@ -1112,6 +1160,16 @@
     margin: 0;
     font-family: var(--font-mono);
     font-size: 11px;
+  }
+  .wall-notice {
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    color: var(--fg);
+    background: var(--fg-soft);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
   }
 
   .wall-dialog {
