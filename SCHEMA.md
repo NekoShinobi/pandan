@@ -410,9 +410,10 @@ Short-lived, single-use authorization state consumed atomically by the callback.
 ## `tasks`
 
 User-owned tasks. The active list excludes rows with `archived_at` set, then orders incomplete
-tasks before completed tasks and by creation time. Completing a recurring task keeps it active and
-advances its due date according to its recurrence and rescheduling preference. Archived tasks are
-listed separately newest first; restoring one clears `archived_at` without changing its children.
+tasks before completed tasks and by creation time. Every completion increments `completion_count`
+and records its calendar date in `last_completed_on`. Completing a recurring task keeps it active
+and advances its due date according to its recurrence and rescheduling preference. Archived tasks
+are listed separately newest first; restoring one clears `archived_at` without changing its children.
 
 | Column            | Type    | Constraints                                                   |
 | ----------------- | ------- | ------------------------------------------------------------- |
@@ -428,9 +429,29 @@ listed separately newest first; restoring one clears `archived_at` without chang
 | `repeat_unit`     | TEXT    | `days`, `weeks`, `months`, or `years`                         |
 | `reschedule_from` | TEXT    | `due_date` or `completion_date`                               |
 | `completed_at`    | TEXT    | Optional RFC 3339 timestamp                                   |
+| `completion_count` | INTEGER | Required non-negative count, defaults to `0`                 |
+| `last_completed_on` | TEXT  | Optional ISO calendar date for the latest completion          |
 | `archived_at`     | TEXT    | Optional RFC 3339 timestamp; hides the task from active lists |
 | `created_at`      | TEXT    | Required, RFC 3339 timestamp                                  |
 | `updated_at`      | TEXT    | Required, RFC 3339 timestamp                                  |
+
+## `task_completions`
+
+Account-scoped task completion events used by the Tasks recent-completions rail. Every successful
+completion creates a separate event, including each occurrence of a recurring task. Correcting the
+completion date on an already-completed one-off task updates its latest event instead of adding a
+second completion. Deleting the parent task or account deletes its events.
+
+| Column          | Type    | Constraints                                                   |
+| --------------- | ------- | ------------------------------------------------------------- |
+| `id`            | TEXT    | Primary key                                                   |
+| `user_id`       | TEXT    | Required, references `users` with cascade delete              |
+| `task_id`       | TEXT    | Required, references `tasks` with cascade delete              |
+| `task_title`    | TEXT    | Required snapshot, trimmed length 1–180                       |
+| `priority`      | TEXT    | `p1`, `p2`, `p3`, `p4`, or `none`                         |
+| `was_recurring` | INTEGER | Required boolean                                              |
+| `completed_on`  | TEXT    | Required ISO calendar date                                    |
+| `created_at`    | TEXT    | Required RFC 3339 event timestamp                             |
 
 ## `task_labels`
 

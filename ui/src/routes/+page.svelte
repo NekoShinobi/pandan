@@ -15,6 +15,7 @@
   import Code2 from "lucide-svelte/icons/code-xml";
   import Columns3 from "lucide-svelte/icons/columns-3";
   import ContactRound from "lucide-svelte/icons/contact-round";
+  import Copy from "lucide-svelte/icons/copy";
   import Ellipsis from "lucide-svelte/icons/ellipsis";
   import DownloadIcon from "lucide-svelte/icons/download";
   import ExternalLink from "lucide-svelte/icons/external-link";
@@ -103,6 +104,7 @@
     archiveTask,
     bookmarkFaviconUrl,
     clearCompletedTasks,
+    cloneTask,
     createAdministrator,
     createBookmark,
     createDashboardWidget,
@@ -119,6 +121,7 @@
     fetchBrowserSessions,
     fetchCalendar,
     fetchDashboard,
+    fetchTaskCompletions,
     fetchPaymentSubscriptions,
     fetchManagedUsers,
     forceSignOutSession,
@@ -151,6 +154,7 @@
     type PaymentSubscription,
     type Task,
     type TaskAttachment,
+    type TaskCompletion,
     type TaskInput,
     type UserSettings,
     type UserContentScope,
@@ -687,6 +691,9 @@
   });
   let setupRequired = $derived(data.setup.required);
   let tasks = $derived<Task[]>(dashboard?.tasks ?? []);
+  let recentTaskCompletions = $derived<TaskCompletion[]>(
+    dashboard?.recent_task_completions ?? [],
+  );
   let archivedTasks = $state.raw<Task[]>([]);
   let archivedTaskCount = $derived(dashboard?.archived_task_count ?? 0);
   let taskView = $state<TaskView>("active");
@@ -796,6 +803,11 @@
   let deletingContentScope = $state<UserContentScope | null>(null);
   let destructiveError = $state("");
   let taskEditorDialog = $state<HTMLDialogElement>();
+  let taskCompletionDialog = $state<HTMLDialogElement>();
+  let taskCompletionTarget = $state<Task | null>(null);
+  let taskCompletionDate = $state("");
+  let taskCompletionError = $state("");
+  let savingTaskCompletion = $state(false);
   let focusDialog = $state<HTMLDialogElement>();
   let editingTaskId = $state<string | null>(null);
   let taskName = $state("");
@@ -2043,6 +2055,39 @@
     };
   }
 
+  function captureTaskCompletionDialog(node: HTMLDialogElement) {
+    taskCompletionDialog = node;
+    return () => {
+      taskCompletionDialog = undefined;
+    };
+  }
+
+  function resetTaskCompletionDialog() {
+    taskCompletionTarget = null;
+    taskCompletionDate = "";
+    taskCompletionError = "";
+    savingTaskCompletion = false;
+  }
+
+  function taskCurrentDate() {
+    return dashboardCalendarDateKey(
+      dateInTimezone(
+        currentTime,
+        normalizeTimezone(dashboard?.settings.timezone || "UTC"),
+      ),
+    );
+  }
+
+  function openTaskCompletionDialog(task: Task) {
+    closeTaskMenu();
+    taskCompletionTarget = task;
+    taskCompletionDate = task.completed
+      ? (task.last_completed_on ?? taskCurrentDate())
+      : taskCurrentDate();
+    taskCompletionError = "";
+    taskCompletionDialog?.showModal();
+  }
+
   function resetTaskEditor() {
     editingTaskId = null;
     taskName = "";
@@ -2342,6 +2387,23 @@
       setArchivedTaskCount(previousArchivedTaskCount);
       showToast(
         reason instanceof Error ? reason.message : "Unable to restore task",
+      );
+    } finally {
+      taskActionId = "";
+    }
+  }
+
+  async function cloneTaskFromMenu(task: Task) {
+    if (taskActionId) return;
+    taskActionId = task.id;
+    closeTaskMenu();
+    try {
+      const cloned = await cloneTask(task.id);
+      tasks = [...tasks, cloned];
+      showToast(`Cloned ${task.title} to Active`);
+    } catch (reason: unknown) {
+      showToast(
+        reason instanceof Error ? reason.message : "Unable to clone task",
       );
     } finally {
       taskActionId = "";
@@ -3116,7 +3178,12 @@
     try {
       const result = await deleteUserContent(action.scope);
       if (action.scope === "tasks" && dashboard) {
-        dashboard = { ...dashboard, tasks: [], archived_task_count: 0 };
+        dashboard = {
+          ...dashboard,
+          tasks: [],
+          archived_task_count: 0,
+          recent_task_completions: [],
+        };
         resetTaskArchiveView();
       }
       if (activeSection === action.scope) {
@@ -3445,18 +3512,91 @@
     }
   }
 
-  async function toggleTask(task: Task) {
+  async function applyTaskCompletion(
+    task: Task,
+    completed: boolean,
+    completionDate?: string,
+  ) {
+    if (taskActionId) return;
     pendingTaskDeleteId = "";
-    const optimistic = { ...task, completed: !task.completed };
-    tasks = tasks.map((item) => (item.id === task.id ? optimistic : item));
+    taskActionId = task.id;
     try {
-      const updated = await setTaskCompleted(task.id, optimistic.completed);
+      const updated = await setTaskCompleted(
+        task.id,
+        completed,
+        completionDate,
+      );
       tasks = tasks.map((item) => (item.id === task.id ? updated : item));
+      try {
+        await refreshTaskCompletions();
+      } catch {
+        // The successful task update remains authoritative; the rail refreshes on reload.
+      }
+      return updated;
+    } finally {
+      taskActionId = "";
+    }
+  }
+
+  async function refreshTaskCompletions() {
+    const completions = await fetchTaskCompletions();
+    if (!dashboard) return;
+    dashboard = {
+      ...dashboard,
+      tasks,
+      recent_task_completions: completions,
+    };
+  }
+
+  async function toggleTask(task: Task) {
+    try {
+      const completing = !task.completed;
+      const updated = await applyTaskCompletion(
+        task,
+        completing,
+        completing ? taskCurrentDate() : undefined,
+      );
+      if (!updated) return;
+      showToast(
+        completing && task.repeat_rule !== "none"
+          ? `Task checked · next due ${updated.due_date ? formatTaskDate(updated.due_date) : "not set"}`
+          : completing
+            ? "Task checked"
+            : "Task reopened",
+      );
     } catch (reason: unknown) {
-      tasks = tasks.map((item) => (item.id === task.id ? task : item));
       showToast(
         reason instanceof Error ? reason.message : "Task update failed",
       );
+    }
+  }
+
+  async function saveTaskCompletion(event: SubmitEvent) {
+    event.preventDefault();
+    if (!taskCompletionTarget || savingTaskCompletion) return;
+    savingTaskCompletion = true;
+    taskCompletionError = "";
+    try {
+      const target = taskCompletionTarget;
+      const updated = await applyTaskCompletion(
+        target,
+        true,
+        taskCompletionDate,
+      );
+      if (!updated) return;
+      taskCompletionDialog?.close();
+      showToast(
+        target.repeat_rule !== "none"
+          ? `Task checked · next due ${updated.due_date ? formatTaskDate(updated.due_date) : "not set"}`
+          : target.completed
+            ? "Completion date updated"
+            : "Task checked",
+      );
+    } catch (reason: unknown) {
+      taskCompletionError =
+        reason instanceof Error ? reason.message : "Task update failed";
+    } finally {
+      savingTaskCompletion = false;
     }
   }
 
@@ -3536,6 +3676,18 @@
     return priority.toUpperCase();
   }
 
+  function taskPriorityLevel(priority: Task["priority"]) {
+    return (
+      {
+        p1: 5,
+        p2: 4,
+        p3: 3,
+        p4: 2,
+        none: 3,
+      } as const
+    )[priority];
+  }
+
   function taskRepeatLabel(task: Task) {
     if (task.repeat_rule === "none") return "";
     if (task.repeat_rule !== "custom") return task.repeat_rule;
@@ -3548,6 +3700,29 @@
       day: "numeric",
       year: "numeric",
     }).format(new Date(`${value}T12:00:00`));
+  }
+
+  function taskCompletionDateLabel(value: string) {
+    const daysAway = taskDayDistance(
+      value,
+      currentTime,
+      dashboard?.settings.timezone || "UTC",
+    );
+    if (daysAway === 0) return "Today";
+    if (daysAway === -1) return "Yesterday";
+    return formatTaskDate(value);
+  }
+
+  function taskOverdueLabel(task: Task) {
+    if (task.completed || !task.due_date) return "";
+    const daysAway = taskDayDistance(
+      task.due_date,
+      currentTime,
+      dashboard?.settings.timezone || "UTC",
+    );
+    if (daysAway >= 0) return "";
+    const daysOverdue = Math.abs(daysAway);
+    return `${daysOverdue} ${daysOverdue === 1 ? "day" : "days"} overdue`;
   }
 </script>
 
@@ -4672,7 +4847,6 @@
                   <button
                     class={[
                       "ui-button",
-                      "ui-button--secondary",
                       "task-view-menu-button",
                       taskViewTarget === "active" && "is-active",
                     ]}
@@ -4688,7 +4862,6 @@
                   <button
                     class={[
                       "ui-button",
-                      "ui-button--secondary",
                       "task-view-menu-button",
                       taskViewTarget === "archived" && "is-active",
                     ]}
@@ -4745,17 +4918,6 @@
                           <span class="task-archive-marker" aria-hidden="true">
                             <ArchiveIcon size={16} strokeWidth={1.8} />
                           </span>
-                        {:else}
-                          <button
-                            class="task-complete-button"
-                            type="button"
-                            aria-label={task.completed
-                              ? `Mark ${task.title} incomplete`
-                              : `Complete ${task.title}`}
-                            onclick={() => toggleTask(task)}
-                          >
-                            <span class="focus-check" aria-hidden="true"></span>
-                          </button>
                         {/if}
                         <button
                           class="task-row-content"
@@ -4767,14 +4929,10 @@
                         >
                           <span class="task-row-heading">
                             {#if task.priority !== "none"}
-                              <span
-                                class={[
-                                  "task-priority",
-                                  `priority-${task.priority}`,
-                                ]}
-                              >
-                                {taskPriorityLabel(task.priority)}
-                              </span>
+                              <NtfyPriority
+                                priority={taskPriorityLevel(task.priority)}
+                                ariaLabel={`${taskPriorityLabel(task.priority)} priority`}
+                              />
                             {/if}
                             <strong>{task.title}</strong>
                             <ChevronDown
@@ -4796,6 +4954,11 @@
                                 />
                                 {formatTaskDate(task.due_date)}
                               </span>
+                              {#if taskOverdueLabel(task)}
+                                <span class="task-overdue-indicator">
+                                  {taskOverdueLabel(task)}
+                                </span>
+                              {/if}
                             {/if}
                             {#if task.repeat_rule !== "none"}
                               <span>
@@ -4805,6 +4968,32 @@
                                   aria-hidden="true"
                                 />
                                 {taskRepeatLabel(task)}
+                              </span>
+                              <span
+                                aria-label={`Completed ${task.completion_count} ${task.completion_count === 1 ? "time" : "times"}`}
+                              >
+                                <Check
+                                  size={13}
+                                  strokeWidth={1.8}
+                                  aria-hidden="true"
+                                />
+                                {task.completion_count}
+                                {task.completion_count === 1
+                                  ? "completion"
+                                  : "completions"}
+                              </span>
+                            {/if}
+                            {#if task.last_completed_on}
+                              <span>
+                                <Check
+                                  size={13}
+                                  strokeWidth={1.8}
+                                  aria-hidden="true"
+                                />
+                                {task.repeat_rule === "none"
+                                  ? "Completed"
+                                  : "Last checked"}
+                                {formatTaskDate(task.last_completed_on)}
                               </span>
                             {/if}
                             {#if task.subtasks.length}
@@ -4846,6 +5035,39 @@
                           aria-label={`Actions for ${task.title}`}
                           data-task-action-menu
                         >
+                          {#if !archived}
+                            <button
+                              class="ui-button ui-button--secondary ui-button--icon task-complete-button"
+                              type="button"
+                              disabled={taskActionId === task.id}
+                              aria-label={task.completed
+                                ? `Mark ${task.title} incomplete`
+                                : `Complete ${task.title}`}
+                              aria-pressed={task.completed}
+                              title={task.completed
+                                ? "Reopen task"
+                                : "Check task"}
+                              data-tip={task.completed
+                                ? "Reopen task"
+                                : "Check task"}
+                              onclick={() => toggleTask(task)}
+                              data-od-id={`check-task-${task.id}`}
+                            >
+                              {#if task.completed}
+                                <RotateCcw
+                                  size={15}
+                                  strokeWidth={1.8}
+                                  aria-hidden="true"
+                                />
+                              {:else}
+                                <Check
+                                  size={16}
+                                  strokeWidth={1.9}
+                                  aria-hidden="true"
+                                />
+                              {/if}
+                            </button>
+                          {/if}
                           {#if archived}
                             <button
                               class="ui-button ui-button--secondary task-row-action task-row-primary-action task-row-restore-action"
@@ -4862,23 +5084,6 @@
                                 aria-hidden="true"
                               />
                               <span>Restore</span>
-                            </button>
-                          {:else}
-                            <button
-                              class="ui-button ui-button--secondary task-row-action task-row-primary-action task-row-edit-action"
-                              type="button"
-                              disabled={taskActionId === task.id}
-                              aria-label={`Edit ${task.title}`}
-                              title="Edit task"
-                              data-od-id={`edit-task-${task.id}`}
-                              onclick={() => openTaskEditor(task)}
-                            >
-                              <Pencil
-                                size={15}
-                                strokeWidth={1.8}
-                                aria-hidden="true"
-                              />
-                              <span>Edit</span>
                             </button>
                           {/if}
                           <button
@@ -4912,7 +5117,58 @@
                               closedY: -6,
                             })}
                           >
+                            <button
+                              type="button"
+                              role="menuitem"
+                              disabled={taskActionId === task.id}
+                              aria-label={`Clone ${task.title}`}
+                              data-od-id={`clone-task-${task.id}`}
+                              onclick={() => cloneTaskFromMenu(task)}
+                            >
+                              <Copy
+                                size={15}
+                                strokeWidth={1.8}
+                                aria-hidden="true"
+                              />
+                              <span>Clone task</span>
+                            </button>
                             {#if !archived}
+                              <button
+                                type="button"
+                                role="menuitem"
+                                disabled={taskActionId === task.id}
+                                aria-label={`Edit ${task.title}`}
+                                data-od-id={`edit-task-${task.id}`}
+                                onclick={() => openTaskEditor(task)}
+                              >
+                                <Pencil
+                                  size={15}
+                                  strokeWidth={1.8}
+                                  aria-hidden="true"
+                                />
+                                <span>Edit task</span>
+                              </button>
+                              <button
+                                type="button"
+                                role="menuitem"
+                                disabled={taskActionId === task.id}
+                                aria-label={task.completed
+                                  ? `Change completion date for ${task.title}`
+                                  : `Complete ${task.title} on a custom date`}
+                                data-od-id={`complete-task-on-date-${task.id}`}
+                                onclick={() => openTaskCompletionDialog(task)}
+                              >
+                                <CalendarDays
+                                  size={15}
+                                  strokeWidth={1.8}
+                                  aria-hidden="true"
+                                />
+                                <span>
+                                  {task.completed
+                                    ? "Change completion date"
+                                    : "Check on date"}
+                                </span>
+                              </button>
                               <button
                                 type="button"
                                 role="menuitem"
@@ -5190,96 +5446,158 @@
                   {/if}
                 </section>
                 <aside
-                  class="tasks-summary-box tasks-focus-panel"
-                  data-od-id="tasks-focus-timer"
+                  class="tasks-side-rail"
+                  aria-label="Task tools"
+                  data-od-id="tasks-side-rail"
                 >
-                  <div class="focus-timer-heading">
-                    <span>[ FOCUS.MODE ]</span>
-                    <small>{focusRunning ? "RUNNING" : "READY"}</small>
-                  </div>
-                  <label for="focus-subject">Focus target</label>
-                  <input
-                    id="focus-subject"
-                    class="text-input focus-subject-input"
-                    bind:value={focusSubject}
-                    placeholder="What needs your attention?"
-                    maxlength="120"
-                  />
-                  <time
-                    class="focus-timer-readout"
-                    datetime={`PT${focusRemainingSeconds}S`}
-                    aria-live="polite">{focusTimeLabel}</time
+                  <section
+                    class="tasks-summary-box tasks-focus-panel"
+                    data-od-id="tasks-focus-timer"
                   >
-                  <div
-                    class="focus-timer-track"
-                    aria-hidden="true"
-                    style:--focus-progress={`${focusProgress}%`}
-                  >
-                    <i></i>
-                  </div>
-                  <div class="focus-duration-options" aria-label="Focus length">
-                    {#each focusDurations as minutes (minutes)}
+                    <div class="focus-timer-heading">
+                      <span>[ FOCUS.MODE ]</span>
+                      <small>{focusRunning ? "RUNNING" : "READY"}</small>
+                    </div>
+                    <label for="focus-subject">Focus target</label>
+                    <input
+                      id="focus-subject"
+                      class="text-input focus-subject-input"
+                      bind:value={focusSubject}
+                      placeholder="What needs your attention?"
+                      maxlength="120"
+                    />
+                    <time
+                      class="focus-timer-readout"
+                      datetime={`PT${focusRemainingSeconds}S`}
+                      aria-live="polite">{focusTimeLabel}</time
+                    >
+                    <div
+                      class="focus-timer-track"
+                      aria-hidden="true"
+                      style:--focus-progress={`${focusProgress}%`}
+                    >
+                      <i></i>
+                    </div>
+                    <div
+                      class="focus-duration-options"
+                      aria-label="Focus length"
+                    >
+                      {#each focusDurations as minutes (minutes)}
+                        <button
+                          type="button"
+                          class:active={focusDurationMinutes === minutes}
+                          aria-pressed={focusDurationMinutes === minutes}
+                          disabled={focusRunning}
+                          onclick={() => setFocusDuration(minutes)}
+                          >{minutes}m</button
+                        >
+                      {/each}
+                      <label class="focus-custom-duration">
+                        <span class="sr-only">Custom focus duration</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max="240"
+                          step="1"
+                          value={focusDurationMinutes}
+                          style:--focus-duration-digits={Math.max(
+                            2,
+                            String(focusDurationMinutes).length,
+                          )}
+                          disabled={focusRunning}
+                          aria-label="Custom focus duration in minutes"
+                          oninput={(event) =>
+                            setFocusDuration(event.currentTarget.valueAsNumber)}
+                        />
+                        <span>min</span>
+                      </label>
+                    </div>
+                    <div class="focus-timer-actions">
                       <button
+                        class="ui-button ui-button--primary primary-btn"
                         type="button"
-                        class:active={focusDurationMinutes === minutes}
-                        aria-pressed={focusDurationMinutes === minutes}
-                        disabled={focusRunning}
-                        onclick={() => setFocusDuration(minutes)}
-                        >{minutes}m</button
+                        onclick={startFocusSession}
                       >
-                    {/each}
-                    <label class="focus-custom-duration">
-                      <span class="sr-only">Custom focus duration</span>
-                      <input
-                        type="number"
-                        min="1"
-                        max="240"
-                        step="1"
-                        value={focusDurationMinutes}
-                        style:--focus-duration-digits={Math.max(
-                          2,
-                          String(focusDurationMinutes).length,
-                        )}
-                        disabled={focusRunning}
-                        aria-label="Custom focus duration in minutes"
-                        oninput={(event) =>
-                          setFocusDuration(event.currentTarget.valueAsNumber)}
-                      />
-                      <span>min</span>
-                    </label>
-                  </div>
-                  <div class="focus-timer-actions">
-                    <button
-                      class="ui-button ui-button--primary primary-btn"
-                      type="button"
-                      onclick={startFocusSession}
-                    >
-                      <Play size={15} strokeWidth={1.8} aria-hidden="true" />
-                      Start focus
-                    </button>
-                    <button
-                      class="ui-button ui-button--secondary secondary-btn"
-                      type="button"
-                      onclick={resetFocusTimer}
-                    >
-                      <RotateCcw
-                        size={15}
-                        strokeWidth={1.8}
-                        aria-hidden="true"
-                      />
-                      Reset
-                    </button>
-                  </div>
-                  <dl>
-                    <div>
-                      <dt>Open</dt>
-                      <dd>{tasks.length - completedCount}</dd>
+                        <Play size={15} strokeWidth={1.8} aria-hidden="true" />
+                        Start focus
+                      </button>
+                      <button
+                        class="ui-button ui-button--secondary secondary-btn"
+                        type="button"
+                        onclick={resetFocusTimer}
+                      >
+                        <RotateCcw
+                          size={15}
+                          strokeWidth={1.8}
+                          aria-hidden="true"
+                        />
+                        Reset
+                      </button>
                     </div>
-                    <div>
-                      <dt>Completed</dt>
-                      <dd>{completedCount}</dd>
-                    </div>
-                  </dl>
+                    <dl>
+                      <div>
+                        <dt>Open</dt>
+                        <dd>{tasks.length - completedCount}</dd>
+                      </div>
+                      <div>
+                        <dt>Completed</dt>
+                        <dd>{completedCount}</dd>
+                      </div>
+                    </dl>
+                  </section>
+                  <section
+                    class="tasks-recent-panel"
+                    data-od-id="recent-task-completions"
+                  >
+                    <header class="tasks-recent-heading">
+                      <div>
+                        <span>[ RECENT.CHECKS ]</span>
+                        <h2>Recently completed</h2>
+                      </div>
+                      <strong>{recentTaskCompletions.length}</strong>
+                    </header>
+                    {#if recentTaskCompletions.length}
+                      <ol class="tasks-recent-list">
+                        {#each recentTaskCompletions as completion (completion.id)}
+                          <li data-od-id={`task-completion-${completion.id}`}>
+                            <div class="tasks-recent-title">
+                              {#if completion.priority !== "none"}
+                                <NtfyPriority
+                                  priority={taskPriorityLevel(
+                                    completion.priority,
+                                  )}
+                                  ariaLabel={`${taskPriorityLabel(completion.priority)} priority`}
+                                />
+                              {/if}
+                              <strong>{completion.title}</strong>
+                            </div>
+                            <div class="tasks-recent-meta">
+                              <time datetime={completion.completed_on}>
+                                {taskCompletionDateLabel(
+                                  completion.completed_on,
+                                )}
+                              </time>
+                              {#if completion.was_recurring}
+                                <span>
+                                  <Repeat2
+                                    size={12}
+                                    strokeWidth={1.8}
+                                    aria-hidden="true"
+                                  />
+                                  Recurring
+                                </span>
+                              {/if}
+                            </div>
+                          </li>
+                        {/each}
+                      </ol>
+                    {:else}
+                      <div class="tasks-recent-empty">
+                        <Check size={20} strokeWidth={1.7} aria-hidden="true" />
+                        <p>Completed tasks will appear here.</p>
+                      </div>
+                    {/if}
+                  </section>
                 </aside>
               </div>
             </section>
@@ -6864,6 +7182,91 @@
         {/each}
       {/each}
     </div>
+  </dialog>
+
+  <dialog
+    class="settings-dialog task-completion-dialog"
+    {@attach captureTaskCompletionDialog}
+    onclose={resetTaskCompletionDialog}
+    onclick={(event) =>
+      !savingTaskCompletion &&
+      event.target === taskCompletionDialog &&
+      taskCompletionDialog.close()}
+    data-od-id="task-completion-dialog"
+  >
+    <div class="settings-heading task-editor-heading">
+      <div>
+        <span>[ TASK.CHECK ]</span>
+        <h2>
+          {taskCompletionTarget?.completed
+            ? "Change completion date"
+            : "Check task on a date"}
+        </h2>
+        <p>
+          {taskCompletionTarget?.repeat_rule === "none"
+            ? "Record the calendar date when this task was completed."
+            : "Record this completion and move the task to its next due date."}
+        </p>
+      </div>
+      <button
+        class="ui-button ui-button--ghost ui-button--icon dialog-close"
+        type="button"
+        disabled={savingTaskCompletion}
+        aria-label="Close completion date"
+        onclick={() => taskCompletionDialog?.close()}
+      >
+        <X size={18} strokeWidth={1.8} aria-hidden="true" />
+      </button>
+    </div>
+    <form
+      class="task-completion-form"
+      onsubmit={saveTaskCompletion}
+      data-od-id="task-completion-form"
+    >
+      <div class="task-completion-body">
+        <label for="task-completion-date">Completion date</label>
+        <PandanDatePicker
+          id="task-completion-date"
+          ariaLabel="Task completion date"
+          bind:value={taskCompletionDate}
+          required
+          disabled={savingTaskCompletion}
+          odId="task-completion-date"
+        />
+        {#if taskCompletionTarget?.last_completed_on}
+          <small>
+            Last recorded {formatTaskDate(
+              taskCompletionTarget.last_completed_on,
+            )}
+          </small>
+        {/if}
+        {#if taskCompletionError}
+          <p class="form-error" role="alert">{taskCompletionError}</p>
+        {/if}
+      </div>
+      <div class="task-editor-actions">
+        <button
+          class="ui-button ui-button--secondary"
+          type="button"
+          disabled={savingTaskCompletion}
+          onclick={() => taskCompletionDialog?.close()}
+        >
+          Cancel
+        </button>
+        <button
+          class="ui-button ui-button--primary primary-btn"
+          type="submit"
+          disabled={savingTaskCompletion || !taskCompletionDate}
+          data-od-id="save-task-completion"
+        >
+          {savingTaskCompletion
+            ? "Saving…"
+            : taskCompletionTarget?.completed
+              ? "Save date"
+              : "Check task"}
+        </button>
+      </div>
+    </form>
   </dialog>
 
   <dialog

@@ -276,6 +276,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "070_trading_watchlist",
         include_str!("../migrations/070_trading_watchlist.sql"),
     ),
+    (
+        "071_task_completion_history",
+        include_str!("../migrations/071_task_completion_history.sql"),
+    ),
+    (
+        "072_task_completion_events",
+        include_str!("../migrations/072_task_completion_events.sql"),
+    ),
 ];
 
 /// Maps migration names used by earlier development builds to their canonical names.

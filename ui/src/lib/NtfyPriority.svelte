@@ -5,7 +5,8 @@
   import ChevronsUp from "lucide-svelte/icons/chevrons-up";
   import Minus from "lucide-svelte/icons/minus";
 
-  let { priority }: { priority: number } = $props();
+  let { priority, ariaLabel }: { priority: number; ariaLabel?: string } =
+    $props();
 
   const level = $derived(Math.min(5, Math.max(1, priority || 3)));
   const label = $derived(
@@ -25,7 +26,7 @@
   class="ntfy-priority"
   data-level={level}
   role="img"
-  aria-label={`${label} priority`}
+  aria-label={ariaLabel ?? `${label} priority`}
 >
   {#if level === 1}
     <ChevronsDown size={14} strokeWidth={1.8} aria-hidden="true" />

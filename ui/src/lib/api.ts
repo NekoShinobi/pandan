@@ -15,6 +15,8 @@ export interface Task {
   repeat_unit: "days" | "weeks" | "months" | "years";
   reschedule_from: "due_date" | "completion_date";
   completed_at: string | null;
+  completion_count: number;
+  last_completed_on: string | null;
   labels: string[];
   subtasks: TaskSubtask[];
   attachments: TaskAttachment[];
@@ -36,6 +38,16 @@ export interface TaskAttachment {
   file_name: string;
   mime_type: string;
   byte_size: number;
+  created_at: string;
+}
+
+export interface TaskCompletion {
+  id: string;
+  task_id: string;
+  title: string;
+  priority: Task["priority"];
+  was_recurring: boolean;
+  completed_on: string;
   created_at: string;
 }
 
@@ -1384,6 +1396,7 @@ export interface DashboardResponse {
   appearance: UserAppearance;
   tasks: Task[];
   archived_task_count: number;
+  recent_task_completions: TaskCompletion[];
   feeds: FeedItem[];
   widgets: DashboardWidget[];
   bookmarks: Bookmark[];
@@ -2424,8 +2437,26 @@ export function updateTask(
 export function setTaskCompleted(
   id: string,
   completed: boolean,
+  completionDate?: string,
 ): Promise<Task> {
-  return updateTask(id, { completed });
+  return requestJson<Task>(`/api/tasks/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      completed,
+      ...(completionDate ? { completion_date: completionDate } : {}),
+    }),
+  });
+}
+
+export function fetchTaskCompletions(): Promise<TaskCompletion[]> {
+  return requestJson<TaskCompletion[]>("/api/tasks/completions");
+}
+
+export function cloneTask(id: string): Promise<Task> {
+  return requestJson<Task>(`/api/tasks/${encodeURIComponent(id)}/clone`, {
+    method: "POST",
+  });
 }
 
 export async function deleteTask(id: string): Promise<void> {

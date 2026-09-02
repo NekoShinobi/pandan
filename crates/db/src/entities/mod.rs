@@ -36,6 +36,8 @@ pub struct Task {
     pub repeat_unit: String,
     pub reschedule_from: String,
     pub completed_at: Option<String>,
+    pub completion_count: i64,
+    pub last_completed_on: Option<String>,
     pub labels: Vec<String>,
     pub subtasks: Vec<TaskSubtask>,
     pub attachments: Vec<TaskAttachment>,
@@ -59,6 +61,17 @@ pub struct TaskAttachment {
     pub file_name: String,
     pub mime_type: String,
     pub byte_size: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct TaskCompletion {
+    pub id: String,
+    pub task_id: String,
+    pub title: String,
+    pub priority: String,
+    pub was_recurring: bool,
+    pub completed_on: String,
     pub created_at: String,
 }
 

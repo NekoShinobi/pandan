@@ -13,7 +13,7 @@ use db::entities::{
     AuthenticationSettings, Bookmark, CalendarEvent, CalendarSubscription, CodingProject, Contact,
     DashboardWidget, FeedItem, JournalNode, LoginAppearance, ManagedUser, PaymentSubscription,
     RssItem, RssItemDraft, RssRefreshTarget, RssSubscription, RssSubscriptionDraft, SessionAccount,
-    Task, TaskDraft, TaskSubtaskDraft, User, UserAppearance, UserSettings,
+    Task, TaskCompletion, TaskDraft, TaskSubtaskDraft, User, UserAppearance, UserSettings,
 };
 use futures_util::future::join_all;
 use rand_core::OsRng;
@@ -148,6 +148,7 @@ pub struct DashboardResponse {
     pub appearance: UserAppearance,
     pub tasks: Vec<Task>,
     pub archived_task_count: i64,
+    pub recent_task_completions: Vec<TaskCompletion>,
     pub feeds: Vec<FeedItem>,
     pub widgets: Vec<DashboardWidget>,
     pub bookmarks: Vec<Bookmark>,
@@ -222,6 +223,8 @@ pub struct UpdateTaskRequest {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1059,9 +1062,19 @@ async fn dashboard(
 ) -> Result<web::Json<DashboardResponse>, ApiError> {
     let account = authenticated_account(&state, &request).await?;
     let user_id = account.id.clone();
-    let (tasks, archived_task_count, feeds, widgets, bookmarks, appearance, embedded_pages) = tokio::try_join!(
+    let (
+        tasks,
+        archived_task_count,
+        recent_task_completions,
+        feeds,
+        widgets,
+        bookmarks,
+        appearance,
+        embedded_pages,
+    ) = tokio::try_join!(
         db::queries::list_tasks(&state.pool, &user_id),
         db::queries::count_archived_tasks(&state.pool, &user_id),
+        db::queries::list_recent_task_completions(&state.pool, &user_id),
         db::queries::list_feed_items(&state.pool),
         db::queries::list_dashboard_widgets(&state.pool, &user_id),
         db::queries::list_bookmarks(&state.pool, &user_id),
@@ -1076,6 +1089,7 @@ async fn dashboard(
         appearance,
         tasks,
         archived_task_count,
+        recent_task_completions,
         feeds,
         widgets,
         bookmarks,
@@ -2296,16 +2310,28 @@ fn validate_task_draft(mut draft: TaskDraft) -> Result<TaskDraft, ApiError> {
     Ok(draft)
 }
 
-fn next_task_due_date(draft: &TaskDraft) -> Result<String, ApiError> {
-    let today = chrono::Utc::now().date_naive();
+fn task_completion_date(value: Option<&str>) -> Result<chrono::NaiveDate, ApiError> {
+    value.map_or_else(
+        || Ok(chrono::Utc::now().date_naive()),
+        |value| {
+            chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
+                .map_err(|_| ApiError::BadRequest("task completion date is invalid"))
+        },
+    )
+}
+
+fn next_task_due_date(
+    draft: &TaskDraft,
+    completion_date: chrono::NaiveDate,
+) -> Result<String, ApiError> {
     let base = if draft.reschedule_from == "due_date" {
         draft
             .due_date
             .as_deref()
             .and_then(|value| chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
-            .unwrap_or(today)
+            .unwrap_or(completion_date)
     } else {
-        today
+        completion_date
     };
     let next = match draft.repeat_unit.as_str() {
         "days" => base.checked_add_signed(chrono::Duration::days(draft.repeat_interval)),
@@ -2324,6 +2350,14 @@ fn next_task_due_date(draft: &TaskDraft) -> Result<String, ApiError> {
     Ok(next.format("%Y-%m-%d").to_string())
 }
 
+fn cloned_task_title(title: &str) -> String {
+    const SUFFIX: &str = " (copy)";
+    let retained = 180_usize.saturating_sub(SUFFIX.chars().count());
+    let mut cloned = title.chars().take(retained).collect::<String>();
+    cloned.push_str(SUFFIX);
+    cloned
+}
+
 async fn create_task(
     state: web::Data<AppState>,
     request: HttpRequest,
@@ -2333,6 +2367,49 @@ async fn create_task(
     let draft = task_draft_from_create(payload.into_inner())?;
     let task = db::queries::create_task(&state.pool, &account.id, &draft).await?;
     Ok((web::Json(task), StatusCode::CREATED))
+}
+
+async fn recent_task_completions(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+) -> Result<web::Json<Vec<TaskCompletion>>, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    Ok(web::Json(
+        db::queries::list_recent_task_completions(&state.pool, &account.id).await?,
+    ))
+}
+
+async fn clone_task(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    task_id: web::Path<String>,
+) -> Result<(web::Json<Task>, StatusCode), ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    let source = db::queries::get_task(&state.pool, &account.id, &task_id)
+        .await?
+        .ok_or(ApiError::NotFound("task not found"))?;
+    let draft = validate_task_draft(TaskDraft {
+        title: cloned_task_title(&source.title),
+        description: source.description,
+        priority: source.priority,
+        due_date: source.due_date,
+        repeat_rule: source.repeat_rule,
+        repeat_interval: source.repeat_interval,
+        repeat_unit: source.repeat_unit,
+        reschedule_from: source.reschedule_from,
+        labels: source.labels,
+        subtasks: source
+            .subtasks
+            .into_iter()
+            .map(|subtask| TaskSubtaskDraft {
+                id: None,
+                title: subtask.title,
+                completed: false,
+            })
+            .collect(),
+    })?;
+    let cloned = db::queries::create_task(&state.pool, &account.id, &draft).await?;
+    Ok((web::Json(cloned), StatusCode::CREATED))
 }
 
 async fn archived_tasks(
@@ -2356,15 +2433,28 @@ async fn update_task(
         .await?
         .ok_or(ApiError::NotFound("task not found"))?;
     let requested_completion = payload.completed;
+    let requested_completion_date = payload.completion_date.clone();
+    if requested_completion_date.is_some() && requested_completion != Some(true) {
+        return Err(ApiError::BadRequest(
+            "task completion date requires a completion",
+        ));
+    }
     let mut draft = merge_task_update(&existing, payload.into_inner())?;
     let mut completed = requested_completion.unwrap_or(existing.completed);
     let mut completed_at = existing.completed_at.clone();
+    let mut last_completed_on = existing.last_completed_on.clone();
+    let mut completion_count_increment = false;
 
     if requested_completion == Some(true) {
+        let completion_date = task_completion_date(requested_completion_date.as_deref())?;
+        last_completed_on = Some(completion_date.format("%Y-%m-%d").to_string());
+        completion_count_increment = draft.repeat_rule != "none" || !existing.completed;
         if draft.repeat_rule == "none" {
-            completed_at = Some(chrono::Utc::now().to_rfc3339());
+            if !existing.completed {
+                completed_at = Some(chrono::Utc::now().to_rfc3339());
+            }
         } else {
-            draft.due_date = Some(next_task_due_date(&draft)?);
+            draft.due_date = Some(next_task_due_date(&draft, completion_date)?);
             completed = false;
             completed_at = None;
         }
@@ -2379,6 +2469,9 @@ async fn update_task(
         &draft,
         completed,
         completed_at.as_deref(),
+        completion_count_increment,
+        requested_completion == Some(true),
+        last_completed_on.as_deref(),
     )
     .await?
     .map(web::Json)
@@ -3719,7 +3812,9 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
             .route("/admin/users/{user_id}", web::delete().to(delete_user))
             .route("/tasks", web::post().to(create_task))
             .route("/tasks/archived", web::get().to(archived_tasks))
+            .route("/tasks/completions", web::get().to(recent_task_completions))
             .route("/tasks/completed", web::delete().to(clear_completed))
+            .route("/tasks/{task_id}/clone", web::post().to(clone_task))
             .route("/tasks/{task_id}", web::patch().to(update_task))
             .route("/tasks/{task_id}", web::delete().to(delete_task))
             .route("/tasks/{task_id}/archive", web::patch().to(archive_task))
@@ -5254,6 +5349,7 @@ mod tests {
                     title: None,
                     description: None,
                     completed: Some(true),
+                    completion_date: None,
                     priority: None,
                     labels: None,
                     subtasks: None,
@@ -5268,6 +5364,49 @@ mod tests {
         .await;
         assert!(!recurring.completed);
         assert_eq!(recurring.due_date.as_deref(), Some("2026-08-21"));
+        assert_eq!(recurring.completion_count, 1);
+
+        let custom_recurring: Task = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::patch()
+                .uri(&format!("/api/tasks/{}", created.id))
+                .cookie(cookie.clone())
+                .set_json(UpdateTaskRequest {
+                    title: None,
+                    description: None,
+                    completed: Some(true),
+                    completion_date: Some("2026-08-25".to_owned()),
+                    priority: None,
+                    labels: None,
+                    subtasks: None,
+                    due_date: None,
+                    repeat_rule: None,
+                    repeat_interval: None,
+                    repeat_unit: None,
+                    reschedule_from: Some("completion_date".to_owned()),
+                })
+                .to_request(),
+        )
+        .await;
+        assert!(!custom_recurring.completed);
+        assert_eq!(custom_recurring.due_date.as_deref(), Some("2026-08-26"));
+        assert_eq!(custom_recurring.completion_count, 2);
+        assert_eq!(
+            custom_recurring.last_completed_on.as_deref(),
+            Some("2026-08-25")
+        );
+        let completions: Vec<TaskCompletion> = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/tasks/completions")
+                .cookie(cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(completions.len(), 2);
+        assert_eq!(completions[0].task_id, created.id);
+        assert_eq!(completions[0].completed_on, "2026-08-25");
+        assert!(completions.iter().all(|event| event.was_recurring));
 
         let attachment_response = test::call_service(
             &app,
@@ -5285,6 +5424,23 @@ mod tests {
         assert_eq!(attachment_response.status(), StatusCode::CREATED);
         let attachment: serde_json::Value = test::read_body_json(attachment_response).await;
         let attachment_id = attachment["id"].as_str().expect("attachment id exists");
+
+        let cloned: Task = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::post()
+                .uri(&format!("/api/tasks/{}/clone", created.id))
+                .cookie(cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(cloned.title, "Prepare release (copy)");
+        assert_eq!(cloned.repeat_rule, created.repeat_rule);
+        assert_eq!(cloned.labels, created.labels);
+        assert_eq!(cloned.completion_count, 0);
+        assert!(cloned.last_completed_on.is_none());
+        assert!(cloned.attachments.is_empty());
+        assert_eq!(cloned.subtasks.len(), 1);
+        assert!(!cloned.subtasks[0].completed);
 
         let archive_response = test::call_service(
             &app,
@@ -5465,6 +5621,7 @@ mod tests {
         .await;
         assert_eq!(second_dashboard.user.role, "member");
         assert_eq!(second_dashboard.archived_task_count, 0);
+        assert!(second_dashboard.recent_task_completions.is_empty());
         let second_archived: Vec<Task> = test::call_and_read_body_json(
             &app,
             test::TestRequest::get()
@@ -5483,6 +5640,15 @@ mod tests {
         )
         .await;
         assert_eq!(restore_response.status(), StatusCode::NOT_FOUND);
+        let clone_response = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri(&format!("/api/tasks/{}/clone", created.id))
+                .cookie(second_cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(clone_response.status(), StatusCode::NOT_FOUND);
         let response = test::call_service(
             &app,
             test::TestRequest::patch()
@@ -5492,6 +5658,7 @@ mod tests {
                     title: None,
                     description: None,
                     completed: Some(true),
+                    completion_date: None,
                     priority: None,
                     labels: None,
                     subtasks: None,

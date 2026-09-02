@@ -9,8 +9,9 @@ use crate::entities::{
     LineAuthorProfile, LinePost, LinePostAttachment, LinePostDraft, LinePostReaction,
     LoggingSettings, LoginAppearance, ManagedUser, NetworkAccessRule, OidcAuthorization,
     PaymentSubscription, RssItem, RssItemDraft, RssRefreshTarget, RssSubscription,
-    RssSubscriptionDraft, SessionAccount, Task, TaskAttachment, TaskDraft, TaskSubtask, User,
-    UserAppearance, UserAvatar, UserBackground, UserCredentials, UserSettings, Workspace,
+    RssSubscriptionDraft, SessionAccount, Task, TaskAttachment, TaskCompletion, TaskDraft,
+    TaskSubtask, User, UserAppearance, UserAvatar, UserBackground, UserCredentials, UserSettings,
+    Workspace,
 };
 pub use crate::podcast_queries::*;
 pub use crate::youtube_queries::*;
@@ -61,6 +62,8 @@ struct TaskRecord {
     repeat_unit: String,
     reschedule_from: String,
     completed_at: Option<String>,
+    completion_count: i64,
+    last_completed_on: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -401,7 +404,8 @@ pub async fn upsert_metadata(
 pub async fn list_tasks(pool: &SqlitePool, user_id: &str) -> Result<Vec<Task>, sqlx::Error> {
     let records = sqlx::query_as::<_, TaskRecord>(
         "SELECT id, title, description, completed, priority, due_date, repeat_rule, \
-         repeat_interval, repeat_unit, reschedule_from, completed_at, created_at, updated_at \
+         repeat_interval, repeat_unit, reschedule_from, completed_at, completion_count, \
+         last_completed_on, created_at, updated_at \
          FROM tasks WHERE user_id = ? AND archived_at IS NULL \
          ORDER BY completed ASC, created_at ASC",
     )
@@ -439,7 +443,8 @@ pub async fn list_archived_tasks(
 ) -> Result<Vec<Task>, sqlx::Error> {
     let records = sqlx::query_as::<_, TaskRecord>(
         "SELECT id, title, description, completed, priority, due_date, repeat_rule, \
-         repeat_interval, repeat_unit, reschedule_from, completed_at, created_at, updated_at \
+         repeat_interval, repeat_unit, reschedule_from, completed_at, completion_count, \
+         last_completed_on, created_at, updated_at \
          FROM tasks WHERE user_id = ? AND archived_at IS NOT NULL \
          ORDER BY archived_at DESC, created_at DESC",
     )
@@ -488,6 +493,8 @@ async fn hydrate_task(pool: &SqlitePool, record: TaskRecord) -> Result<Task, sql
         repeat_unit: record.repeat_unit,
         reschedule_from: record.reschedule_from,
         completed_at: record.completed_at,
+        completion_count: record.completion_count,
+        last_completed_on: record.last_completed_on,
         labels,
         subtasks,
         attachments,
@@ -508,7 +515,8 @@ pub async fn get_task(
 ) -> Result<Option<Task>, sqlx::Error> {
     let record = sqlx::query_as::<_, TaskRecord>(
         "SELECT id, title, description, completed, priority, due_date, repeat_rule, \
-         repeat_interval, repeat_unit, reschedule_from, completed_at, created_at, updated_at \
+         repeat_interval, repeat_unit, reschedule_from, completed_at, completion_count, \
+         last_completed_on, created_at, updated_at \
          FROM tasks WHERE id = ? AND user_id = ?",
     )
     .bind(id)
@@ -520,6 +528,26 @@ pub async fn get_task(
         Some(record) => Ok(Some(hydrate_task(pool, record).await?)),
         None => Ok(None),
     }
+}
+
+/// Lists the latest completion events for one account.
+///
+/// # Errors
+///
+/// Returns the underlying SQLx error when the query cannot be completed.
+pub async fn list_recent_task_completions(
+    pool: &SqlitePool,
+    user_id: &str,
+) -> Result<Vec<TaskCompletion>, sqlx::Error> {
+    sqlx::query_as::<_, TaskCompletion>(
+        "SELECT id, task_id, task_title AS title, priority, was_recurring, \
+         completed_on, created_at \
+         FROM task_completions WHERE user_id = ? \
+         ORDER BY created_at DESC LIMIT 12",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
 }
 
 async fn replace_task_children(
@@ -623,13 +651,17 @@ pub async fn update_task(
     draft: &TaskDraft,
     completed: bool,
     completed_at: Option<&str>,
+    completion_count_increment: bool,
+    completion_event_update: bool,
+    last_completed_on: Option<&str>,
 ) -> Result<Option<Task>, sqlx::Error> {
     let updated_at = chrono::Utc::now().to_rfc3339();
     let mut transaction = pool.begin().await?;
     let result = sqlx::query(
         "UPDATE tasks SET title = ?, description = ?, completed = ?, priority = ?, \
          due_date = ?, repeat_rule = ?, repeat_interval = ?, repeat_unit = ?, \
-         reschedule_from = ?, completed_at = ?, updated_at = ? \
+         reschedule_from = ?, completed_at = ?, completion_count = completion_count + ?, \
+         last_completed_on = ?, updated_at = ? \
          WHERE id = ? AND user_id = ?",
     )
     .bind(&draft.title)
@@ -642,6 +674,12 @@ pub async fn update_task(
     .bind(&draft.repeat_unit)
     .bind(&draft.reschedule_from)
     .bind(completed_at)
+    .bind(if completion_count_increment {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(last_completed_on)
     .bind(&updated_at)
     .bind(id)
     .bind(user_id)
@@ -651,6 +689,44 @@ pub async fn update_task(
     if result.rows_affected() == 0 {
         transaction.rollback().await?;
         return Ok(None);
+    }
+    if completion_event_update {
+        let completed_on = last_completed_on.ok_or(sqlx::Error::RowNotFound)?;
+        let event_updated = if completion_count_increment {
+            false
+        } else {
+            sqlx::query(
+                "UPDATE task_completions SET completed_on = ? \
+                 WHERE id = (SELECT id FROM task_completions \
+                 WHERE user_id = ? AND task_id = ? \
+                 ORDER BY created_at DESC LIMIT 1)",
+            )
+            .bind(completed_on)
+            .bind(user_id)
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected()
+                > 0
+        };
+        if completion_count_increment || !event_updated {
+            sqlx::query(
+                "INSERT INTO task_completions \
+                 (id, user_id, task_id, task_title, priority, was_recurring, \
+                  completed_on, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(user_id)
+            .bind(id)
+            .bind(&draft.title)
+            .bind(&draft.priority)
+            .bind(draft.repeat_rule != "none")
+            .bind(completed_on)
+            .bind(&updated_at)
+            .execute(&mut *transaction)
+            .await?;
+        }
     }
     replace_task_children(&mut transaction, id, draft, &updated_at).await?;
     transaction.commit().await?;
