@@ -1,23 +1,35 @@
 use crate::entities::{
     AccountSession, AppMetadata, AuthenticationSettings, Bookmark, BookmarkFavicon, CalendarEvent,
     CalendarEventDraft, CalendarSubscription, CodingCategory, CodingCredential, CodingProject,
-    CodingProjectCategoryAssignment, DashboardWidget, EmbeddedPage, EmbeddedPageIconCache,
-    FeedItem, JournalNode, KanbanActivity, KanbanAttachment, KanbanBoard, KanbanBoardSummary,
-    KanbanCard, KanbanCardDraft, KanbanChecklist, KanbanChecklistItem, KanbanColumn, KanbanComment,
-    KanbanDirectoryUser, KanbanInvitation, KanbanLabel, KanbanMember, KanbanMemberPermission,
-    KanbanOverview, KanbanRolePermission, KanbanWorkspace, KanbanWorkspaceSettings,
-    LineAuthorProfile, LinePost, LinePostAttachment, LinePostDraft, LinePostReaction,
-    LoggingSettings, LoginAppearance, ManagedUser, NetworkAccessRule, OidcAuthorization,
-    PaymentSubscription, RssItem, RssItemDraft, RssRefreshTarget, RssSubscription,
-    RssSubscriptionDraft, SessionAccount, Task, TaskAttachment, TaskCompletion, TaskDraft,
-    TaskSubtask, User, UserAppearance, UserAvatar, UserBackground, UserCredentials, UserSettings,
-    Workspace,
+    CodingProjectCategoryAssignment, DashboardWidget, DashboardWidgetImage,
+    DashboardWidgetTemplateSlot, EmbeddedPage, EmbeddedPageIconCache, FeedItem, JournalNode,
+    KanbanActivity, KanbanAttachment, KanbanBoard, KanbanBoardSummary, KanbanCard, KanbanCardDraft,
+    KanbanChecklist, KanbanChecklistItem, KanbanColumn, KanbanComment, KanbanDirectoryUser,
+    KanbanInvitation, KanbanLabel, KanbanMember, KanbanMemberPermission, KanbanOverview,
+    KanbanRolePermission, KanbanWorkspace, KanbanWorkspaceSettings, LineAuthorProfile, LinePost,
+    LinePostAttachment, LinePostDraft, LinePostReaction, LoggingSettings, LoginAppearance,
+    ManagedUser, NetworkAccessRule, OidcAuthorization, PaymentSubscription, RssItem, RssItemDraft,
+    RssRefreshTarget, RssSubscription, RssSubscriptionDraft, SessionAccount, Task, TaskAttachment,
+    TaskCompletion, TaskDraft, TaskSubtask, User, UserAppearance, UserAvatar, UserBackground,
+    UserCredentials, UserSettings, Workspace,
 };
 pub use crate::podcast_queries::*;
 pub use crate::youtube_queries::*;
 use sqlx::{FromRow, QueryBuilder, Sqlite, SqlitePool, Transaction};
 
 const DEFAULT_WIDGETS: &[(&str, i64, i64, &str, i64, i64, i64, i64)] = &[
+    ("welcome", 0, 0, "full", 0, 0, 12, 3),
+    ("weather", 0, 1, "wide", 0, 3, 8, 5),
+    ("task-summary", 0, 2, "compact", 8, 3, 4, 5),
+    ("focus", 0, 3, "standard", 0, 8, 6, 4),
+    ("local-time", 0, 4, "compact", 6, 8, 3, 4),
+    ("bookmarks", 0, 5, "compact", 9, 8, 3, 4),
+    ("task-list", 0, 6, "wide", 0, 12, 8, 6),
+    ("calendar-overview", 0, 7, "compact", 8, 12, 4, 6),
+    ("streams", 0, 8, "compact", 8, 18, 4, 4),
+];
+
+const LEGACY_DEFAULT_WIDGETS: &[(&str, i64, i64, &str, i64, i64, i64, i64)] = &[
     ("weather", 0, 0, "wide", 0, 0, 8, 5),
     ("task-summary", 0, 1, "compact", 8, 0, 4, 5),
     ("focus", 0, 2, "standard", 0, 5, 6, 4),
@@ -3113,11 +3125,16 @@ pub async fn create_dashboard_widget(
     .bind(workspace)
     .fetch_one(pool)
     .await?;
-    let (grid_w, grid_h) = match size {
-        "compact" => (4, 4),
-        "standard" => (6, 4),
-        "wide" => (8, 5),
-        _ => (12, 6),
+    let (grid_w, grid_h) = match kind {
+        "welcome" => (12, 3),
+        "section-header" | "divider" => (12, 1),
+        "calendar-overview" => (4, 6),
+        _ => match size {
+            "compact" => (4, 4),
+            "standard" => (6, 4),
+            "wide" => (8, 5),
+            _ => (12, 6),
+        },
     };
 
     sqlx::query(
@@ -3178,6 +3195,96 @@ pub async fn update_dashboard_widget_config(
     if result.rows_affected() != 1 {
         return Ok(None);
     }
+    get_dashboard_widget(pool, user_id, widget_id).await
+}
+
+/// Loads uploaded media for one owned dashboard widget.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the query cannot be completed.
+pub async fn find_dashboard_widget_image(
+    pool: &SqlitePool,
+    user_id: &str,
+    widget_id: &str,
+) -> Result<Option<DashboardWidgetImage>, sqlx::Error> {
+    sqlx::query_as::<_, DashboardWidgetImage>(
+        "SELECT mime_type, image_data, updated_at FROM dashboard_widget_images WHERE user_id = ? AND widget_id = ?",
+    )
+    .bind(user_id)
+    .bind(widget_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Stores uploaded media for one owned dashboard widget and advances its cache version.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the transaction cannot be committed.
+pub async fn upsert_dashboard_widget_image(
+    pool: &SqlitePool,
+    user_id: &str,
+    widget_id: &str,
+    mime_type: &str,
+    image_data: &[u8],
+) -> Result<Option<DashboardWidget>, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut transaction = pool.begin().await?;
+    let owned =
+        sqlx::query("UPDATE dashboard_widgets SET updated_at = ? WHERE id = ? AND user_id = ?")
+            .bind(&now)
+            .bind(widget_id)
+            .bind(user_id)
+            .execute(&mut *transaction)
+            .await?;
+    if owned.rows_affected() != 1 {
+        transaction.rollback().await?;
+        return Ok(None);
+    }
+    sqlx::query(
+        "INSERT INTO dashboard_widget_images (widget_id, user_id, mime_type, image_data, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(widget_id) DO UPDATE SET mime_type = excluded.mime_type, image_data = excluded.image_data, updated_at = excluded.updated_at",
+    )
+    .bind(widget_id)
+    .bind(user_id)
+    .bind(mime_type)
+    .bind(image_data)
+    .bind(&now)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    get_dashboard_widget(pool, user_id, widget_id).await
+}
+
+/// Removes uploaded media from one owned dashboard widget and advances its cache version.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the transaction cannot be committed.
+pub async fn delete_dashboard_widget_image(
+    pool: &SqlitePool,
+    user_id: &str,
+    widget_id: &str,
+) -> Result<Option<DashboardWidget>, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut transaction = pool.begin().await?;
+    let owned =
+        sqlx::query("UPDATE dashboard_widgets SET updated_at = ? WHERE id = ? AND user_id = ?")
+            .bind(&now)
+            .bind(widget_id)
+            .bind(user_id)
+            .execute(&mut *transaction)
+            .await?;
+    if owned.rows_affected() != 1 {
+        transaction.rollback().await?;
+        return Ok(None);
+    }
+    sqlx::query("DELETE FROM dashboard_widget_images WHERE widget_id = ? AND user_id = ?")
+        .bind(widget_id)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
     get_dashboard_widget(pool, user_id, widget_id).await
 }
 
@@ -3335,6 +3442,112 @@ pub async fn update_dashboard_widget_layout(
 
     transaction.commit().await?;
     Ok(Some(list_dashboard_widgets(pool, user_id).await?))
+}
+
+/// Applies a dashboard template without deleting any existing widget.
+///
+/// The first existing widget of each required kind is reused so its public
+/// configuration, credential, and uploaded media remain attached. Missing
+/// widgets are created with the template's initial configuration. Additional
+/// widgets retain their current arrangement below the template.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the transaction cannot be completed.
+pub async fn apply_dashboard_widget_template(
+    pool: &SqlitePool,
+    user_id: &str,
+    slots: &[DashboardWidgetTemplateSlot],
+) -> Result<Vec<DashboardWidget>, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut transaction = pool.begin().await?;
+    let existing = sqlx::query_as::<_, (String, String, i64, i64)>(
+        "SELECT id, kind, grid_w, grid_h FROM dashboard_widgets WHERE user_id = ? ORDER BY grid_y ASC, grid_x ASC, created_at ASC",
+    )
+    .bind(user_id)
+    .fetch_all(&mut *transaction)
+    .await?;
+    let mut retained_ids = std::collections::HashSet::new();
+
+    for slot in slots {
+        let existing_id = existing
+            .iter()
+            .find(|(id, kind, _, _)| kind == &slot.kind && !retained_ids.contains(id))
+            .map(|(id, _, _, _)| id.clone());
+        if let Some(id) = existing_id {
+            sqlx::query(
+                "UPDATE dashboard_widgets SET workspace = 0, position = ?, size = ?, grid_x = ?, grid_y = ?, grid_w = ?, grid_h = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+            )
+            .bind(slot.position)
+            .bind(&slot.size)
+            .bind(slot.grid_x)
+            .bind(slot.grid_y)
+            .bind(slot.grid_w)
+            .bind(slot.grid_h)
+            .bind(&now)
+            .bind(&id)
+            .bind(user_id)
+            .execute(&mut *transaction)
+            .await?;
+            retained_ids.insert(id);
+        } else {
+            let id = uuid::Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO dashboard_widgets (id, user_id, kind, workspace, position, size, config_json, grid_x, grid_y, grid_w, grid_h, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&id)
+            .bind(user_id)
+            .bind(&slot.kind)
+            .bind(slot.position)
+            .bind(&slot.size)
+            .bind(&slot.config_json)
+            .bind(slot.grid_x)
+            .bind(slot.grid_y)
+            .bind(slot.grid_w)
+            .bind(slot.grid_h)
+            .bind(&now)
+            .bind(&now)
+            .execute(&mut *transaction)
+            .await?;
+            retained_ids.insert(id);
+        }
+    }
+
+    let additional = existing
+        .into_iter()
+        .filter(|(id, _, _, _)| !retained_ids.contains(id))
+        .collect::<Vec<_>>();
+    let mut grid_x = 0;
+    let mut grid_y = slots
+        .iter()
+        .map(|slot| slot.grid_y + slot.grid_h)
+        .max()
+        .unwrap_or(0);
+    let mut row_height = 0;
+    for (offset, (id, _, grid_w, grid_h)) in additional.into_iter().enumerate() {
+        if grid_x + grid_w > 12 {
+            grid_x = 0;
+            grid_y += row_height;
+            row_height = 0;
+        }
+        let position = i64::try_from(slots.len() + offset).unwrap_or(i64::MAX);
+        sqlx::query(
+            "UPDATE dashboard_widgets SET workspace = 0, position = ?, grid_x = ?, grid_y = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+        )
+        .bind(position)
+        .bind(grid_x)
+        .bind(grid_y)
+        .bind(&now)
+        .bind(id)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?;
+        grid_x += grid_w;
+        row_height = row_height.max(grid_h);
+    }
+
+    transaction.commit().await?;
+    list_dashboard_widgets(pool, user_id).await
 }
 
 /// Deletes one widget owned by the authenticated user.
@@ -3505,7 +3718,19 @@ async fn insert_default_widgets(
     user_id: &str,
     now: &str,
 ) -> Result<(), sqlx::Error> {
-    for (kind, workspace, position, size, grid_x, grid_y, grid_w, grid_h) in DEFAULT_WIDGETS {
+    let dashboard_schema = sqlx::query_scalar::<_, String>(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'dashboard_widgets'",
+    )
+    .fetch_one(&mut **transaction)
+    .await?;
+    let supports_customizable_dashboard = dashboard_schema.contains("'welcome'");
+    let default_widgets = if supports_customizable_dashboard {
+        DEFAULT_WIDGETS
+    } else {
+        LEGACY_DEFAULT_WIDGETS
+    };
+
+    for (kind, workspace, position, size, grid_x, grid_y, grid_w, grid_h) in default_widgets {
         sqlx::query(
             "INSERT INTO dashboard_widgets (id, user_id, kind, workspace, position, size, grid_x, grid_y, grid_w, grid_h, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
@@ -3524,17 +3749,21 @@ async fn insert_default_widgets(
         .execute(&mut **transaction)
         .await?;
     }
-    sqlx::query(
-        "INSERT INTO dashboard_widgets (id, user_id, kind, workspace, position, size, config_json, grid_x, grid_y, grid_w, grid_h, created_at, updated_at) VALUES (?, ?, 'streams', 0, ?, 'standard', ?, 0, 0, 4, 4, ?, ?)",
-    )
-    .bind(uuid::Uuid::new_v4().to_string())
-    .bind(user_id)
-    .bind(i64::try_from(DEFAULT_WIDGETS.len()).expect("default widget count fits i64"))
-    .bind(r#"{"placement":"utility_rail","twitch_channels":[],"kick_channels":[]}"#)
-    .bind(now)
-    .bind(now)
-    .execute(&mut **transaction)
-    .await?;
+
+    if !supports_customizable_dashboard {
+        sqlx::query(
+            "INSERT INTO dashboard_widgets (id, user_id, kind, workspace, position, size, config_json, grid_x, grid_y, grid_w, grid_h, created_at, updated_at) VALUES (?, ?, 'streams', 0, ?, 'standard', ?, 0, 0, 4, 4, ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(user_id)
+        .bind(i64::try_from(LEGACY_DEFAULT_WIDGETS.len()).expect("default widget count fits i64"))
+        .bind(r#"{"placement":"utility_rail","twitch_channels":[],"kick_channels":[]}"#)
+        .bind(now)
+        .bind(now)
+        .execute(&mut **transaction)
+        .await?;
+    }
+
     Ok(())
 }
 

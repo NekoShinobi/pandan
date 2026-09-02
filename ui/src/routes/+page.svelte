@@ -10,8 +10,6 @@
   import Check from "lucide-svelte/icons/check";
   import CheckSquare2 from "lucide-svelte/icons/square-check-big";
   import ChevronDown from "lucide-svelte/icons/chevron-down";
-  import ChevronLeft from "lucide-svelte/icons/chevron-left";
-  import ChevronRight from "lucide-svelte/icons/chevron-right";
   import Code2 from "lucide-svelte/icons/code-xml";
   import Columns3 from "lucide-svelte/icons/columns-3";
   import ContactRound from "lucide-svelte/icons/contact-round";
@@ -20,6 +18,7 @@
   import DownloadIcon from "lucide-svelte/icons/download";
   import ExternalLink from "lucide-svelte/icons/external-link";
   import Home from "lucide-svelte/icons/house";
+  import Info from "lucide-svelte/icons/info";
   import Menu from "lucide-svelte/icons/menu";
   import Megaphone from "lucide-svelte/icons/megaphone";
   import MessageSquareText from "lucide-svelte/icons/message-square-text";
@@ -69,11 +68,11 @@
   import CodingPage from "$lib/CodingPage.svelte";
   import ContactsPage from "$lib/ContactsPage.svelte";
   import DashboardWidgetCard from "$lib/DashboardWidgetCard.svelte";
+  import DashboardWidgetSettingsDialog from "$lib/DashboardWidgetSettingsDialog.svelte";
   import DownloadsPage from "$lib/DownloadsPage.svelte";
   import EmbeddedPage from "$lib/EmbeddedPage.svelte";
   import EmbeddedPageIcon from "$lib/EmbeddedPageIcon.svelte";
   import EmbeddedPagesSettings from "$lib/EmbeddedPagesSettings.svelte";
-  import IntegrationWidget from "$lib/IntegrationWidget.svelte";
   import JournalPage from "$lib/JournalPage.svelte";
   import JellyfinSettings from "$lib/JellyfinSettings.svelte";
   import KanbanPage from "$lib/KanbanPage.svelte";
@@ -102,6 +101,7 @@
     podcastPlayer,
   } from "$lib/podcastPlayer.svelte";
   import {
+    applyDashboardTemplate,
     archiveTask,
     bookmarkFaviconUrl,
     clearCompletedTasks,
@@ -144,10 +144,10 @@
     type BrowserSession,
     type CalendarEvent,
     type CalendarResponse,
+    type DashboardTemplateId,
     type DashboardWidget,
     type EmbeddedPage as EmbeddedPageRecord,
     type EmbeddedPagesResponse,
-    type FeedItem,
     type ManagedUser,
     type LoginAppearance,
     type KanbanSection,
@@ -375,109 +375,322 @@
 
   let { data }: { data: PageData } = $props();
 
-  const widgetCatalog: Array<{
+  type WidgetCatalogGroup =
+    | "Layout"
+    | "Planning"
+    | "Information"
+    | "Media"
+    | "Integrations"
+    | "Custom";
+  type WidgetMode = { size: WidgetSize; label: string };
+  type WidgetCatalogItem = {
     kind: WidgetKind;
     title: string;
     description: string;
-    size: WidgetSize;
-  }> = [
+    defaultMode: WidgetSize;
+    modes: WidgetMode[];
+    group: WidgetCatalogGroup;
+    singleInstance?: boolean;
+  };
+  type DashboardTemplateDefinition = {
+    id: DashboardTemplateId;
+    title: string;
+    description: string;
+    widgetCount: number;
+    previewRows: number[][];
+  };
+
+  const dashboardTemplates: DashboardTemplateDefinition[] = [
+    {
+      id: "daily-overview",
+      title: "Daily overview",
+      description:
+        "A balanced home for today’s work, timezones, bookmarks, calendar, and weather.",
+      widgetCount: 8,
+      previewRows: [[12], [4, 4, 4], [8, 4], [4, 8]],
+    },
+    {
+      id: "focus-planner",
+      title: "Focus planner",
+      description:
+        "A planning-first canvas with a large task list and a compact utility row.",
+      widgetCount: 8,
+      previewRows: [[12], [12], [6, 6], [12], [4, 4, 4]],
+    },
+    {
+      id: "signal-desk",
+      title: "Signal desk",
+      description:
+        "Feeds, channels, markets, releases, live streams, weather, and local time.",
+      widgetCount: 10,
+      previewRows: [[12], [12], [6, 6], [6, 6], [6, 6], [8, 4]],
+    },
+    {
+      id: "media-studio",
+      title: "Media studio",
+      description:
+        "A visual canvas for an image, music visualizer, reading, links, and embeds.",
+      widgetCount: 8,
+      previewRows: [[12], [6, 6], [12], [8, 4], [6, 6]],
+    },
+  ];
+
+  const widgetCatalog: WidgetCatalogItem[] = [
+    {
+      kind: "welcome",
+      title: "Welcome",
+      description:
+        "A compact session greeting with an optional dashboard status line.",
+      defaultMode: "full",
+      modes: [{ size: "full", label: "Banner" }],
+      group: "Layout",
+      singleInstance: true,
+    },
+    {
+      kind: "section-header",
+      title: "Category header",
+      description: "Name a group of widgets without adding another panel.",
+      defaultMode: "full",
+      modes: [{ size: "full", label: "Header" }],
+      group: "Layout",
+    },
+    {
+      kind: "divider",
+      title: "Line divider",
+      description:
+        "Add a solid, dashed, or dotted horizontal rule between widget groups.",
+      defaultMode: "full",
+      modes: [{ size: "full", label: "Rule" }],
+      group: "Layout",
+    },
+    {
+      kind: "task-summary",
+      title: "Today",
+      description:
+        "Tasks due today with either a completion-only or agenda display.",
+      defaultMode: "compact",
+      modes: [
+        { size: "compact", label: "Summary" },
+        { size: "standard", label: "Agenda" },
+      ],
+      group: "Planning",
+    },
+    {
+      kind: "image-frame",
+      title: "Image frame",
+      description:
+        "Display an account-private image with optional caption and crop controls.",
+      defaultMode: "standard",
+      modes: [{ size: "standard", label: "Image frame" }],
+      group: "Media",
+    },
+    {
+      kind: "music-visualizer",
+      title: "Music visualizer",
+      description:
+        "Render the shared audio analysis inside the dashboard with transparent, panel, artwork, or custom-image backgrounds.",
+      defaultMode: "standard",
+      modes: [{ size: "standard", label: "Visualizer" }],
+      group: "Media",
+    },
+    {
+      kind: "focus",
+      title: "Next focus",
+      description: "Set a goal and launch a timer with your preferred default.",
+      defaultMode: "standard",
+      modes: [{ size: "standard", label: "Timer" }],
+      group: "Planning",
+    },
+    {
+      kind: "task-list",
+      title: "Task list",
+      description:
+        "Create, complete, and clear personal tasks, with optional priority labels.",
+      defaultMode: "wide",
+      modes: [
+        { size: "compact", label: "Short list" },
+        { size: "standard", label: "Working list" },
+        { size: "wide", label: "Full list" },
+      ],
+      group: "Planning",
+    },
+    {
+      kind: "calendar-overview",
+      title: "Calendar overview",
+      description:
+        "Tasks, birthdays, subscriptions, and payments by month, with optional markers.",
+      defaultMode: "compact",
+      modes: [{ size: "compact", label: "Month" }],
+      group: "Planning",
+      singleInstance: true,
+    },
+    {
+      kind: "local-time",
+      title: "Local time",
+      description:
+        "Every saved Sidebar Monitor timezone in analog or digital form.",
+      defaultMode: "compact",
+      modes: [{ size: "compact", label: "Clock list" }],
+      group: "Information",
+      singleInstance: true,
+    },
+    {
+      kind: "bookmarks",
+      title: "Bookmarks",
+      description:
+        "Your account-scoped quick links with stored favicons and optional hostnames.",
+      defaultMode: "compact",
+      modes: [{ size: "compact", label: "Quick links" }],
+      group: "Information",
+      singleInstance: true,
+    },
     {
       kind: "weather",
       title: "Weather",
-      description: "Local conditions with an adaptive forecast.",
-      size: "wide",
+      description:
+        "Local conditions with city, unit, and hourly-forecast controls.",
+      defaultMode: "wide",
+      modes: [
+        { size: "compact", label: "Current" },
+        { size: "standard", label: "Short forecast" },
+        { size: "wide", label: "Extended forecast" },
+      ],
+      group: "Information",
     },
     {
       kind: "bible-verse",
       title: "Bible Verse",
       description: "A new passage from the English Revised Version each day.",
-      size: "standard",
-    },
-    {
-      kind: "task-summary",
-      title: "Today",
-      description: "Tasks due today with a compact completion overview.",
-      size: "compact",
-    },
-    {
-      kind: "focus",
-      title: "Next focus",
-      description: "Set a goal and launch a custom focus timer.",
-      size: "standard",
-    },
-    {
-      kind: "task-list",
-      title: "Task list",
-      description: "Create, complete, and clear personal tasks.",
-      size: "wide",
-    },
-    {
-      kind: "feed-list",
-      title: "Feed",
-      description: "Filter and read the curated feed.",
-      size: "wide",
-    },
-    {
-      kind: "feed-sources",
-      title: "Feed sources",
-      description: "A compact source breakdown.",
-      size: "compact",
+      defaultMode: "standard",
+      modes: [{ size: "standard", label: "Daily passage" }],
+      group: "Information",
     },
     {
       kind: "youtube",
       title: "YouTube uploads",
       description: "Channel and playlist uploads using feed-based discovery.",
-      size: "wide",
+      defaultMode: "wide",
+      modes: [
+        { size: "compact", label: "3 uploads" },
+        { size: "standard", label: "5 uploads" },
+        { size: "wide", label: "10 uploads" },
+      ],
+      group: "Integrations",
     },
     {
       kind: "rss",
       title: "RSS feeds",
       description: "Combine RSS and Atom sources into one reading list.",
-      size: "wide",
+      defaultMode: "wide",
+      modes: [
+        { size: "compact", label: "3 articles" },
+        { size: "standard", label: "5 articles" },
+        { size: "wide", label: "10 articles" },
+      ],
+      group: "Integrations",
     },
     {
       kind: "reddit",
       title: "Reddit",
       description: "Follow a subreddit with optional app authentication.",
-      size: "standard",
+      defaultMode: "standard",
+      modes: [
+        { size: "compact", label: "3 posts" },
+        { size: "standard", label: "5 posts" },
+        { size: "wide", label: "10 posts" },
+      ],
+      group: "Integrations",
     },
     {
       kind: "stocks",
       title: "Stock tickers",
       description: "Track equities, funds, and crypto market symbols.",
-      size: "wide",
-    },
-    {
-      kind: "calendar",
-      title: "Calendar",
-      description: "A personal date card with upcoming events.",
-      size: "standard",
-    },
-    {
-      kind: "clock",
-      title: "World clock",
-      description: "Show one or several IANA timezones.",
-      size: "compact",
-    },
-    {
-      kind: "iframe",
-      title: "Custom iframe",
-      description: "Embed a sandboxed HTTPS dashboard surface.",
-      size: "full",
-    },
-    {
-      kind: "html",
-      title: "Custom HTML",
-      description: "Render static HTML inside an isolated sandbox.",
-      size: "standard",
+      defaultMode: "wide",
+      modes: [
+        { size: "compact", label: "3 tickers" },
+        { size: "standard", label: "5 tickers" },
+        { size: "wide", label: "10 tickers" },
+      ],
+      group: "Integrations",
     },
     {
       kind: "releases",
       title: "Code releases",
       description: "GitHub, GitLab, Codeberg, Gitea, and Forgejo releases.",
-      size: "wide",
+      defaultMode: "wide",
+      modes: [
+        { size: "compact", label: "3 releases" },
+        { size: "standard", label: "5 releases" },
+        { size: "wide", label: "10 releases" },
+      ],
+      group: "Integrations",
+    },
+    {
+      kind: "streams",
+      title: "Live channels",
+      description: "Follow up to 20 Twitch and Kick accounts.",
+      defaultMode: "standard",
+      modes: [
+        { size: "compact", label: "3 channels" },
+        { size: "standard", label: "5 channels" },
+        { size: "wide", label: "10 channels" },
+      ],
+      group: "Integrations",
+    },
+    {
+      kind: "iframe",
+      title: "Custom iframe",
+      description: "Embed a sandboxed HTTPS dashboard surface.",
+      defaultMode: "full",
+      modes: [{ size: "full", label: "Embedded page" }],
+      group: "Custom",
+    },
+    {
+      kind: "html",
+      title: "Custom HTML",
+      description: "Render static HTML inside an isolated sandbox.",
+      defaultMode: "standard",
+      modes: [{ size: "standard", label: "HTML panel" }],
+      group: "Custom",
     },
   ];
+  const widgetCatalogGroups = [
+    "Layout",
+    "Planning",
+    "Information",
+    "Media",
+    "Integrations",
+    "Custom",
+  ] as const;
+  const retiredDashboardWidgetKinds = new Set<WidgetKind>([
+    "feed-list",
+    "feed-sources",
+  ]);
+  const widgetMinimumRows: Partial<Record<WidgetKind, number>> = {
+    welcome: 2,
+    "local-time": 3,
+    "calendar-overview": 5,
+    bookmarks: 3,
+    "section-header": 1,
+    divider: 1,
+    "image-frame": 3,
+    "music-visualizer": 3,
+    weather: 4,
+    "task-summary": 3,
+    focus: 3,
+    "task-list": 4,
+    youtube: 3,
+    rss: 3,
+    reddit: 3,
+    stocks: 3,
+    calendar: 4,
+    clock: 3,
+    iframe: 3,
+    html: 3,
+    releases: 3,
+    streams: 3,
+    "bible-verse": 3,
+  };
 
   const clockMarks = Array.from({ length: 12 }, (_, index) => index);
   const dashboardCalendarWeekdayLabels = {
@@ -704,9 +917,7 @@
   let archivedTasksLoaded = $state(false);
   let loadingArchivedTasks = $state(false);
   let archivedTasksError = $state("");
-  let feeds = $derived<FeedItem[]>(dashboard?.feeds ?? []);
   let widgets = $derived<DashboardWidget[]>(dashboard?.widgets ?? []);
-  let streamTrackerWidget = $derived(widgets.find(isUtilityStreamTracker));
   let bookmarks = $derived<Bookmark[]>(dashboard?.bookmarks ?? []);
   let savingLayout = $state(false);
   let layoutEditing = $state(false);
@@ -798,6 +1009,28 @@
   let commandIndex = $state(0);
   let searchEngine = $state<SearchEngineId>("duckduckgo");
   let widgetLibraryDialog = $state<HTMLDialogElement>();
+  let dashboardTemplateDialog = $state<HTMLDialogElement>();
+  let selectedDashboardTemplateId = $state<DashboardTemplateId>(
+    "daily-overview",
+  );
+  let applyingDashboardTemplate = $state(false);
+  let dashboardTemplateError = $state("");
+  let selectedDashboardTemplate = $derived(
+    dashboardTemplates.find(
+      (template) => template.id === selectedDashboardTemplateId,
+    ) ?? dashboardTemplates[0],
+  );
+  let widgetInfoKind = $state<WidgetKind | "">("");
+  const widgetModeSelections = new SvelteMap<WidgetKind, WidgetSize>();
+  let widgetContextMenu = $state<{
+    widget: DashboardWidget;
+    title: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  let widgetContextMenuButton = $state<HTMLButtonElement>();
+  let widgetSettingsTarget = $state<DashboardWidget | null>(null);
+  const widgetEditors = new SvelteMap<string, () => void>();
   let bookmarkDialog = $state<HTMLDialogElement>();
   let bookmarkTitleInput = $state<HTMLInputElement>();
   let pendingContentDeletion = $state<UserContentScope | null>(null);
@@ -2035,6 +2268,13 @@
     };
   }
 
+  function captureDashboardTemplateDialog(node: HTMLDialogElement) {
+    dashboardTemplateDialog = node;
+    return () => {
+      dashboardTemplateDialog = undefined;
+    };
+  }
+
   function captureBookmarkDialog(node: HTMLDialogElement) {
     bookmarkDialog = node;
     return () => {
@@ -2298,9 +2538,16 @@
   }
 
   function handleWindowClick(event: MouseEvent) {
-    if (!taskMenuId || !(event.target instanceof Element)) return;
-    if (event.target.closest("[data-task-action-menu]")) return;
-    closeTaskMenu();
+    if (!(event.target instanceof Element)) return;
+    if (
+      widgetContextMenu &&
+      !event.target.closest("[data-widget-context-menu]")
+    ) {
+      closeWidgetContextMenu();
+    }
+    if (taskMenuId && !event.target.closest("[data-task-action-menu]")) {
+      closeTaskMenu();
+    }
   }
 
   async function loadArchivedTasks() {
@@ -2502,7 +2749,53 @@
   }
 
   function openWidgetLibrary() {
+    widgetInfoKind = "";
     widgetLibraryDialog?.showModal();
+  }
+
+  function openDashboardTemplates() {
+    dashboardTemplateError = "";
+    closeWidgetContextMenu();
+    dashboardTemplateDialog?.showModal();
+  }
+
+  async function applySelectedDashboardTemplate() {
+    if (applyingDashboardTemplate || savingLayout) return;
+    applyingDashboardTemplate = true;
+    dashboardTemplateError = "";
+    try {
+      const next = normalizeWidgetLayout(
+        await applyDashboardTemplate(selectedDashboardTemplate.id),
+      );
+      for (const grid of gridInstances.values()) {
+        for (const element of [...grid.getGridItems()]) {
+          grid.removeWidget(element, false, false);
+        }
+      }
+      widgets = next;
+      await synchronizeGridFromState();
+      dashboardTemplateDialog?.close();
+      showToast(`${selectedDashboardTemplate.title} applied`);
+    } catch (reason: unknown) {
+      dashboardTemplateError =
+        reason instanceof Error
+          ? reason.message
+          : "Unable to apply dashboard template";
+    } finally {
+      applyingDashboardTemplate = false;
+    }
+  }
+
+  function selectedWidgetMode(item: WidgetCatalogItem) {
+    return widgetModeSelections.get(item.kind) ?? item.defaultMode;
+  }
+
+  function selectWidgetMode(kind: WidgetKind, size: WidgetSize) {
+    widgetModeSelections.set(kind, size);
+  }
+
+  function toggleWidgetInfo(kind: WidgetKind) {
+    widgetInfoKind = widgetInfoKind === kind ? "" : kind;
   }
 
   async function openBookmarkManager() {
@@ -2585,27 +2878,26 @@
   async function toggleLayoutEditing() {
     if (draggedWidgetId || savingLayout) return;
     layoutEditing = !layoutEditing;
+    if (!layoutEditing) closeWidgetContextMenu();
     if (layoutEditing) await tick();
     for (const grid of gridInstances.values()) {
       grid.enableMove(layoutEditing);
       grid.enableResize(layoutEditing);
     }
-    showToast(layoutEditing ? "Layout editing enabled" : "Layout saved");
+    showToast(
+      layoutEditing
+        ? "Drag widgets to move; right-click for actions"
+        : "Layout saved",
+    );
   }
 
   function dashboardWidgets() {
     return widgets
-      .filter((widget) => !isUtilityStreamTracker(widget))
+      .filter((widget) => !retiredDashboardWidgetKinds.has(widget.kind))
       .sort(
         (a, b) =>
           a.grid_y - b.grid_y || a.grid_x - b.grid_x || a.position - b.position,
       );
-  }
-
-  function isUtilityStreamTracker(widget: DashboardWidget) {
-    return (
-      widget.kind === "streams" && widget.config.placement === "utility_rail"
-    );
   }
 
   function normalizeWidgetLayout(items: DashboardWidget[]) {
@@ -2631,6 +2923,7 @@
       "gs-y": widget.grid_y,
       "gs-w": widget.grid_w,
       "gs-h": widget.grid_h,
+      "gs-min-h": widgetMinimumRows[widget.kind] ?? 2,
     };
   }
 
@@ -2685,6 +2978,7 @@
           y: widget.grid_y,
           w: widget.grid_w,
           h: widget.grid_h,
+          minH: widgetMinimumRows[widget.kind] ?? 2,
         });
       }
       grid.enableMove(layoutEditing);
@@ -2753,6 +3047,7 @@
 
   function startGridDrag(element: GridItemHTMLElement) {
     if (!layoutEditing || savingLayout) return;
+    closeWidgetContextMenu();
     draggedWidgetId = element.dataset.widgetId ?? "";
     dragSnapshot = widgets.map((item) => ({ ...item }));
   }
@@ -2794,9 +3089,9 @@
           float: false,
           disableDrag: true,
           disableResize: true,
-          handle: ".widget-drag-handle",
+          handle: ".widget-drag-surface",
           draggable: {
-            handle: ".widget-drag-handle",
+            handle: ".widget-drag-surface",
             appendTo: "body",
             helper: "clone",
             scroll: true,
@@ -2831,6 +3126,10 @@
       widgets = normalizeWidgetLayout([...widgets, widget]);
       await synchronizeGridFromState();
       widgetLibraryDialog?.close();
+      if (kind === "image-frame" || kind === "music-visualizer") {
+        await tick();
+        widgetSettingsTarget = widget;
+      }
       showToast(
         `${widgetCatalog.find((item) => item.kind === kind)?.title ?? "Widget"} added`,
       );
@@ -2843,8 +3142,49 @@
     }
   }
 
+  async function openWidgetContextMenu(
+    widget: DashboardWidget,
+    title: string,
+    x: number,
+    y: number,
+  ) {
+    if (!layoutEditing || savingLayout) return;
+    const inset = 12;
+    const width = 208;
+    const height = 140;
+    widgetContextMenu = {
+      widget,
+      title,
+      x: Math.max(inset, Math.min(x, window.innerWidth - width - inset)),
+      y: Math.max(inset, Math.min(y, window.innerHeight - height - inset)),
+    };
+    await tick();
+    widgetContextMenuButton?.focus();
+  }
+
+  function closeWidgetContextMenu() {
+    widgetContextMenu = null;
+    widgetContextMenuButton = undefined;
+  }
+
+  function registerWidgetEditor(widgetId: string, editor?: () => void) {
+    if (editor) widgetEditors.set(widgetId, editor);
+    else widgetEditors.delete(widgetId);
+  }
+
+  function editWidget(widget: DashboardWidget) {
+    const editor = widgetEditors.get(widget.id);
+    closeWidgetContextMenu();
+    if (editor) {
+      editor();
+      return;
+    }
+    widgetSettingsTarget = widget;
+  }
+
   async function removeWidget(widget: DashboardWidget) {
     if (savingLayout) return;
+    closeWidgetContextMenu();
     const previous = widgets.map((item) => ({ ...item }));
     const grid = gridInstances.get(0);
     const element = grid?.el.querySelector<GridItemHTMLElement>(
@@ -3484,6 +3824,12 @@
       target instanceof HTMLInputElement ||
       target instanceof HTMLTextAreaElement;
 
+    if (event.key === "Escape" && widgetContextMenu) {
+      event.preventDefault();
+      closeWidgetContextMenu();
+      return;
+    }
+
     if (event.key === "Escape" && mobileNavigation.current && sidebarOpen) {
       event.preventDefault();
       sidebarOpen = false;
@@ -3732,7 +4078,11 @@
   crawlers see them without running the application. Setting them here as well
   would append a second `<title>` to the head, and the browser honours the first.
 -->
-<svelte:window onkeydown={handleKeydown} onclick={handleWindowClick} />
+<svelte:window
+  onkeydown={handleKeydown}
+  onclick={handleWindowClick}
+  onresize={closeWidgetContextMenu}
+/>
 
 {#if loadingOverlayVisible}
   <div
@@ -4459,6 +4809,18 @@
               />
               <span>{layoutEditing ? "Done" : "Edit layout"}</span>
             </button>
+            {#if layoutEditing}
+              <button
+                class="dashboard-edit-button dashboard-template-button"
+                type="button"
+                disabled={savingLayout}
+                onclick={openDashboardTemplates}
+                data-od-id="open-dashboard-templates"
+              >
+                <Columns3 size={18} strokeWidth={1.7} aria-hidden="true" />
+                <span>Templates</span>
+              </button>
+            {/if}
             <button
               class="ui-button ui-button--primary dashboard-add-button"
               type="button"
@@ -4499,311 +4861,115 @@
                 </div>
               {/if}
 
-              <div class="dashboard-composition">
-                <div class="dashboard-primary-column">
-                  <section class="dashboard-intro" data-od-id="daily-overview">
-                    <div>
-                      <p>[ SESSION / READY ]</p>
-                      <h2>welcome:{firstName}</h2>
-                      <span>$ dashboard status --widgets --utilities</span>
-                    </div>
-                  </section>
-
-                  <section
-                    class="custom-widget-section"
-                    data-od-id="custom-widgets"
-                  >
-                    <div class="custom-widget-heading">
-                      <div>
-                        <h3>[ MODULES / USER ]</h3>
-                        <p>
-                          Move and resize these modules when layout editing is
-                          enabled.
-                        </p>
-                      </div>
-                    </div>
-                    <div
-                      class={[
-                        "grid-stack",
-                        "widget-canvas",
-                        draggedWidgetId && "is-dragging",
-                      ]}
-                      role="list"
-                      aria-label="Dashboard widgets"
-                      data-od-id="widget-grid-dashboard"
-                      {@attach gridAttachment(0)}
-                    >
-                      {#each dashboardWidgets() as widget (widget.id)}
-                        <div
-                          class="grid-stack-item"
-                          {...gridAttributes(widget)}
-                          data-widget-id={widget.id}
-                        >
-                          <div class="grid-stack-item-content">
-                            <DashboardWidgetCard
-                              {widget}
-                              editing={layoutEditing}
-                              {tasks}
-                              {feeds}
-                              settings={dashboard.settings}
-                              {completedCount}
-                              {todayTasks}
-                              {todayCompletedCount}
-                              {todayTaskProgress}
-                              {savingLayout}
-                              onToggleTask={toggleTask}
-                              onCreateTask={addTask}
-                              onClearCompleted={clearCompleted}
-                              onStartFocus={startDashboardFocusSession}
-                              onToast={showToast}
-                              onOpenCalendarDate={openDashboardCalendarDate}
-                              onRemove={removeWidget}
-                              onUpdateWidget={updateWidgetInstance}
-                            />
-                          </div>
-                        </div>
-                      {/each}
-                    </div>
-                    {#if dashboardWidgets().length === 0}
-                      <button
-                        class="empty-workspace"
-                        type="button"
-                        onclick={openWidgetLibrary}
-                      >
-                        Add the first widget to your dashboard
-                      </button>
-                    {/if}
-                  </section>
-                </div>
-
-                <aside
-                  class="dashboard-utility-rail"
-                  aria-label="Dashboard utilities"
+              <section
+                class="dashboard-widget-workspace"
+                data-od-id="dashboard-widget-workspace"
+              >
+                <div
+                  class={[
+                    "grid-stack",
+                    "widget-canvas",
+                    draggedWidgetId && "is-dragging",
+                  ]}
+                  role="list"
+                  aria-label="Dashboard widgets"
+                  data-od-id="widget-grid-dashboard"
+                  {@attach gridAttachment(0)}
                 >
-                  <section
-                    class="utility-box utility-analog-clock"
-                    data-od-id="dashboard-analog-clock"
-                  >
-                    <p>[ LOCAL.TIME ]</p>
+                  {#each dashboardWidgets() as widget (widget.id)}
                     <div
-                      class="utility-clock-list"
-                      aria-label="Saved local times"
-                      data-od-id="dashboard-local-times"
+                      class="grid-stack-item"
+                      {...gridAttributes(widget)}
+                      data-widget-id={widget.id}
                     >
-                      {#each dashboardClocks as clock, index (clock.timezone)}
-                        <div
-                          class="utility-clock-row"
-                          data-od-id={`dashboard-local-time-${index + 1}`}
-                        >
-                          <div
-                            class="analog-clock"
-                            role="img"
-                            aria-label={`${clock.label} in ${clock.timezone}`}
-                          >
-                            {#each clockMarks as mark (mark)}
-                              <i
-                                class="analog-clock-mark"
-                                style:--mark-angle={`${mark * 30}deg`}
-                              ></i>
-                            {/each}
-                            <i
-                              class="analog-clock-hand is-hour"
-                              style:--hand-angle={`${clock.hourAngle}deg`}
-                            ></i>
-                            <i
-                              class="analog-clock-hand is-minute"
-                              style:--hand-angle={`${clock.minuteAngle}deg`}
-                            ></i>
-                            <i
-                              class="analog-clock-hand is-second"
-                              style:--hand-angle={`${clock.secondAngle}deg`}
-                            ></i>
-                            <i class="analog-clock-pin"></i>
-                          </div>
-                          <span class="utility-clock-copy">
-                            <strong>{clock.label}</strong>
-                            <small title={clock.timezone}
-                              >{clock.timezone}</small
-                            >
-                          </span>
-                        </div>
-                      {/each}
+                      <div class="grid-stack-item-content">
+                        <DashboardWidgetCard
+                          {widget}
+                          editing={layoutEditing}
+                          {tasks}
+                          settings={dashboard.settings}
+                          {completedCount}
+                          {todayTasks}
+                          {todayCompletedCount}
+                          {todayTaskProgress}
+                          {firstName}
+                          clocks={dashboardClocks}
+                          {clockMarks}
+                          {dateLabel}
+                          calendarMonthLabel={dashboardCalendarMonthLabel}
+                          calendarWeekdays={dashboardCalendarWeekdays}
+                          calendarDays={dashboardCalendarDays}
+                          calendarEventsByDate={dashboardCalendarEventsByDate}
+                          {bookmarks}
+                          onToggleTask={toggleTask}
+                          onCreateTask={addTask}
+                          onClearCompleted={clearCompleted}
+                          onStartFocus={startDashboardFocusSession}
+                          onToast={showToast}
+                          onShowCurrentMonth={showCurrentDashboardCalendarMonth}
+                          onChangeCalendarMonth={changeDashboardCalendarMonth}
+                          onOpenCalendarDate={openDashboardCalendarDate}
+                          onManageBookmarks={openBookmarkManager}
+                          onOpenContextMenu={openWidgetContextMenu}
+                          onUpdateWidget={updateWidgetInstance}
+                          onRegisterEditor={registerWidgetEditor}
+                        />
+                      </div>
                     </div>
-                  </section>
-                  <section
-                    class="utility-box utility-calendar"
-                    data-od-id="dashboard-calendar"
+                  {/each}
+                </div>
+                {#if dashboardWidgets().length === 0}
+                  <button
+                    class="empty-workspace"
+                    type="button"
+                    onclick={openWidgetLibrary}
+                    data-od-id="add-first-dashboard-widget"
                   >
-                    <p>[ CALENDAR ]</p>
-                    <div class="utility-calendar-date">
-                      <div class="utility-calendar-date-copy">
-                        <strong>{dashboardCalendarMonthLabel}</strong>
-                        <span>{dateLabel}</span>
-                      </div>
-                      <div
-                        class="utility-calendar-navigation"
-                        role="group"
-                        aria-label="Navigate dashboard calendar months"
-                        data-od-id="dashboard-calendar-navigation"
-                      >
-                        <button
-                          class="ui-button ui-button--ghost ui-button--icon"
-                          type="button"
-                          aria-label="Show current month"
-                          onclick={showCurrentDashboardCalendarMonth}
-                          data-od-id="dashboard-calendar-today"
-                        >
-                          <CalendarDays
-                            size={15}
-                            strokeWidth={1.8}
-                            aria-hidden="true"
-                          />
-                        </button>
-                        <button
-                          class="ui-button ui-button--ghost ui-button--icon"
-                          type="button"
-                          aria-label="Previous month"
-                          onclick={() => changeDashboardCalendarMonth(-1)}
-                          data-od-id="dashboard-calendar-previous"
-                        >
-                          <ChevronLeft
-                            size={15}
-                            strokeWidth={1.8}
-                            aria-hidden="true"
-                          />
-                        </button>
-                        <button
-                          class="ui-button ui-button--ghost ui-button--icon"
-                          type="button"
-                          aria-label="Next month"
-                          onclick={() => changeDashboardCalendarMonth(1)}
-                          data-od-id="dashboard-calendar-next"
-                        >
-                          <ChevronRight
-                            size={15}
-                            strokeWidth={1.8}
-                            aria-hidden="true"
-                          />
-                        </button>
-                      </div>
-                    </div>
-                    <div
-                      class="utility-calendar-grid"
-                      aria-label={`${dashboardCalendarMonthLabel} calendar`}
-                      data-od-id="dashboard-calendar-month"
-                    >
-                      {#each dashboardCalendarWeekdays as weekday, index (`${weekday}-${index}`)}
-                        <span
-                          class="utility-calendar-weekday"
-                          aria-hidden="true">{weekday}</span
-                        >
-                      {/each}
-                      {#each dashboardCalendarDays as day (day.key)}
-                        {@const eventSummary =
-                          dashboardCalendarEventsByDate[day.key]}
-                        <button
-                          class={[
-                            "utility-calendar-day",
-                            !day.currentMonth && "is-outside",
-                            day.today && "is-today",
-                          ]}
-                          type="button"
-                          onclick={() => openDashboardCalendarDate(day.key)}
-                          aria-label={`${day.key}, ${eventSummary?.count ?? 0} ${eventSummary?.count === 1 ? "calendar item" : "calendar items"}`}
-                          aria-current={day.today ? "date" : undefined}
-                          data-od-id={`dashboard-calendar-day-${day.key}`}
-                        >
-                          <time datetime={day.key}>{day.day}</time>
-                          {#if eventSummary}
-                            <span
-                              class="utility-calendar-event-dots"
-                              aria-hidden="true"
-                            >
-                              {#each eventSummary.colors as color (color)}
-                                <i style:--event-color={color}></i>
-                              {/each}
-                            </span>
-                          {/if}
-                        </button>
-                      {/each}
-                    </div>
-                  </section>
-                  <section
-                    class="utility-box utility-bookmarks"
-                    data-od-id="dashboard-bookmarks"
+                    Add the first widget to your dashboard
+                  </button>
+                {/if}
+              </section>
+              {#if layoutEditing && widgetContextMenu}
+                {@const contextMenu = widgetContextMenu}
+                <div
+                  class="widget-context-menu"
+                  role="menu"
+                  tabindex="-1"
+                  aria-label={`${contextMenu.title} widget actions`}
+                  style:left={`${contextMenu.x}px`}
+                  style:top={`${contextMenu.y}px`}
+                  data-widget-context-menu
+                  data-od-id="widget-context-menu"
+                  oncontextmenu={(event) => event.preventDefault()}
+                >
+                  <span class="widget-context-menu-title"
+                    >{contextMenu.title}</span
                   >
-                    <div class="utility-bookmarks-head">
-                      <p>[ BOOKMARKS ]</p>
-                      <button
-                        class="ui-button ui-button--ghost ui-button--icon"
-                        type="button"
-                        aria-label="Manage bookmarks"
-                        onclick={openBookmarkManager}
-                        data-od-id="manage-dashboard-bookmarks"
-                      >
-                        <Plus size={16} strokeWidth={1.8} aria-hidden="true" />
-                      </button>
-                    </div>
-                    {#if bookmarks.length > 0}
-                      <div
-                        class="utility-bookmark-list overlay-scroll-region"
-                        aria-label="Saved bookmarks"
-                      >
-                        {#each bookmarks as bookmark (bookmark.id)}
-                          <!-- eslint-disable svelte/no-navigation-without-resolve -- user-saved external destination -->
-                          <a
-                            class="utility-bookmark-row"
-                            href={bookmark.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            data-od-id={`dashboard-bookmark-${bookmark.id}`}
-                          >
-                            <span class="bookmark-favicon" aria-hidden="true">
-                              <BookmarkIcon size={15} strokeWidth={1.8} />
-                              {#if bookmark.has_favicon}
-                                <img
-                                  src={bookmarkFaviconUrl(bookmark.id)}
-                                  alt=""
-                                  onerror={hideBrokenBookmarkFavicon}
-                                />
-                              {/if}
-                            </span>
-                            <span class="utility-bookmark-copy">
-                              <strong>{bookmark.title}</strong>
-                              <small>{bookmarkHost(bookmark.url)}</small>
-                            </span>
-                            <ArrowRight
-                              size={14}
-                              strokeWidth={1.8}
-                              aria-hidden="true"
-                            />
-                          </a>
-                          <!-- eslint-enable svelte/no-navigation-without-resolve -->
-                        {/each}
-                      </div>
-                    {:else}
-                      <p class="utility-bookmark-empty">
-                        No saved links yet. Use the add control to keep one
-                        close.
-                      </p>
-                    {/if}
-                  </section>
-                  {#if streamTrackerWidget}
-                    <section
-                      class="utility-box utility-stream-tracker"
-                      data-od-id="dashboard-stream-tracker"
-                    >
-                      <IntegrationWidget
-                        widget={streamTrackerWidget}
-                        variant="rail"
-                        onUpdate={updateWidgetInstance}
-                        onToast={showToast}
-                        onOpenCalendarDate={openDashboardCalendarDate}
-                      />
-                    </section>
-                  {/if}
-                </aside>
-              </div>
+                  <button
+                    bind:this={widgetContextMenuButton}
+                    class="widget-context-edit"
+                    type="button"
+                    role="menuitem"
+                    disabled={savingLayout}
+                    onclick={() => editWidget(contextMenu.widget)}
+                    data-od-id="edit-dashboard-widget"
+                  >
+                    <Pencil size={16} strokeWidth={1.8} aria-hidden="true" />
+                    <span>Edit widget</span>
+                  </button>
+                  <button
+                    class="widget-context-delete"
+                    type="button"
+                    role="menuitem"
+                    disabled={savingLayout}
+                    onclick={() => removeWidget(contextMenu.widget)}
+                    data-od-id="delete-dashboard-widget"
+                  >
+                    <Trash2 size={16} strokeWidth={1.8} aria-hidden="true" />
+                    <span>Delete widget</span>
+                  </button>
+                </div>
+              {/if}
             </section>
           {:else if activeSection === "announcements"}
             <AnnouncementsPage viewerRole={dashboard.user.role} />
@@ -7567,8 +7733,113 @@
   </dialog>
 
   <dialog
+    class="settings-dialog dashboard-template-dialog"
+    {@attach captureDashboardTemplateDialog}
+    oncancel={(event) => applyingDashboardTemplate && event.preventDefault()}
+    onclose={() => (dashboardTemplateError = "")}
+    onclick={(event) =>
+      event.target === dashboardTemplateDialog &&
+      !applyingDashboardTemplate &&
+      dashboardTemplateDialog.close()}
+    data-od-id="dashboard-template-dialog"
+  >
+    <div class="settings-heading">
+      <div>
+        <h2>Dashboard templates</h2>
+        <p>Choose a starting layout for the twelve-column canvas.</p>
+      </div>
+      <button
+        class="ui-button ui-button--ghost ui-button--icon dialog-close"
+        type="button"
+        aria-label="Close dashboard templates"
+        disabled={applyingDashboardTemplate}
+        onclick={() => dashboardTemplateDialog?.close()}
+      >
+        <X size={18} strokeWidth={1.8} aria-hidden="true" />
+      </button>
+    </div>
+
+    <div class="dashboard-template-body">
+      <div
+        class="dashboard-template-grid"
+        role="radiogroup"
+        aria-label="Dashboard template"
+      >
+        {#each dashboardTemplates as template (template.id)}
+          <button
+            class={[
+              "dashboard-template-option",
+              selectedDashboardTemplateId === template.id && "is-selected",
+            ]}
+            type="button"
+            role="radio"
+            aria-checked={selectedDashboardTemplateId === template.id}
+            onclick={() => (selectedDashboardTemplateId = template.id)}
+            data-od-id={`dashboard-template-${template.id}`}
+          >
+            <span class="dashboard-template-preview" aria-hidden="true">
+              {#each template.previewRows as row, rowIndex (`${template.id}-${rowIndex}`)}
+                <span class="dashboard-template-preview-row">
+                  {#each row as span, cellIndex (`${template.id}-${rowIndex}-${cellIndex}`)}
+                    <i style:--dashboard-template-span={span}></i>
+                  {/each}
+                </span>
+              {/each}
+            </span>
+            <span class="dashboard-template-copy">
+              <span class="dashboard-template-title">
+                <strong>{template.title}</strong>
+                {#if selectedDashboardTemplateId === template.id}
+                  <Check size={16} strokeWidth={1.9} aria-hidden="true" />
+                {/if}
+              </span>
+              <span>{template.description}</span>
+              <small>{template.widgetCount} template widgets</small>
+            </span>
+          </button>
+        {/each}
+      </div>
+
+      {#if dashboardTemplateError}
+        <p class="form-error dashboard-template-error" role="alert">
+          {dashboardTemplateError}
+        </p>
+      {/if}
+    </div>
+
+    <div class="dashboard-template-actions">
+      <p>
+        Matching widgets keep their settings and media. Other widgets remain
+        below the selected layout.
+      </p>
+      <div>
+        <button
+          class="ui-button ui-button--secondary"
+          type="button"
+          disabled={applyingDashboardTemplate}
+          onclick={() => dashboardTemplateDialog?.close()}
+        >
+          Cancel
+        </button>
+        <button
+          class="ui-button ui-button--primary"
+          type="button"
+          disabled={applyingDashboardTemplate || savingLayout}
+          onclick={applySelectedDashboardTemplate}
+          data-od-id="apply-dashboard-template"
+        >
+          {applyingDashboardTemplate
+            ? "Applying…"
+            : `Apply ${selectedDashboardTemplate.title}`}
+        </button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog
     class="settings-dialog widget-library-dialog"
     {@attach captureWidgetLibraryDialog}
+    onclose={() => (widgetInfoKind = "")}
     onclick={(event) =>
       event.target === widgetLibraryDialog && widgetLibraryDialog.close()}
     data-od-id="widget-library-dialog"
@@ -7585,26 +7856,110 @@
         ><X size={18} strokeWidth={1.8} aria-hidden="true" /></button
       >
     </div>
-    <div class="widget-library-grid">
-      {#each widgetCatalog as item (item.kind)}
-        <button
-          class="widget-library-item"
-          type="button"
-          disabled={addingWidgetKind !== "" || savingLayout}
-          onclick={() => addWidget(item.kind, item.size)}
-          data-od-id={`add-widget-${item.kind}`}
+    <div class="widget-library-groups">
+      {#each widgetCatalogGroups as group (group)}
+        {@const groupItems = widgetCatalog.filter((item) => item.group === group)}
+        <section
+          class="widget-library-group"
+          data-od-id={`widget-library-${group.toLowerCase()}`}
         >
-          <span>
-            <strong>{item.title}</strong>
-            <small>{item.description}</small>
-          </span>
-          <span class="data-note">
-            {addingWidgetKind === item.kind ? "Adding…" : item.size}
-          </span>
-        </button>
+          <h3>{group}</h3>
+          <div class="widget-library-grid">
+            {#each groupItems as item (item.kind)}
+              {@const alreadyAdded =
+                item.singleInstance &&
+                widgets.some((widget) => widget.kind === item.kind)}
+              {@const selectedMode = selectedWidgetMode(item)}
+              <article
+                class={[
+                  "widget-library-item",
+                  widgetInfoKind === item.kind && "is-expanded",
+                ]}
+                data-od-id={`widget-library-item-${item.kind}`}
+              >
+                <div class="widget-library-summary">
+                  <button
+                    class="widget-library-add"
+                    type="button"
+                    disabled={addingWidgetKind !== "" ||
+                      savingLayout ||
+                      alreadyAdded}
+                    aria-label={alreadyAdded
+                      ? `${item.title} is already on the dashboard`
+                      : `Add ${item.title}`}
+                    onclick={() => addWidget(item.kind, selectedMode)}
+                    data-od-id={`add-widget-${item.kind}`}
+                  >
+                    <strong>{item.title}</strong>
+                    {#if addingWidgetKind === item.kind || alreadyAdded}
+                      <span class="data-note"
+                        >{addingWidgetKind === item.kind
+                          ? "Adding…"
+                          : "Added"}</span
+                      >
+                    {/if}
+                  </button>
+                  <button
+                    class="widget-library-info"
+                    type="button"
+                    aria-label={`${widgetInfoKind === item.kind ? "Hide" : "Show"} information about ${item.title}`}
+                    aria-expanded={widgetInfoKind === item.kind}
+                    aria-controls={`widget-info-${item.kind}`}
+                    onclick={() => toggleWidgetInfo(item.kind)}
+                    data-od-id={`widget-info-toggle-${item.kind}`}
+                  >
+                    <Info size={17} strokeWidth={1.8} aria-hidden="true" />
+                  </button>
+                </div>
+                {#if widgetInfoKind === item.kind}
+                  <div
+                    class="widget-library-details"
+                    id={`widget-info-${item.kind}`}
+                  >
+                    <p>{item.description}</p>
+                    {#if item.modes.length > 1}
+                      <div class="widget-mode-field">
+                        <span>Display</span>
+                        <div
+                          class="widget-mode-options"
+                          role="radiogroup"
+                          aria-label={`${item.title} display mode`}
+                        >
+                          {#each item.modes as mode (mode.size)}
+                            <button
+                              type="button"
+                              role="radio"
+                              aria-checked={selectedMode === mode.size}
+                              onclick={() =>
+                                selectWidgetMode(item.kind, mode.size)}
+                            >
+                              {mode.label}
+                            </button>
+                          {/each}
+                        </div>
+                      </div>
+                    {/if}
+                    <small class="widget-library-instruction">
+                      {item.modes.length > 1
+                        ? `Select a display mode, then choose ${item.title} above to add it.`
+                        : `Choose ${item.title} above to add it.`}
+                    </small>
+                  </div>
+                {/if}
+              </article>
+            {/each}
+          </div>
+        </section>
       {/each}
     </div>
   </dialog>
+
+  <DashboardWidgetSettingsDialog
+    widget={widgetSettingsTarget}
+    onUpdate={updateWidgetInstance}
+    onClose={() => (widgetSettingsTarget = null)}
+    onToast={showToast}
+  />
 
   <dialog
     class="settings-dialog bookmark-dialog"

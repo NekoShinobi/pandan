@@ -1368,7 +1368,8 @@ query and the latest-pipeline query for that user's subscribed GitLab projects.
 
 ## `bookmarks`
 
-Private quick links shown in the dashboard utility rail. Each account may store at most 32 rows.
+Private quick links shown by the removable Dashboard Bookmarks widget. Each account may store at
+most 32 rows.
 The destination remains a browser link; only the derived origin `/favicon.ico` is fetched by the
 server. Supported favicon bytes are cached in the same row and are returned only after the request
 resolves through that row's `user_id`.
@@ -1426,22 +1427,35 @@ HTTP or HTTPS URLs. Favicon and custom icon failures leave the item saved with a
 
 Per-user widget instances and their persisted GridStack layout. The interface normalizes reading
 order from the twelve-column coordinates after a move or resize. Layout updates are written
-atomically so a resize or reorder cannot be only partially saved.
+atomically so a resize or reorder cannot be only partially saved. A dashboard accepts up to 68
+instances, preserving the former 64-widget capacity plus the four surfaces moved into the canvas.
+Applying one of the four built-in dashboard templates reuses the first matching widget of each kind,
+creates any missing template widgets, and moves additional widgets below the preset in the same
+transaction. Existing `config_json`, credentials, and uploaded media remain attached to reused or
+additional widget identifiers.
 
 The `search` web search widget was removed in migration `036`; web search now lives in the global
 command palette. The migration deletes placed instances, closes the reading-order gap they leave
 behind, and drops `search` from the `kind` check.
 
 Migration `049` removes the legacy `task-progress` kind and seeds one account-owned `streams`
-widget with `config_json.placement = "utility_rail"`. That system widget stores separate Twitch and
-Kick account lists for the dashboard's fixed right rail; legacy movable `streams` widgets remain
-valid and retain their encrypted credentials.
+widget with `config_json.placement = "utility_rail"`.
+
+Migration `074` removes that fixed-rail distinction, preserves the tracker credential, and moves the
+tracker into the same removable GridStack canvas as every other widget. It adds `welcome`,
+`local-time`, `calendar-overview`, `bookmarks`, `section-header`, and `divider` kinds and appends the
+four former fixed Dashboard surfaces to existing account layouts. Legacy `feed-list`, `feed-sources`,
+`calendar`, and `clock` instances remain valid for compatibility but are no longer offered in the
+widget library.
+
+Migration `075` adds `image-frame` and `music-visualizer`. Their labels and presentation options
+remain in `config_json`; uploaded image bytes are isolated in `dashboard_widget_images`.
 
 | Column        | Type    | Constraints                                                        |
 | ------------- | ------- | ------------------------------------------------------------------ |
 | `id`          | TEXT    | Primary key                                                        |
 | `user_id`     | TEXT    | Required, references `users` with cascade delete                   |
-| `kind`        | TEXT    | Supported widget type, including the local `bible-verse` widget    |
+| `kind`        | TEXT    | Supported content or layout widget type                            |
 | `workspace`   | INTEGER | Legacy partition identifier; new widgets use dashboard `0`         |
 | `position`    | INTEGER | Zero-based dashboard reading order, bounded to 0–127               |
 | `size`        | TEXT    | `compact`, `standard`, `wide`, or `full`                           |
@@ -1463,6 +1477,20 @@ from `dashboard_widgets` so credentials cannot be serialized into dashboard resp
 | `widget_id`  | TEXT | Primary key, references `dashboard_widgets` with cascade delete |
 | `user_id`    | TEXT | Required, references `users` with cascade delete                |
 | `ciphertext` | TEXT | XChaCha20-Poly1305 nonce and ciphertext, base64 encoded         |
+| `updated_at` | TEXT | Required, RFC 3339 timestamp                                    |
+
+## `dashboard_widget_images`
+
+Account-scoped media for image-frame widgets and optional music-visualizer backgrounds. The server
+accepts JPEG, PNG, WebP, and AVIF up to 10 MB, validates the declared type against the file signature,
+and serves bytes only after resolving widget ownership.
+
+| Column       | Type | Constraints                                                     |
+| ------------ | ---- | --------------------------------------------------------------- |
+| `widget_id`  | TEXT | Primary key, references `dashboard_widgets` with cascade delete |
+| `user_id`    | TEXT | Required, references `users` with cascade delete                |
+| `mime_type`  | TEXT | JPEG, PNG, WebP, or AVIF                                        |
+| `image_data` | BLOB | Required, 1 byte through 10 MB                                  |
 | `updated_at` | TEXT | Required, RFC 3339 timestamp                                    |
 
 ## Kanban collaboration

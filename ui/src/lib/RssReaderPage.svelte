@@ -426,9 +426,14 @@
     itemDialog?.close();
   }
 
+  function articleDestination(item: RssReaderItem) {
+    return item.url || item.comments_url || item.base_url;
+  }
+
   function openArticle(item: RssReaderItem) {
-    if (!item.url) return;
-    window.open(item.url, "_blank", "noopener,noreferrer");
+    const destination = articleDestination(item);
+    if (!destination) return;
+    window.open(destination, "_blank", "noopener,noreferrer");
     if (item.read_at === null) void toggleRead(item);
   }
 
@@ -776,7 +781,7 @@
                   <MessageCircle size={16} strokeWidth={1.8} aria-hidden="true" />
                 </button>
               {/if}
-              {#if item.url && item.url !== item.comments_url}
+              {#if articleDestination(item)}
                 <button
                   class="rss-item-action"
                   type="button"
@@ -965,7 +970,7 @@
           {/if}
         </section>
         <p class="rss-detail-destination">
-          {selectedItem.url || selectedItem.comments_url || selectedItem.base_url}
+          {articleDestination(selectedItem)}
         </p>
       </div>
       <footer class="rss-detail-actions">
@@ -993,12 +998,7 @@
         </button>
         {#if selectedItem.comments_url}
           <button
-            class={[
-              "ui-button",
-              selectedItem.url && selectedItem.url !== selectedItem.comments_url
-                ? "ui-button--secondary rss-secondary-button"
-                : "ui-button--primary rss-primary-button",
-            ]}
+            class="ui-button ui-button--secondary rss-secondary-button"
             type="button"
             onclick={() => openComments(selectedItem)}
             data-od-id="rss-detail-open-comments"
@@ -1007,7 +1007,7 @@
             <MessageCircle size={15} strokeWidth={1.8} aria-hidden="true" />
           </button>
         {/if}
-        {#if selectedItem.url && selectedItem.url !== selectedItem.comments_url}
+        {#if articleDestination(selectedItem)}
           <button
             class="ui-button ui-button--primary rss-primary-button"
             type="button"

@@ -1,74 +1,111 @@
 <script lang="ts">
   import ArrowRight from "lucide-svelte/icons/arrow-right";
   import Check from "lucide-svelte/icons/check";
-  import GripVertical from "lucide-svelte/icons/grip-vertical";
-  import Trash2 from "lucide-svelte/icons/trash-2";
+  import DashboardLocalWidget from "$lib/DashboardLocalWidget.svelte";
+  import DashboardMediaWidget from "$lib/DashboardMediaWidget.svelte";
   import IntegrationWidget from "$lib/IntegrationWidget.svelte";
   import WeatherWidget from "$lib/WeatherWidget.svelte";
-  import type { DashboardWidget, FeedItem, Task, UserSettings } from "$lib/api";
-
-  type FeedFilter = "All" | FeedItem["category"];
+  import type { Bookmark, DashboardWidget, Task, UserSettings } from "$lib/api";
 
   let {
     widget,
     editing,
     tasks,
-    feeds,
     settings,
     completedCount,
     todayTasks,
     todayCompletedCount,
     todayTaskProgress,
-    savingLayout,
     onToggleTask,
     onCreateTask,
     onClearCompleted,
     onStartFocus,
     onToast,
     onOpenCalendarDate,
-    onRemove,
+    firstName,
+    clocks,
+    clockMarks,
+    dateLabel,
+    calendarMonthLabel,
+    calendarWeekdays,
+    calendarDays,
+    calendarEventsByDate,
+    bookmarks,
+    onShowCurrentMonth,
+    onChangeCalendarMonth,
+    onManageBookmarks,
+    onOpenContextMenu,
     onUpdateWidget,
+    onRegisterEditor,
   }: {
     widget: DashboardWidget;
     editing: boolean;
     tasks: Task[];
-    feeds: FeedItem[];
     settings: UserSettings;
     completedCount: number;
     todayTasks: Task[];
     todayCompletedCount: number;
     todayTaskProgress: number;
-    savingLayout: boolean;
     onToggleTask: (task: Task) => void;
     onCreateTask: (title: string) => Promise<void>;
     onClearCompleted: () => void;
     onStartFocus: (subject: string, minutes: number) => void;
     onToast: (message: string) => void;
     onOpenCalendarDate: (date: string) => void;
-    onRemove: (widget: DashboardWidget) => void;
+    firstName: string;
+    clocks: Array<{
+      timezone: string;
+      hourAngle: number;
+      minuteAngle: number;
+      secondAngle: number;
+      label: string;
+    }>;
+    clockMarks: number[];
+    dateLabel: string;
+    calendarMonthLabel: string;
+    calendarWeekdays: readonly string[];
+    calendarDays: Array<{
+      key: string;
+      day: number;
+      currentMonth: boolean;
+      today: boolean;
+    }>;
+    calendarEventsByDate: Record<
+      string,
+      { count: number; colors: string[] }
+    >;
+    bookmarks: Bookmark[];
+    onShowCurrentMonth: () => void;
+    onChangeCalendarMonth: (offset: number) => void;
+    onManageBookmarks: () => void;
+    onOpenContextMenu: (
+      widget: DashboardWidget,
+      title: string,
+      x: number,
+      y: number,
+    ) => void;
     onUpdateWidget: (widget: DashboardWidget) => void;
+    onRegisterEditor: (widgetId: string, editor?: () => void) => void;
   } = $props();
 
-  const feedFilters: FeedFilter[] = ["All", "Design", "Technology", "Culture"];
+  const localWidgetKinds = new Set([
+    "welcome",
+    "local-time",
+    "calendar-overview",
+    "bookmarks",
+    "section-header",
+    "divider",
+  ]);
 
-  let activeFilter = $state<FeedFilter>("All");
   let newTaskTitle = $state("");
   let savingTask = $state(false);
   let focusGoal = $state("");
-  let focusMinutes = $state(25);
-  let filteredFeeds = $derived(
-    activeFilter === "All"
-      ? feeds
-      : feeds.filter((feed) => feed.category === activeFilter),
+  let focusMinutes = $derived(
+    Math.min(240, Math.max(1, Number(widget.config.default_minutes) || 25)),
   );
   let nextTask = $derived(tasks.find((task) => !task.completed));
-  let feedSources = $derived.by(() => {
-    const counts: Record<string, number> = {};
-    for (const feed of feeds) {
-      counts[feed.source] = (counts[feed.source] ?? 0) + 1;
-    }
-    return Object.entries(counts).map(([source, count]) => ({ source, count }));
-  });
+  let showTaskPreview = $derived(widget.config.summary_style !== "progress");
+  let showTaskPriorities = $derived(widget.config.show_priorities !== false);
   let visibleTaskCount = $derived(
     widget.size === "compact"
       ? 3
@@ -76,15 +113,21 @@
         ? 5
         : tasks.length,
   );
-  let visibleFeedCount = $derived(
-    widget.size === "compact"
-      ? 2
-      : widget.size === "standard"
-        ? 3
-        : filteredFeeds.length,
-  );
-  let widgetTitle = $derived(
-    {
+  let widgetTitle = $derived.by(() => {
+    const customTitle = widget.config.title;
+    if (typeof customTitle === "string" && customTitle.trim()) {
+      return customTitle.trim();
+    }
+    return (
+      {
+      welcome: "Welcome",
+      "local-time": "Local time",
+      "calendar-overview": "Calendar overview",
+      bookmarks: "Bookmarks",
+      "section-header": "Category header",
+      divider: "Line divider",
+      "image-frame": "Image frame",
+      "music-visualizer": "Music visualizer",
       weather: "Weather",
       "task-summary": "Today",
       focus: "Next focus",
@@ -102,8 +145,9 @@
       releases: "Releases",
       streams: "Channels",
       "bible-verse": "Bible Verse",
-    }[widget.kind] ?? "Widget",
-  );
+      }[widget.kind] ?? "Widget"
+    );
+  });
 
   async function submitTask(event: SubmitEvent) {
     event.preventDefault();
@@ -126,6 +170,34 @@
     focusMinutes = minutes;
     onStartFocus(subject, minutes);
   }
+
+  function openWidgetContextMenu(event: MouseEvent) {
+    if (!editing) return;
+    event.preventDefault();
+    onOpenContextMenu(
+      widget,
+      widgetTitle,
+      event.clientX,
+      event.clientY,
+    );
+  }
+
+  function handleWidgetKeydown(event: KeyboardEvent) {
+    const opensMenu =
+      event.key === "Enter" ||
+      event.key === " " ||
+      event.key === "ContextMenu" ||
+      (event.shiftKey && event.key === "F10");
+    if (
+      !editing ||
+      !opensMenu
+    ) {
+      return;
+    }
+    event.preventDefault();
+    const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    onOpenContextMenu(widget, widgetTitle, bounds.left + 24, bounds.top + 24);
+  }
 </script>
 
 <article
@@ -139,37 +211,50 @@
   data-size={widget.size}
   role="listitem"
   data-od-id={`widget-${widget.id}`}
-  aria-label={editing
-    ? `${widgetTitle} widget. Use the grip to move.`
-    : undefined}
 >
   {#if editing}
-    <div class="widget-edit-bar" aria-label={`${widgetTitle} layout controls`}>
-      <button
-        class="widget-drag-handle"
-        type="button"
-        disabled={savingLayout}
-        aria-label={`Move ${widgetTitle} widget`}
-      >
-        <GripVertical size={17} strokeWidth={1.8} aria-hidden="true" />
-        <span>Move</span>
-      </button>
-      <span class="widget-resize-hint">Drag an edge to resize</span>
-      <button
-        class="ui-button ui-button--danger ui-button--icon widget-remove"
-        type="button"
-        disabled={savingLayout}
-        aria-label={`Remove ${widgetTitle} widget`}
-        onclick={() => onRemove(widget)}
-      >
-        <Trash2 size={17} strokeWidth={1.8} aria-hidden="true" />
-      </button>
-    </div>
+    <div
+      class="widget-drag-surface"
+      role="button"
+      tabindex="0"
+      aria-label={`${widgetTitle} widget. Drag to move. Press Enter for actions.`}
+      oncontextmenu={openWidgetContextMenu}
+      onkeydown={handleWidgetKeydown}
+    ></div>
+    <span
+      class="widget-edit-label"
+      data-od-id={`widget-edit-name-${widget.id}`}>{widgetTitle}</span
+    >
   {/if}
 
   <div class="widget-content" inert={editing}>
-    {#if widget.kind === "weather"}
-      <WeatherWidget {widget} {settings} onUpdate={onUpdateWidget} {onToast} />
+    {#if localWidgetKinds.has(widget.kind)}
+      <DashboardLocalWidget
+        {widget}
+        {firstName}
+        {clocks}
+        {clockMarks}
+        {dateLabel}
+        {calendarMonthLabel}
+        {calendarWeekdays}
+        {calendarDays}
+        {calendarEventsByDate}
+        {bookmarks}
+        {onShowCurrentMonth}
+        {onChangeCalendarMonth}
+        {onOpenCalendarDate}
+        {onManageBookmarks}
+      />
+    {:else if widget.kind === "image-frame" || widget.kind === "music-visualizer"}
+      <DashboardMediaWidget {widget} />
+    {:else if widget.kind === "weather"}
+      <WeatherWidget
+        {widget}
+        {settings}
+        onUpdate={onUpdateWidget}
+        {onToast}
+        onRegisterEditor={(editor) => onRegisterEditor(widget.id, editor)}
+      />
     {:else if widget.kind === "task-summary"}
       <div class="widget-head">
         <h2>Today</h2>
@@ -180,17 +265,19 @@
         <strong class="mono">{todayTaskProgress}%</strong>
         <span class="muted">complete</span>
       </div>
-      <div class="agenda-list compact-list adaptive-task-preview">
-        {#each todayTasks.slice(0, visibleTaskCount) as task (task.id)}
-          <div class="agenda-row">
-            <span class={["status-dot", task.completed && "filled"]}></span>
-            <span>{task.title}</span>
-            <span class="time">{task.completed ? "done" : task.priority}</span>
-          </div>
-        {:else}
-          <p class="empty-state">No tasks due today.</p>
-        {/each}
-      </div>
+      {#if showTaskPreview}
+        <div class="agenda-list compact-list adaptive-task-preview">
+          {#each todayTasks.slice(0, visibleTaskCount) as task (task.id)}
+            <div class="agenda-row">
+              <span class={["status-dot", task.completed && "filled"]}></span>
+              <span>{task.title}</span>
+              <span class="time">{task.completed ? "done" : task.priority}</span>
+            </div>
+          {:else}
+            <p class="empty-state">No tasks due today.</p>
+          {/each}
+        </div>
+      {/if}
     {:else if widget.kind === "focus"}
       <form class="focus-widget-form" onsubmit={submitFocus}>
         <p class="widget-kicker">Next focus</p>
@@ -253,9 +340,11 @@
               <Check size={17} strokeWidth={2} aria-hidden="true" />
             </button>
             <span class="task-copy">{task.title}</span>
-            <span class="priority"
-              >{task.completed ? "done" : task.priority}</span
-            >
+            {#if showTaskPriorities}
+              <span class="priority"
+                >{task.completed ? "done" : task.priority}</span
+              >
+            {/if}
           </div>
         {:else}
           <p class="empty-state roomy">No tasks yet. Add one below.</p>
@@ -279,66 +368,13 @@
           {savingTask ? "Adding…" : "Add task"}
         </button>
       </form>
-    {:else if widget.kind === "feed-list"}
-      <div class="widget-head feed-widget-head">
-        <div class="filter-row" aria-label="Feed filters">
-          {#each feedFilters as filter (filter)}
-            <button
-              class="filter-btn"
-              aria-pressed={activeFilter === filter}
-              onclick={() => (activeFilter = filter)}>{filter}</button
-            >
-          {/each}
-        </div>
-        <button
-          class="ui-button ui-button--secondary secondary-btn"
-          onclick={() => onToast("Feeds are current")}>Refresh</button
-        >
-      </div>
-      <div class="feed-list">
-        {#each filteredFeeds.slice(0, visibleFeedCount) as feed (feed.id)}
-          <article class="feed-row">
-            <span class="feed-source">{feed.source}</span>
-            <div>
-              <h3>{feed.title}</h3>
-              <p>{feed.summary}</p>
-              <span class="reading-time mono"
-                >{feed.reading_minutes} min read</span
-              >
-            </div>
-            <button
-              class="arrow-link"
-              aria-label={`Open ${feed.title}`}
-              onclick={() => onToast("Article preview coming next")}
-              ><ArrowRight
-                size={17}
-                strokeWidth={1.8}
-                aria-hidden="true"
-              /></button
-            >
-          </article>
-        {:else}
-          <p class="empty-state roomy">No feed items in this category.</p>
-        {/each}
-      </div>
-    {:else if widget.kind === "feed-sources"}
-      <h2>Following</h2>
-      <div class="source-list">
-        {#each feedSources as source (source.source)}
-          <div class="source-row">
-            <span>{source.source}</span>
-            <span class="mono muted">{source.count}</span>
-          </div>
-        {:else}
-          <p class="empty-state">No sources are available.</p>
-        {/each}
-      </div>
     {:else}
       <IntegrationWidget
         {widget}
         onUpdate={onUpdateWidget}
         {onToast}
         {onOpenCalendarDate}
+        onRegisterEditor={(editor) => onRegisterEditor(widget.id, editor)}
       />
     {/if}
   </div>

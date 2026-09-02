@@ -52,11 +52,16 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
   responses, authenticated records, uploads, avatars, ntfy data, or podcast audio. A waiting worker
   activates only after the user accepts the Update ready prompt, and `/service-worker.js` is served
   with `Cache-Control: no-cache` plus root scope.
-- The dashboard right rail owns one account-scoped Twitch/Kick tracker backed by a `streams` widget
-  whose `config_json.placement` is `utility_rail`. It accepts up to 20 accounts across separate
-  provider lists, keeps legacy movable stream widgets intact, and replaces the removed
-  `task-progress` widget and Task.Progress utility box.
-- The dashboard right rail also owns one account-scoped bookmark list capped at 32 links. Bookmark
+- The dashboard is one account-scoped, twelve-column widget canvas. Welcome, Local.Time, Calendar,
+  Bookmarks, and Twitch/Kick tracking are ordinary removable and resizable widgets; a narrow column
+  of widgets may function as a utility rail, but the interface must never restore a fixed side panel.
+  Category headers and line dividers are layout widgets. The `streams` widget accepts up to 20
+  accounts across separate provider lists and replaces the removed `task-progress` widget. Image
+  frames and music visualizers are ordinary removable widgets; their uploaded media is private to
+  the owning account, and the visualizer must reuse the shell's single audio-analysis graph. The
+  four built-in dashboard templates are non-destructive: reuse the first matching configured widget,
+  create missing template widgets, and retain all additional widgets below the applied layout.
+- The dashboard Bookmarks widget exposes one account-scoped bookmark list capped at 32 links. Bookmark
   destinations open directly in the browser. The server derives the origin `/favicon.ico`, fetches
   it through the `images` network policy with redirect and size guards, stores supported icon bytes
   in SQLite, and serves them only to the owning authenticated account. A favicon failure must never
@@ -69,7 +74,7 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
   credential-free HTTPS custom icon fetch. SVG icon sources are rasterized before storage so active
   remote content is never served from Pandan's origin. A remote icon failure saves the bookmark with
   its local fallback. Deleting a category deletes its bookmarks.
-- The dashboard right rail's Local.Time list shows every saved Sidebar Monitor timezone in the same
+- The dashboard Local.Time widget shows every saved Sidebar Monitor timezone in the same
   order. Sidebar Monitor settings use the runtime's standardized IANA timezone list and keep one to
   five selections.
 - Calendar month grids default to Sunday-first and share the account's adjustable week-start

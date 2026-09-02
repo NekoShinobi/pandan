@@ -18,6 +18,12 @@ This file is the persistent visual and interaction contract for Pandan. Read it 
 - Disable the button while a non-idempotent state change is pending, and update the pressed state only from authoritative or intentionally optimistic state.
 - Use radio groups, selects, or segmented controls for mutually exclusive choices; toggle buttons are for independent states.
 
+## Selects and dropdown menus
+
+- Every native select trigger, option, and option group must resolve its background and foreground from the active theme scope. Use `--page-surface` with `--surface` as the fallback for the background and `--fg` for text; never rely on the browser's default popup colors.
+- Terminal scopes must declare `color-scheme: dark` so browser-rendered dropdown chrome cannot fall back to a white menu. Light scopes keep the root light color scheme.
+- Extend the shared select rules in `ui/src/app.css` instead of adding feature-specific dropdown palettes. Component rules may change spacing or geometry, but must preserve the shared surface and readable hover, focus, selected, and disabled states.
+
 ## Motion and dialogs
 
 - Repeated non-dialog motion uses the primitives in `ui/src/lib/motion.svelte.ts`: `motionDisclosure` for height-revealing regions, `motionPopover` for floating surfaces, and the surface enter/exit pair for temporary inline composers. These primitives own the shared `cubic-bezier(0.2, 0, 0, 1)` timing, interruption cleanup, and reduced-motion behavior; do not add feature-specific keyframes or removal timers for the same patterns.

@@ -34,6 +34,10 @@ use crate::network_policy::{NetworkAccessScope, NetworkPolicy};
 const CACHE_DURATION: Duration = Duration::from_secs(15 * 60);
 const MAX_RESPONSE_BYTES: usize = 2_000_000;
 const MAX_RSS_REDIRECTS: usize = 3;
+const SEC_RSS_USER_AGENT: &str =
+    "Pandan/0.1 (https://github.com/NekoShinobi/pandan) SEC feed reader";
+const SEC_RSS_ACCEPT: &str =
+    "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5";
 const MAX_FAVICON_DOCUMENT_BYTES: usize = 256 * 1024;
 const MAX_FAVICON_CANDIDATES: usize = 8;
 const MAX_YAHOO_QUOTE_PAGE_BYTES: usize = 768 * 1024;
@@ -41,6 +45,7 @@ const YAHOO_CHART_ENDPOINTS: [&str; 2] = [
     "https://query1.finance.yahoo.com/",
     "https://query2.finance.yahoo.com/",
 ];
+const YAHOO_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36";
 const MAX_YOUTUBE_CHANNEL_METADATA_BYTES: usize = 1_000_000;
 const MAX_OWNED_REPOSITORIES: usize = 500;
 const MAX_PROVIDER_PAGES: usize = 100;
@@ -457,14 +462,41 @@ impl WidgetIntegrationService {
         parse_rss_feed_snapshot(&bytes)
     }
 
+    /// Fetches one fixed SEC RSS feed with the declared client headers required by SEC.gov.
+    ///
+    /// The destination still passes through the RSS network policy and every redirect is
+    /// revalidated before the connection is made.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe provider error when URL validation, fetching, or feed parsing fails.
+    pub async fn fetch_sec_rss_feed(&self, source: &str) -> Result<RssFeedSnapshot, String> {
+        let (client, url) = self.client_for(source, NetworkAccessScope::Rss).await?;
+        let bytes = self
+            .fetch_rss_bytes_with_headers(client, url, Some((SEC_RSS_USER_AGENT, SEC_RSS_ACCEPT)))
+            .await?;
+        parse_rss_feed_snapshot(&bytes)
+    }
+
     /// Fetches an RSS response while revalidating and pinning every redirect destination.
-    async fn fetch_rss_bytes(&self, mut client: Client, mut url: Url) -> Result<Vec<u8>, String> {
+    async fn fetch_rss_bytes(&self, client: Client, url: Url) -> Result<Vec<u8>, String> {
+        self.fetch_rss_bytes_with_headers(client, url, None).await
+    }
+
+    async fn fetch_rss_bytes_with_headers(
+        &self,
+        mut client: Client,
+        mut url: Url,
+        declared_headers: Option<(&str, &str)>,
+    ) -> Result<Vec<u8>, String> {
         for redirect_count in 0..=MAX_RSS_REDIRECTS {
-            let response = client
-                .get(url.clone())
-                .send()
-                .await
-                .map_err(request_error)?;
+            let mut request = client.get(url.clone());
+            if let Some((user_agent, accept)) = declared_headers {
+                request = request
+                    .header(header::USER_AGENT, user_agent)
+                    .header(header::ACCEPT, accept);
+            }
+            let response = request.send().await.map_err(request_error)?;
             if !response.status().is_redirection() {
                 return response_bytes(response).await;
             }
@@ -569,14 +601,17 @@ impl WidgetIntegrationService {
         let challenge_body = reddit_response_bytes(&mut response).await?;
         let challenge_body = String::from_utf8(challenge_body)
             .map_err(|_| "Reddit challenge was not UTF-8".to_owned())?;
-        let (challenge, token) = parse_reddit_challenge(&challenge_body)
+        let (challenge, token_field, token) = parse_reddit_challenge(&challenge_body)
             .ok_or_else(|| "Reddit browser challenge could not be parsed".to_owned())?;
+        let solution = format!("{challenge}{challenge}");
         let mut solution_url = challenge_url;
-        solution_url.query_pairs_mut().clear().extend_pairs([
-            ("solution", format!("{challenge}{challenge}")),
-            ("js_challenge", "1".to_owned()),
-            ("token", token),
-        ]);
+        {
+            let mut query = solution_url.query_pairs_mut();
+            query.clear();
+            query.append_pair("solution", &solution);
+            query.append_pair("js_challenge", "1");
+            query.append_pair(&token_field, &token);
+        }
         let response = client
             .get(solution_url)
             .header("accept", "text/html,application/xhtml+xml")
@@ -1717,6 +1752,9 @@ impl WidgetIntegrationService {
             .await?;
         let payload: Value = client
             .get(url)
+            .header(header::USER_AGENT, YAHOO_BROWSER_USER_AGENT)
+            .header(header::ACCEPT, "application/json")
+            .header(header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
             .query(&[("interval", "1d"), ("range", "1d")])
             .send()
             .await
@@ -1747,10 +1785,12 @@ impl WidgetIntegrationService {
             .await?;
         let response = client
             .get(url)
+            .header(header::USER_AGENT, YAHOO_BROWSER_USER_AGENT)
             .header(
                 header::ACCEPT,
                 "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
             )
+            .header(header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
             .send()
             .await
             .map_err(request_error)?;
@@ -2556,20 +2596,52 @@ pub fn validate_widget_config(kind: &str, config: &Value) -> Result<(), &'static
     if serialized.len() > 32_000 {
         return Err("widget configuration is too large");
     }
+    validate_text(config, "title", 80)?;
     match kind {
+        "welcome" => validate_bool(config, "show_status"),
+        "local-time" => validate_enum(config, "clock_style", &["analog", "digital"]),
+        "calendar-overview" => validate_bool(config, "show_event_markers"),
+        "bookmarks" => validate_bool(config, "show_hostnames"),
+        "divider" => validate_enum(config, "line_style", &["solid", "dashed", "dotted"]),
+        "task-summary" => validate_enum(config, "summary_style", &["agenda", "progress"]),
+        "focus" => validate_integer_range(config, "default_minutes", 1, 240),
+        "task-list" => validate_bool(config, "show_priorities"),
+        "weather" => validate_enum(config, "unit", &["celsius", "fahrenheit"])
+            .and_then(|()| validate_enum(config, "forecast_style", &["current", "hourly"])),
         "youtube" => validate_array(config, "channels", 12)
-            .and_then(|()| validate_array(config, "playlists", 12)),
-        "rss" => validate_array(config, "urls", 8),
-        "reddit" => validate_text(config, "subreddit", 80),
+            .and_then(|()| validate_array(config, "playlists", 12))
+            .and_then(|()| validate_bool(config, "include_shorts"))
+            .and_then(|()| validate_integer_range(config, "limit", 1, 20)),
+        "rss" => validate_array(config, "urls", 8)
+            .and_then(|()| validate_array(config, "subscription_ids", 32))
+            .and_then(|()| validate_integer_range(config, "limit", 1, 40))
+            .and_then(|()| validate_enum(config, "density", &["compact", "comfortable"])),
+        "reddit" => validate_text(config, "subreddit", 80)
+            .and_then(|()| validate_text(config, "client_id", 256))
+            .and_then(|()| validate_enum(config, "sort", &["hot", "new", "top", "rising"]))
+            .and_then(|()| validate_integer_range(config, "limit", 1, 20)),
         "stocks" => validate_array(config, "symbols", 12),
         "calendar" => validate_array(config, "events", 40),
         "clock" => validate_array(config, "timezones", 8),
-        "iframe" => validate_text(config, "url", 2_000),
+        "section-header" => validate_text(config, "label", 80),
+        "image-frame" => validate_text(config, "caption", 160)
+            .and_then(|()| validate_text(config, "alt_text", 240))
+            .and_then(|()| validate_enum(config, "fit", &["contain", "cover"])),
+        "music-visualizer" => validate_text(config, "mode", 80).and_then(|()| {
+            validate_enum(
+                config,
+                "background",
+                &["transparent", "surface", "artwork", "custom"],
+            )
+        }),
+        "iframe" => validate_text(config, "url", 2_000)
+            .and_then(|()| validate_https_widget_url(config, "url")),
         "html" => validate_text(config, "source", 20_000),
         "releases" => validate_array(config, "repositories", 12),
         "streams" => validate_array(config, "channels", 20)
             .and_then(|()| validate_array(config, "twitch_channels", 20))
             .and_then(|()| validate_array(config, "kick_channels", 20))
+            .and_then(|()| validate_text(config, "client_id", 256))
             .and_then(|()| validate_stream_account_count(config)),
         _ => Ok(()),
     }
@@ -2608,6 +2680,59 @@ fn validate_text(config: &Value, key: &str, max: usize) -> Result<(), &'static s
         None => Ok(()),
         Some(Value::String(value)) if value.len() <= max => Ok(()),
         _ => Err("widget text configuration is invalid"),
+    }
+}
+
+fn validate_enum(config: &Value, key: &str, allowed: &[&str]) -> Result<(), &'static str> {
+    match config.get(key) {
+        None => Ok(()),
+        Some(Value::String(value)) if allowed.contains(&value.as_str()) => Ok(()),
+        _ => Err("widget option is invalid"),
+    }
+}
+
+fn validate_bool(config: &Value, key: &str) -> Result<(), &'static str> {
+    match config.get(key) {
+        None | Some(Value::Bool(_)) => Ok(()),
+        _ => Err("widget toggle is invalid"),
+    }
+}
+
+fn validate_integer_range(
+    config: &Value,
+    key: &str,
+    minimum: u64,
+    maximum: u64,
+) -> Result<(), &'static str> {
+    match config.get(key) {
+        None => Ok(()),
+        Some(value)
+            if value
+                .as_u64()
+                .is_some_and(|value| (minimum..=maximum).contains(&value)) =>
+        {
+            Ok(())
+        }
+        _ => Err("widget number is invalid"),
+    }
+}
+
+fn validate_https_widget_url(config: &Value, key: &str) -> Result<(), &'static str> {
+    let Some(Value::String(value)) = config.get(key) else {
+        return Ok(());
+    };
+    if value.trim().is_empty() {
+        return Ok(());
+    }
+    let url = Url::parse(value.trim()).map_err(|_| "widget URL is invalid")?;
+    if url.scheme() == "https"
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+    {
+        Ok(())
+    } else {
+        Err("widget URL must be HTTPS without credentials")
     }
 }
 
@@ -3239,6 +3364,28 @@ async fn fetch_release(
 /// Parses the Glance-style release repository syntax used by widgets and Coding subscriptions.
 pub fn parse_release_repository(value: &str) -> Result<ReleaseRepository, String> {
     let value = value.trim();
+    if let Ok(url) = Url::parse(value) {
+        if url.scheme() != "https"
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err("release repository URL must be credential-free HTTPS".to_owned());
+        }
+        let host = url
+            .host_str()
+            .map(str::to_ascii_lowercase)
+            .ok_or_else(|| "release repository URL is missing a host".to_owned())?;
+        let provider = match host.as_str() {
+            "github.com" | "www.github.com" => "github",
+            "gitlab.com" | "www.gitlab.com" => "gitlab",
+            "codeberg.org" | "www.codeberg.org" => "codeberg",
+            _ => return Err("release repository URL provider is unsupported".to_owned()),
+        };
+        let repository = url.path().trim_matches('/').trim_end_matches(".git");
+        return parse_release_repository(&format!("{provider}:{repository}"));
+    }
     let custom = value
         .strip_prefix("gitea@")
         .map(|rest| ("gitea", rest))
@@ -3382,7 +3529,7 @@ fn reddit_listing_source(url: &Url) -> Option<RedditListingSource> {
     ))
 }
 
-fn parse_reddit_challenge(body: &str) -> Option<(String, String)> {
+fn parse_reddit_challenge(body: &str) -> Option<(String, String, String)> {
     static CHALLENGE_PATTERN: OnceLock<Regex> = OnceLock::new();
     static TOKEN_PATTERN: OnceLock<Regex> = OnceLock::new();
     let challenge_pattern = CHALLENGE_PATTERN.get_or_init(|| {
@@ -3390,7 +3537,7 @@ fn parse_reddit_challenge(body: &str) -> Option<(String, String)> {
             .expect("Reddit challenge regex is valid")
     });
     let token_pattern = TOKEN_PATTERN.get_or_init(|| {
-        Regex::new(r#"name=[\"']token[\"'][^>]*value=[\"']([^\"']+)[\"']"#)
+        Regex::new(r#"name=[\"'](jsc_token|token)[\"'][^>]*value=[\"']([^\"']+)[\"']"#)
             .expect("Reddit token regex is valid")
     });
     let challenge = challenge_pattern
@@ -3398,8 +3545,10 @@ fn parse_reddit_challenge(body: &str) -> Option<(String, String)> {
         .get(1)?
         .as_str()
         .to_owned();
-    let token = token_pattern.captures(body)?.get(1)?.as_str().to_owned();
-    Some((challenge, token))
+    let token_captures = token_pattern.captures(body)?;
+    let token_field = token_captures.get(1)?.as_str().to_owned();
+    let token = token_captures.get(2)?.as_str().to_owned();
+    Some((challenge, token_field, token))
 }
 
 fn reddit_loid_from_headers(headers: &primp::header::HeaderMap) -> Option<String> {
@@ -4595,11 +4744,15 @@ mod tests {
     fn reddit_browser_challenge_and_cookie_are_parsed() {
         let body = r#"
           <script>await(async value => value + value)("challenge-123")</script>
-          <input type="hidden" name="token" value="token-456">
+          <input type="hidden" name="jsc_token" value="token-456">
         "#;
         assert_eq!(
             parse_reddit_challenge(body),
-            Some(("challenge-123".to_owned(), "token-456".to_owned()))
+            Some((
+                "challenge-123".to_owned(),
+                "jsc_token".to_owned(),
+                "token-456".to_owned()
+            ))
         );
 
         let mut headers = primp::header::HeaderMap::new();
@@ -4882,6 +5035,38 @@ END:VCARD</card:address-data></d:prop></d:propstat></d:response>
     }
 
     #[test]
+    fn dashboard_display_options_are_validated() {
+        assert!(
+            validate_widget_config(
+                "local-time",
+                &json!({ "clock_style": "digital", "title": "World clocks" }),
+            )
+            .is_ok()
+        );
+        assert!(validate_widget_config("focus", &json!({ "default_minutes": 0 })).is_err());
+        assert!(validate_widget_config("weather", &json!({ "forecast_style": "radar" })).is_err());
+    }
+
+    #[test]
+    fn dashboard_iframe_requires_a_credential_free_https_url() {
+        assert!(
+            validate_widget_config("iframe", &json!({ "url": "https://example.com/embed" }))
+                .is_ok()
+        );
+        assert!(
+            validate_widget_config("iframe", &json!({ "url": "http://example.com/embed" }))
+                .is_err()
+        );
+        assert!(
+            validate_widget_config(
+                "iframe",
+                &json!({ "url": "https://user:secret@example.com/embed" }),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn ntfy_stream_keeps_messages_and_preserves_actions() {
         let body = r#"{"id":"open","time":1,"event":"open","topic":"alerts"}
 {"id":"message-1","time":2,"event":"message","topic":"alerts","title":"Door","message":"Opened","priority":4,"tags":["house"],"click":"https://example.com/event","actions":[{"action":"view","label":"Camera","url":"https://example.com/camera","clear":true}]}"#;
@@ -5004,6 +5189,12 @@ END:VCARD</card:address-data></d:prop></d:propstat></d:response>
         assert_eq!(implicit_github.provider, "github");
         assert_eq!(implicit_github.host, "github.com");
         assert_eq!(implicit_github.repository, "glanceapp/glance");
+
+        let github_url = parse_release_repository("https://github.com/glanceapp/glance.git")
+            .expect("GitHub URL parses");
+        assert_eq!(github_url.provider, "github");
+        assert_eq!(github_url.host, "github.com");
+        assert_eq!(github_url.repository, "glanceapp/glance");
 
         let gitlab = parse_release_repository("gitlab:gitlab-org/gitlab").expect("GitLab parses");
         assert_eq!(gitlab.provider, "gitlab");

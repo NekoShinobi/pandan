@@ -11,6 +11,16 @@
     podcastPlayer,
   } from "$lib/podcastPlayer.svelte";
 
+  let {
+    mode,
+    embedded = false,
+  }: {
+    mode?: AudioVisualizationMode;
+    embedded?: boolean;
+  } = $props();
+
+  let activeMode = $derived(mode ?? podcastPlayer.visualizationMode);
+
   const SAMPLE_COUNT = podcastPlayer.visualizationBinCount;
   const frequency = new Uint8Array(SAMPLE_COUNT);
   const waveform = new Uint8Array(SAMPLE_COUNT);
@@ -31,7 +41,7 @@
     let artwork: HTMLImageElement | null = null;
     let artworkRequest = 0;
     let loadedArtworkUrl = "";
-    let mode = podcastPlayer.visualizationMode;
+    let renderMode = activeMode;
     let colors = audioVisualizationPaletteColors(
       podcastPlayer.visualizationPalette,
       podcastPlayer.visualizationColor,
@@ -108,7 +118,7 @@
     };
 
     const animate = (time: number) => {
-      draw(mode, true, colors, intensity, time);
+      draw(renderMode, true, colors, intensity, time);
       frameRequest = requestAnimationFrame(animate);
     };
 
@@ -124,7 +134,7 @@
       image.onload = () => {
         if (request !== artworkRequest) return;
         artwork = image;
-        if (!animationRunning) draw(mode, false, colors, intensity);
+        if (!animationRunning) draw(renderMode, false, colors, intensity);
       };
       image.onerror = () => {
         if (request === artworkRequest) artwork = null;
@@ -134,12 +144,12 @@
 
     const observer = new ResizeObserver(() => {
       resize();
-      if (!animationRunning) draw(mode, false, colors, intensity);
+      if (!animationRunning) draw(renderMode, false, colors, intensity);
     });
     observer.observe(canvas);
 
     $effect(() => {
-      mode = podcastPlayer.visualizationMode;
+      renderMode = activeMode;
       colors = audioVisualizationPaletteColors(
         podcastPlayer.visualizationPalette,
         podcastPlayer.visualizationColor,
@@ -152,7 +162,7 @@
       if (animationRunning) {
         frameRequest = requestAnimationFrame(animate);
       } else {
-        draw(mode, false, colors, intensity);
+        draw(renderMode, false, colors, intensity);
       }
       return () => cancelAnimationFrame(frameRequest);
     });
@@ -166,7 +176,7 @@
 </script>
 
 <canvas
-  class="audio-visualization-layer"
+  class={["audio-visualization-layer", embedded && "is-embedded"]}
   aria-hidden="true"
   {@attach attachVisualizer}
   style:opacity={podcastPlayer.visualizationVisibility}
@@ -183,5 +193,10 @@
     height: 100%;
     pointer-events: none;
     contain: strict;
+  }
+
+  .audio-visualization-layer.is-embedded {
+    position: absolute;
+    z-index: 1;
   }
 </style>

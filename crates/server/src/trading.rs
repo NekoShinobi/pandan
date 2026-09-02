@@ -1,15 +1,52 @@
 use actix_web::{HttpRequest, HttpResponse, http::header, web};
 use db::entities::{TradingQuote, TradingQuoteDraft};
-use futures_util::stream;
+use futures_util::{future::join_all, stream};
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::time::{Duration, Instant, Interval, MissedTickBehavior, interval_at};
 
-use crate::{ApiError, AppState, authenticated_account};
+use crate::{
+    ApiError, AppState, authenticated_account, truncate_text, widget_integrations::RssFeedSnapshot,
+};
 
 const MAX_TRADING_SYMBOLS: usize = 10;
 const MAX_FINNHUB_KEY_CHARS: usize = 256;
 const FINNHUB_REFRESH_SECONDS: u64 = 20;
+const SEC_FEEDS: [SecFeedDefinition; 5] = [
+    SecFeedDefinition {
+        id: "press-releases",
+        label: "Press releases",
+        url: "https://www.sec.gov/news/pressreleases.rss",
+    },
+    SecFeedDefinition {
+        id: "speeches-statements",
+        label: "Speeches & statements",
+        url: "https://www.sec.gov/news/speeches-statements.rss",
+    },
+    SecFeedDefinition {
+        id: "litigation-releases",
+        label: "Litigation releases",
+        url: "https://www.sec.gov/enforcement-litigation/litigation-releases/rss",
+    },
+    SecFeedDefinition {
+        id: "administrative-proceedings",
+        label: "Administrative proceedings",
+        url: "https://www.sec.gov/enforcement-litigation/administrative-proceedings/rss",
+    },
+    SecFeedDefinition {
+        id: "trading-suspensions",
+        label: "Trading suspensions",
+        url: "https://www.sec.gov/enforcement-litigation/trading-suspensions/rss",
+    },
+];
+
+#[derive(Debug, Clone, Copy)]
+struct SecFeedDefinition {
+    id: &'static str,
+    label: &'static str,
+    url: &'static str,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TradingResponse {
@@ -47,6 +84,33 @@ struct TradingQuoteResponse {
     refreshed_at: String,
 }
 
+#[derive(Debug, Serialize)]
+struct SecFeedResponse {
+    fetched_at: String,
+    sources: Vec<SecFeedSourceResponse>,
+    items: Vec<SecFeedItemResponse>,
+    warning: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SecFeedSourceResponse {
+    id: &'static str,
+    label: &'static str,
+    url: &'static str,
+    item_count: usize,
+    error: Option<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+struct SecFeedItemResponse {
+    id: String,
+    source: &'static str,
+    source_label: &'static str,
+    title: String,
+    url: String,
+    published_at: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct TradingSymbolInput {
     symbol: String,
@@ -80,6 +144,7 @@ pub(crate) fn configure(config: &mut web::ServiceConfig) {
     config
         .route("/trading", web::get().to(get_trading))
         .route("/trading/refresh", web::post().to(refresh_trading))
+        .route("/trading/sec-feed", web::get().to(get_sec_feed))
         .route("/trading/events", web::get().to(trading_events))
         .route("/trading/symbols", web::post().to(create_symbol))
         .route(
@@ -96,6 +161,28 @@ async fn get_trading(
 ) -> Result<web::Json<TradingResponse>, ApiError> {
     let account = authenticated_account(&state, &request).await?;
     trading_snapshot(&state, &account.id).await.map(web::Json)
+}
+
+async fn get_sec_feed(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+) -> Result<HttpResponse, ApiError> {
+    authenticated_account(&state, &request).await?;
+    let results = join_all(SEC_FEEDS.into_iter().map(|source| {
+        let integrations = &state.widget_integrations;
+        async move { (source, integrations.fetch_sec_rss_feed(source.url).await) }
+    }))
+    .await;
+    let (response, successful_sources) =
+        build_sec_feed_response(chrono::Utc::now().to_rfc3339(), results);
+    if successful_sources == 0 {
+        return Err(ApiError::Integration(
+            "SEC feeds are unavailable; try again shortly.".to_owned(),
+        ));
+    }
+    Ok(HttpResponse::Ok()
+        .insert_header((header::CACHE_CONTROL, "private, no-store"))
+        .json(response))
 }
 
 async fn refresh_trading(
@@ -475,6 +562,111 @@ fn map_watchlist_insert_error(error: sqlx::Error) -> ApiError {
     }
 }
 
+fn build_sec_feed_response(
+    fetched_at: String,
+    results: Vec<(SecFeedDefinition, Result<RssFeedSnapshot, String>)>,
+) -> (SecFeedResponse, usize) {
+    let mut successful_sources = 0;
+    let mut failed_sources = 0;
+    let mut sources = Vec::with_capacity(SEC_FEEDS.len());
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+
+    for (source, result) in results {
+        match result {
+            Ok(snapshot) => {
+                successful_sources += 1;
+                let mut item_count = 0;
+                for item in snapshot.items {
+                    let Some(url) = safe_sec_entry_url(&item.url) else {
+                        continue;
+                    };
+                    let external_id = truncate_text(item.external_id.trim(), 2048, item.url.trim());
+                    let id = format!("{}:{external_id}", source.id);
+                    if !seen.insert(id.clone()) {
+                        continue;
+                    }
+                    let title = item.title.split_whitespace().collect::<Vec<_>>().join(" ");
+                    items.push(SecFeedItemResponse {
+                        id,
+                        source: source.id,
+                        source_label: source.label,
+                        title: truncate_text(&title, 500, "Untitled SEC update"),
+                        url,
+                        published_at: item.published_at,
+                    });
+                    item_count += 1;
+                }
+                sources.push(SecFeedSourceResponse {
+                    id: source.id,
+                    label: source.label,
+                    url: source.url,
+                    item_count,
+                    error: None,
+                });
+            }
+            Err(error) => {
+                failed_sources += 1;
+                tracing::warn!(
+                    source = source.id,
+                    %error,
+                    "SEC RSS source could not be loaded"
+                );
+                sources.push(SecFeedSourceResponse {
+                    id: source.id,
+                    label: source.label,
+                    url: source.url,
+                    item_count: 0,
+                    error: Some("Feed unavailable"),
+                });
+            }
+        }
+    }
+    items.sort_by(|left, right| {
+        sec_published_timestamp(&right.published_at)
+            .cmp(&sec_published_timestamp(&left.published_at))
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    let warning = (failed_sources > 0).then(|| {
+        format!(
+            "{failed_sources} of {} SEC feeds could not be loaded; showing the sources that responded.",
+            SEC_FEEDS.len()
+        )
+    });
+    (
+        SecFeedResponse {
+            fetched_at,
+            sources,
+            items,
+            warning,
+        },
+        successful_sources,
+    )
+}
+
+fn safe_sec_entry_url(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.chars().count() > 2048 {
+        return None;
+    }
+    let parsed = Url::parse(value).ok()?;
+    let host = parsed.host_str()?;
+    if parsed.scheme() != "https"
+        || (!host.eq_ignore_ascii_case("sec.gov")
+            && !host.eq_ignore_ascii_case("www.sec.gov")
+            && !host.to_ascii_lowercase().ends_with(".sec.gov"))
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return None;
+    }
+    Some(parsed.to_string())
+}
+
+fn sec_published_timestamp(value: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(value).map_or(i64::MIN, |date| date.timestamp())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,5 +681,16 @@ mod tests {
         assert!(validate_symbol("../AAPL").is_err());
         assert!(validate_symbol("AAPL MSFT").is_err());
         assert!(validate_symbol("").is_err());
+    }
+
+    #[test]
+    fn sec_entry_links_are_restricted_to_official_https_hosts() {
+        assert_eq!(
+            safe_sec_entry_url("https://www.sec.gov/newsroom/example").as_deref(),
+            Some("https://www.sec.gov/newsroom/example")
+        );
+        assert!(safe_sec_entry_url("http://www.sec.gov/newsroom/example").is_none());
+        assert!(safe_sec_entry_url("https://sec.gov.example.com/newsroom/example").is_none());
+        assert!(safe_sec_entry_url("https://user@www.sec.gov/newsroom/example").is_none());
     }
 }

@@ -11,9 +11,10 @@ use argon2::{
 use chrono::{Datelike, Duration as ChronoDuration, Utc};
 use db::entities::{
     AuthenticationSettings, Bookmark, CalendarEvent, CalendarSubscription, CodingProject, Contact,
-    DashboardWidget, FeedItem, JournalNode, LoginAppearance, ManagedUser, PaymentSubscription,
-    RssItem, RssItemDraft, RssRefreshTarget, RssSubscription, RssSubscriptionDraft, SessionAccount,
-    Task, TaskCompletion, TaskDraft, TaskSubtaskDraft, User, UserAppearance, UserSettings,
+    DashboardWidget, DashboardWidgetTemplateSlot, FeedItem, JournalNode, LoginAppearance,
+    ManagedUser, PaymentSubscription, RssItem, RssItemDraft, RssRefreshTarget, RssSubscription,
+    RssSubscriptionDraft, SessionAccount, Task, TaskCompletion, TaskDraft, TaskSubtaskDraft, User,
+    UserAppearance, UserSettings,
 };
 use futures_util::future::join_all;
 use rand_core::OsRng;
@@ -66,6 +67,7 @@ const SESSION_DAYS: i64 = 30;
 const OIDC_AUTHORIZATION_MINUTES: i64 = 10;
 const MAX_WALLPAPER_BYTES: usize = 30 * 1024 * 1024;
 const MAX_AVATAR_BYTES: usize = 10 * 1024 * 1024;
+const MAX_WIDGET_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TASK_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 const RSS_REFRESH_MINUTES: i64 = 30;
 const RSS_REFRESH_BATCH_SIZE: usize = 100;
@@ -76,6 +78,7 @@ const DEFAULT_RSS_RETENTION_DAYS: i64 = 7;
 const DEFAULT_RSS_RETENTION_MODE: &str = "all";
 const DEFAULT_RSS_CURRENT_ENTRY_LIMIT: i64 = 25;
 const MAX_RSS_CURRENT_ENTRY_LIMIT: i64 = 200;
+const MAX_DASHBOARD_WIDGETS: usize = 68;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -321,6 +324,215 @@ pub struct WidgetLayoutItem {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UpdateWidgetLayoutRequest {
     pub widgets: Vec<WidgetLayoutItem>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ApplyDashboardTemplateRequest {
+    pub template: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DashboardTemplateSlot {
+    kind: &'static str,
+    size: &'static str,
+    position: i64,
+    grid_x: i64,
+    grid_y: i64,
+    grid_w: i64,
+    grid_h: i64,
+    config_json: &'static str,
+}
+
+const fn dashboard_template_slot(
+    kind: &'static str,
+    size: &'static str,
+    position: i64,
+    grid_x: i64,
+    grid_y: i64,
+    grid_w: i64,
+    grid_h: i64,
+) -> DashboardTemplateSlot {
+    DashboardTemplateSlot {
+        kind,
+        size,
+        position,
+        grid_x,
+        grid_y,
+        grid_w,
+        grid_h,
+        config_json: "{}",
+    }
+}
+
+const fn configured_dashboard_template_slot(
+    slot: DashboardTemplateSlot,
+    config_json: &'static str,
+) -> DashboardTemplateSlot {
+    DashboardTemplateSlot {
+        config_json,
+        ..slot
+    }
+}
+
+const DAILY_OVERVIEW_TEMPLATE: &[DashboardTemplateSlot] = &[
+    dashboard_template_slot("welcome", "full", 0, 0, 0, 12, 3),
+    dashboard_template_slot("task-summary", "compact", 1, 0, 3, 4, 4),
+    dashboard_template_slot("focus", "compact", 2, 4, 3, 4, 4),
+    dashboard_template_slot("local-time", "compact", 3, 8, 3, 4, 4),
+    dashboard_template_slot("task-list", "wide", 4, 0, 7, 8, 6),
+    dashboard_template_slot("bookmarks", "compact", 5, 8, 7, 4, 6),
+    dashboard_template_slot("calendar-overview", "compact", 6, 0, 13, 4, 6),
+    dashboard_template_slot("weather", "wide", 7, 4, 13, 8, 6),
+];
+
+const FOCUS_PLANNER_TEMPLATE: &[DashboardTemplateSlot] = &[
+    dashboard_template_slot("welcome", "full", 0, 0, 0, 12, 3),
+    configured_dashboard_template_slot(
+        dashboard_template_slot("section-header", "full", 1, 0, 3, 12, 1),
+        r#"{"label":"Plan and focus"}"#,
+    ),
+    dashboard_template_slot("focus", "standard", 2, 0, 4, 6, 4),
+    dashboard_template_slot("task-summary", "standard", 3, 6, 4, 6, 4),
+    dashboard_template_slot("task-list", "full", 4, 0, 8, 12, 7),
+    dashboard_template_slot("calendar-overview", "compact", 5, 0, 15, 4, 6),
+    dashboard_template_slot("bookmarks", "compact", 6, 4, 15, 4, 6),
+    dashboard_template_slot("local-time", "compact", 7, 8, 15, 4, 6),
+];
+
+const SIGNAL_DESK_TEMPLATE: &[DashboardTemplateSlot] = &[
+    dashboard_template_slot("welcome", "full", 0, 0, 0, 12, 3),
+    configured_dashboard_template_slot(
+        dashboard_template_slot("section-header", "full", 1, 0, 3, 12, 1),
+        r#"{"label":"Feeds and signals"}"#,
+    ),
+    dashboard_template_slot("rss", "standard", 2, 0, 4, 6, 4),
+    dashboard_template_slot("youtube", "standard", 3, 6, 4, 6, 4),
+    dashboard_template_slot("stocks", "standard", 4, 0, 8, 6, 4),
+    dashboard_template_slot("releases", "standard", 5, 6, 8, 6, 4),
+    dashboard_template_slot("reddit", "standard", 6, 0, 12, 6, 4),
+    dashboard_template_slot("streams", "standard", 7, 6, 12, 6, 4),
+    dashboard_template_slot("weather", "wide", 8, 0, 16, 8, 5),
+    dashboard_template_slot("local-time", "compact", 9, 8, 16, 4, 5),
+];
+
+const MEDIA_STUDIO_TEMPLATE: &[DashboardTemplateSlot] = &[
+    dashboard_template_slot("welcome", "full", 0, 0, 0, 12, 3),
+    configured_dashboard_template_slot(
+        dashboard_template_slot("image-frame", "standard", 1, 0, 3, 6, 5),
+        r#"{"fit":"contain","has_image":false}"#,
+    ),
+    configured_dashboard_template_slot(
+        dashboard_template_slot("music-visualizer", "standard", 2, 6, 3, 6, 5),
+        r#"{"mode":"radial-spectrum","background":"surface","has_image":false}"#,
+    ),
+    dashboard_template_slot("divider", "full", 3, 0, 8, 12, 1),
+    dashboard_template_slot("bible-verse", "wide", 4, 0, 9, 8, 4),
+    dashboard_template_slot("bookmarks", "compact", 5, 8, 9, 4, 4),
+    dashboard_template_slot("html", "standard", 6, 0, 13, 6, 4),
+    dashboard_template_slot("iframe", "standard", 7, 6, 13, 6, 4),
+];
+
+fn dashboard_template(template: &str) -> Option<&'static [DashboardTemplateSlot]> {
+    match template {
+        "daily-overview" => Some(DAILY_OVERVIEW_TEMPLATE),
+        "focus-planner" => Some(FOCUS_PLANNER_TEMPLATE),
+        "signal-desk" => Some(SIGNAL_DESK_TEMPLATE),
+        "media-studio" => Some(MEDIA_STUDIO_TEMPLATE),
+        _ => None,
+    }
+}
+
+fn dashboard_template_slots(template: &str) -> Result<Vec<DashboardWidgetTemplateSlot>, ApiError> {
+    let slots = dashboard_template(template)
+        .ok_or(ApiError::BadRequest("dashboard template is invalid"))?;
+    let mut kinds = HashSet::new();
+    for (index, slot) in slots.iter().enumerate() {
+        let valid_position = usize::try_from(slot.position).is_ok_and(|position| position == index);
+        let valid_config = serde_json::from_str::<Value>(slot.config_json)
+            .ok()
+            .is_some_and(|config| {
+                widget_integrations::validate_widget_config(slot.kind, &config).is_ok()
+            });
+        let overlaps = slots[..index].iter().any(|candidate| {
+            slot.grid_x < candidate.grid_x + candidate.grid_w
+                && slot.grid_x + slot.grid_w > candidate.grid_x
+                && slot.grid_y < candidate.grid_y + candidate.grid_h
+                && slot.grid_y + slot.grid_h > candidate.grid_y
+        });
+        if validate_widget_kind(slot.kind).is_err()
+            || validate_widget_layout(
+                0,
+                slot.position,
+                slot.size,
+                slot.grid_x,
+                slot.grid_y,
+                slot.grid_w,
+                slot.grid_h,
+            )
+            .is_err()
+            || !valid_position
+            || !valid_config
+            || !kinds.insert(slot.kind)
+            || overlaps
+        {
+            return Err(ApiError::Internal("dashboard template is invalid"));
+        }
+    }
+    Ok(slots
+        .iter()
+        .map(|slot| DashboardWidgetTemplateSlot {
+            kind: slot.kind.to_owned(),
+            size: slot.size.to_owned(),
+            position: slot.position,
+            grid_x: slot.grid_x,
+            grid_y: slot.grid_y,
+            grid_w: slot.grid_w,
+            grid_h: slot.grid_h,
+            config_json: slot.config_json.to_owned(),
+        })
+        .collect())
+}
+
+fn dashboard_template_capacity(
+    slots: &[DashboardWidgetTemplateSlot],
+    existing: &[DashboardWidget],
+) -> (usize, bool) {
+    let mut retained_ids = HashSet::new();
+    let mut missing = 0;
+    for slot in slots {
+        if let Some(widget) = existing
+            .iter()
+            .find(|widget| widget.kind == slot.kind && !retained_ids.contains(widget.id.as_str()))
+        {
+            retained_ids.insert(widget.id.as_str());
+        } else {
+            missing += 1;
+        }
+    }
+
+    let mut grid_x = 0;
+    let mut grid_y = slots
+        .iter()
+        .map(|slot| slot.grid_y + slot.grid_h)
+        .max()
+        .unwrap_or(0);
+    let mut row_height = 0;
+    for widget in existing
+        .iter()
+        .filter(|widget| !retained_ids.contains(widget.id.as_str()))
+    {
+        if grid_x + widget.grid_w > 12 {
+            grid_x = 0;
+            grid_y += row_height;
+            row_height = 0;
+        }
+        if grid_y + widget.grid_h > 256 {
+            return (missing, false);
+        }
+        grid_x += widget.grid_w;
+        row_height = row_height.max(widget.grid_h);
+    }
+    (missing, true)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1106,15 +1318,19 @@ async fn create_widget(
 ) -> Result<(web::Json<DashboardWidget>, StatusCode), ApiError> {
     let account = authenticated_account(&state, &request).await?;
     validate_widget_kind(&payload.kind)?;
-    let (grid_w, grid_h) = default_grid_size(&payload.size)?;
+    let (grid_w, grid_h) = default_widget_grid_size(&payload.kind, &payload.size)?;
     validate_widget_layout(payload.workspace, 0, &payload.size, 0, 0, grid_w, grid_h)?;
-    if db::queries::list_dashboard_widgets(&state.pool, &account.id)
-        .await?
-        .len()
-        >= 64
+    let existing = db::queries::list_dashboard_widgets(&state.pool, &account.id).await?;
+    if existing.len() >= MAX_DASHBOARD_WIDGETS {
+        return Err(ApiError::BadRequest(
+            "a dashboard can contain at most 68 widgets",
+        ));
+    }
+    if is_single_instance_widget(&payload.kind)
+        && existing.iter().any(|widget| widget.kind == payload.kind)
     {
         return Err(ApiError::BadRequest(
-            "a dashboard can contain at most 64 widgets",
+            "the dashboard already contains this widget",
         ));
     }
     let widget = db::queries::create_dashboard_widget(
@@ -1134,9 +1350,9 @@ async fn update_widget_layout(
     payload: web::Json<UpdateWidgetLayoutRequest>,
 ) -> Result<web::Json<Vec<DashboardWidget>>, ApiError> {
     let account = authenticated_account(&state, &request).await?;
-    if payload.widgets.is_empty() || payload.widgets.len() > 64 {
+    if payload.widgets.is_empty() || payload.widgets.len() > MAX_DASHBOARD_WIDGETS {
         return Err(ApiError::BadRequest(
-            "widget layout must contain between 1 and 64 items",
+            "widget layout must contain between 1 and 68 items",
         ));
     }
     for (index, widget) in payload.widgets.iter().enumerate() {
@@ -1178,6 +1394,30 @@ async fn update_widget_layout(
         .await?
         .map(web::Json)
         .ok_or(ApiError::NotFound("widget not found"))
+}
+
+async fn apply_dashboard_template(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    payload: web::Json<ApplyDashboardTemplateRequest>,
+) -> Result<web::Json<Vec<DashboardWidget>>, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    let slots = dashboard_template_slots(&payload.template)?;
+    let existing = db::queries::list_dashboard_widgets(&state.pool, &account.id).await?;
+    let (missing, fits_grid) = dashboard_template_capacity(&slots, &existing);
+    if existing.len().saturating_add(missing) > MAX_DASHBOARD_WIDGETS {
+        return Err(ApiError::BadRequest(
+            "remove widgets before applying this dashboard template",
+        ));
+    }
+    if !fits_grid {
+        return Err(ApiError::BadRequest(
+            "compact the dashboard before applying this template",
+        ));
+    }
+    let widgets =
+        db::queries::apply_dashboard_widget_template(&state.pool, &account.id, &slots).await?;
+    Ok(web::Json(widgets))
 }
 
 async fn widget_capabilities(
@@ -1347,19 +1587,77 @@ async fn delete_widget(
     widget_id: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let account = authenticated_account(&state, &request).await?;
-    let widget = db::queries::get_dashboard_widget(&state.pool, &account.id, &widget_id)
-        .await?
-        .ok_or(ApiError::NotFound("widget not found"))?;
-    if widget.kind == "streams" && widget.config["placement"] == "utility_rail" {
-        return Err(ApiError::BadRequest(
-            "the dashboard stream tracker cannot be removed",
-        ));
-    }
     if db::queries::delete_dashboard_widget(&state.pool, &account.id, &widget_id).await? {
         Ok(HttpResponse::NoContent().finish())
     } else {
         Err(ApiError::NotFound("widget not found"))
     }
+}
+
+async fn get_widget_image(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    widget_id: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    let image = db::queries::find_dashboard_widget_image(&state.pool, &account.id, &widget_id)
+        .await?
+        .ok_or(ApiError::NotFound("widget image not found"))?;
+    Ok(HttpResponse::Ok()
+        .insert_header((header::CONTENT_TYPE, image.mime_type))
+        .insert_header((header::CACHE_CONTROL, "private, no-cache"))
+        .insert_header(("Cross-Origin-Resource-Policy", "same-origin"))
+        .insert_header((header::ETAG, format!("\"{}\"", image.updated_at)))
+        .body(image.image_data))
+}
+
+async fn update_widget_image(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    widget_id: web::Path<String>,
+    image_data: web::Bytes,
+) -> Result<web::Json<DashboardWidget>, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    let widget = db::queries::get_dashboard_widget(&state.pool, &account.id, &widget_id)
+        .await?
+        .ok_or(ApiError::NotFound("widget not found"))?;
+    if !matches!(widget.kind.as_str(), "image-frame" | "music-visualizer") {
+        return Err(ApiError::BadRequest("this widget does not accept an image"));
+    }
+    if image_data.is_empty() || image_data.len() > MAX_WIDGET_IMAGE_BYTES {
+        return Err(ApiError::BadRequest(
+            "widget image must be between 1 byte and 10 MB",
+        ));
+    }
+    let mime_type = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .ok_or(ApiError::BadRequest("widget image type is required"))?;
+    validate_image_upload(mime_type, &image_data, "widget image")?;
+    db::queries::upsert_dashboard_widget_image(
+        &state.pool,
+        &account.id,
+        &widget_id,
+        mime_type,
+        &image_data,
+    )
+    .await?
+    .map(web::Json)
+    .ok_or(ApiError::NotFound("widget not found"))
+}
+
+async fn delete_widget_image(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    widget_id: web::Path<String>,
+) -> Result<web::Json<DashboardWidget>, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    db::queries::delete_dashboard_widget_image(&state.pool, &account.id, &widget_id)
+        .await?
+        .map(web::Json)
+        .ok_or(ApiError::NotFound("widget not found"))
 }
 
 async fn coding(
@@ -1754,7 +2052,15 @@ fn validate_coding_host(provider: &str, host: &str) -> Result<(), ApiError> {
 fn validate_widget_kind(kind: &str) -> Result<(), ApiError> {
     if matches!(
         kind,
-        "weather"
+        "welcome"
+            | "local-time"
+            | "calendar-overview"
+            | "bookmarks"
+            | "section-header"
+            | "divider"
+            | "image-frame"
+            | "music-visualizer"
+            | "weather"
             | "task-summary"
             | "focus"
             | "task-list"
@@ -1775,6 +2081,24 @@ fn validate_widget_kind(kind: &str) -> Result<(), ApiError> {
         Ok(())
     } else {
         Err(ApiError::BadRequest("widget type is invalid"))
+    }
+}
+
+fn is_single_instance_widget(kind: &str) -> bool {
+    matches!(
+        kind,
+        "welcome" | "local-time" | "calendar-overview" | "bookmarks"
+    )
+}
+
+fn default_widget_grid_size(kind: &str, size: &str) -> Result<(i64, i64), ApiError> {
+    match kind {
+        "welcome" => Ok((12, 3)),
+        "section-header" | "divider" => Ok((12, 1)),
+        "calendar-overview" => Ok((4, 6)),
+        "image-frame" => Ok((6, 5)),
+        "music-visualizer" => Ok((6, 4)),
+        _ => default_grid_size(size),
     }
 }
 
@@ -2132,6 +2456,7 @@ fn validate_image_upload(
                 "contact photo" => "contact photo type is not supported",
                 "wall" => "wall image type is not supported",
                 "announcement image" => "announcement image type is not supported",
+                "widget image" => "widget image type is not supported",
                 _ => "wallpaper image type is not supported",
             }));
         }
@@ -2144,6 +2469,7 @@ fn validate_image_upload(
             "contact photo" => "contact photo content does not match its type",
             "wall" => "wall image content does not match its type",
             "announcement image" => "announcement image content does not match its type",
+            "widget image" => "widget image content does not match its type",
             _ => "wallpaper image content does not match its type",
         }))
     }
@@ -3760,8 +4086,16 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
             .route("/widgets", web::post().to(create_widget))
             .route("/widgets/capabilities", web::get().to(widget_capabilities))
             .route("/widgets/layout", web::put().to(update_widget_layout))
+            .route("/widgets/template", web::put().to(apply_dashboard_template))
             .route("/widgets/{widget_id}", web::put().to(update_widget_config))
             .route("/widgets/{widget_id}/data", web::get().to(widget_data))
+            .service(
+                web::resource("/widgets/{widget_id}/image")
+                    .app_data(web::PayloadConfig::new(MAX_WIDGET_IMAGE_BYTES))
+                    .route(web::get().to(get_widget_image))
+                    .route(web::put().to(update_widget_image))
+                    .route(web::delete().to(delete_widget_image)),
+            )
             .route("/widgets/{widget_id}", web::delete().to(delete_widget))
             .route("/coding", web::get().to(coding))
             .route("/coding/projects", web::post().to(create_coding_project))
@@ -4162,6 +4496,21 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn dashboard_templates_have_valid_distinct_layouts() {
+        for template in [
+            "daily-overview",
+            "focus-planner",
+            "signal-desk",
+            "media-studio",
+        ] {
+            let slots = dashboard_template_slots(template).expect("template is valid");
+            assert!(!slots.is_empty());
+            assert!(slots.len() <= MAX_DASHBOARD_WIDGETS);
+        }
+        assert!(dashboard_template_slots("unknown-template").is_err());
+    }
+
+    #[actix_web::test]
     async fn new_rss_subscriptions_default_reader_settings() {
         let request: CreateRssSubscriptionRequest = serde_json::from_value(serde_json::json!({
             "url": "https://example.com/feed.xml",
@@ -4225,6 +4574,98 @@ mod tests {
             .expect("session cookie is set")
             .clone()
             .into_owned()
+    }
+
+    #[actix_web::test]
+    async fn widget_images_require_ownership_and_support_replacement() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state(test_pool().await))
+                .configure(configure_api),
+        )
+        .await;
+        let setup = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/setup")
+                .set_json(RegisterRequest {
+                    email: "widget-image@example.com".to_owned(),
+                    password: "correct horse battery staple".to_owned(),
+                    display_name: "Widget Image".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        let cookie = session_cookie(&setup);
+        let widget: DashboardWidget = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/widgets")
+                .cookie(cookie.clone())
+                .set_json(CreateWidgetRequest {
+                    kind: "image-frame".to_owned(),
+                    workspace: 0,
+                    size: "standard".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        let png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+        let updated: DashboardWidget = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::put()
+                .uri(&format!("/api/widgets/{}/image", widget.id))
+                .cookie(cookie.clone())
+                .insert_header((header::CONTENT_TYPE, "image/png"))
+                .set_payload(png.clone())
+                .to_request(),
+        )
+        .await;
+        assert_ne!(updated.updated_at, widget.updated_at);
+
+        let image_response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/api/widgets/{}/image", widget.id))
+                .cookie(cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(image_response.status(), StatusCode::OK);
+        assert_eq!(
+            image_response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+        assert_eq!(test::read_body(image_response).await.as_ref(), png);
+
+        let unauthenticated = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/api/widgets/{}/image", widget.id))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        let removed: DashboardWidget = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::delete()
+                .uri(&format!("/api/widgets/{}/image", widget.id))
+                .cookie(cookie.clone())
+                .to_request(),
+        )
+        .await;
+        assert_eq!(removed.id, widget.id);
+        let missing = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/api/widgets/{}/image", widget.id))
+                .cookie(cookie)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
     #[actix_web::test]
@@ -4797,16 +5238,43 @@ mod tests {
         assert_eq!(dashboard.user.role, "administrator");
         assert_eq!(dashboard.settings.display_name, "Ada");
         assert_eq!(dashboard.tasks.len(), 3);
-        assert_eq!(dashboard.widgets.len(), 7);
+        assert_eq!(dashboard.widgets.len(), 9);
         assert!(
             dashboard
                 .widgets
                 .iter()
                 .all(|widget| widget.kind != "task-progress")
         );
-        assert!(dashboard.widgets.iter().any(|widget| {
-            widget.kind == "streams" && widget.config["placement"] == "utility_rail"
-        }));
+        assert!(
+            dashboard
+                .widgets
+                .iter()
+                .any(|widget| widget.kind == "welcome")
+        );
+        assert!(
+            dashboard
+                .widgets
+                .iter()
+                .any(|widget| widget.kind == "local-time")
+        );
+        assert!(
+            dashboard
+                .widgets
+                .iter()
+                .any(|widget| widget.kind == "calendar-overview")
+        );
+        assert!(
+            dashboard
+                .widgets
+                .iter()
+                .any(|widget| widget.kind == "bookmarks")
+        );
+        assert!(
+            dashboard
+                .widgets
+                .iter()
+                .any(|widget| { widget.kind == "streams" && widget.config["placement"].is_null() })
+        );
 
         let created_widget: DashboardWidget = test::call_and_read_body_json(
             &app,
@@ -4857,6 +5325,40 @@ mod tests {
             "UCXuqSBlHAE6Xw-yeJA0Tunw"
         );
         assert!(!configured_widget.has_secret);
+
+        let templated_widgets: Vec<DashboardWidget> = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::put()
+                .uri("/api/widgets/template")
+                .cookie(cookie.clone())
+                .set_json(ApplyDashboardTemplateRequest {
+                    template: "daily-overview".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        let templated_youtube = templated_widgets
+            .iter()
+            .find(|widget| widget.id == created_widget.id)
+            .expect("additional configured widget remains after applying a template");
+        assert_eq!(
+            templated_youtube.config["channels"][0],
+            "UCXuqSBlHAE6Xw-yeJA0Tunw"
+        );
+        assert!(templated_youtube.grid_y >= 19);
+
+        let invalid_template = test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri("/api/widgets/template")
+                .cookie(cookie.clone())
+                .set_json(ApplyDashboardTemplateRequest {
+                    template: "unknown-template".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        assert_eq!(invalid_template.status(), StatusCode::BAD_REQUEST);
 
         let updated_widgets: Vec<DashboardWidget> = test::call_and_read_body_json(
             &app,

@@ -714,6 +714,25 @@ pub struct DashboardWidget {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DashboardWidgetTemplateSlot {
+    pub kind: String,
+    pub size: String,
+    pub position: i64,
+    pub grid_x: i64,
+    pub grid_y: i64,
+    pub grid_w: i64,
+    pub grid_h: i64,
+    pub config_json: String,
+}
+
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
+pub struct DashboardWidgetImage {
+    pub mime_type: String,
+    pub image_data: Vec<u8>,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
 pub struct Bookmark {
     pub id: String,

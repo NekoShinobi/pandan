@@ -20,6 +20,7 @@
     type TradingStreamEvent,
   } from "$lib/api";
   import { motionDisclosure } from "$lib/motion.svelte";
+  import TradingSecFeed from "$lib/TradingSecFeed.svelte";
   import TypedHeading from "$lib/TypedHeading.svelte";
 
   type StreamState =
@@ -561,6 +562,8 @@
       </div>
     {/if}
   </section>
+
+  <TradingSecFeed />
 </section>
 
 <style>

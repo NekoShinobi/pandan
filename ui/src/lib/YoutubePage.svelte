@@ -962,10 +962,20 @@
 
 <style>
   .youtube-page {
-    display: grid;
+    height: var(--product-view-height);
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
     gap: 18px;
     min-width: 0;
+    overflow: hidden;
     padding: clamp(24px, 3vw, 42px);
+  }
+  .youtube-header,
+  .youtube-view-tabs,
+  .youtube-toolbar,
+  .youtube-message {
+    flex: 0 0 auto;
   }
   .youtube-header {
     display: flex;
@@ -1179,16 +1189,29 @@
     text-decoration: underline;
   }
   .youtube-layout {
+    min-height: 0;
+    flex: 1 1 auto;
     display: grid;
     grid-template-columns: minmax(250px, 310px) minmax(0, 1fr);
     gap: 18px;
-    align-items: start;
+    align-items: stretch;
+    overflow: hidden;
   }
   .youtube-feed {
+    min-width: 0;
+    min-height: 0;
+    align-content: start;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
     border: 0;
     background: transparent;
   }
   .youtube-directory {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
     border: 1px solid var(--border);
     background: var(--surface);
   }
@@ -1411,11 +1434,10 @@
   .youtube-feed.compact .youtube-video-meta {
     justify-content: flex-end;
   }
-  .youtube-directory {
-    position: sticky;
-    top: 20px;
-  }
   .youtube-directory > header {
+    position: sticky;
+    top: 0;
+    z-index: 3;
     min-height: 66px;
     display: flex;
     align-items: center;
@@ -1423,6 +1445,7 @@
     gap: 12px;
     padding: 13px 15px;
     border-bottom: 1px solid var(--border);
+    background: var(--surface);
   }
   .youtube-directory > header > div {
     display: flex;
@@ -1751,6 +1774,9 @@
   }
   @media (max-width: 920px) {
     .youtube-page {
+      height: auto;
+      min-height: var(--product-view-height);
+      overflow: visible;
       padding: 20px 16px;
     }
     .youtube-header {
@@ -1758,11 +1784,25 @@
       flex-direction: column;
     }
     .youtube-layout {
+      min-height: auto;
+      flex: 0 0 auto;
       grid-template-columns: 1fr;
+      align-items: start;
+      overflow: visible;
+    }
+    .youtube-directory,
+    .youtube-feed {
+      min-height: auto;
+      overflow: visible;
+      overscroll-behavior: auto;
+      scrollbar-gutter: auto;
     }
     .youtube-directory {
       position: static;
       order: -1;
+    }
+    .youtube-directory > header {
+      position: static;
     }
   }
   @media (max-width: 760px) {

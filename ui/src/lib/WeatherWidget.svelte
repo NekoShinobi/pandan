@@ -7,11 +7,12 @@
   import Droplets from "lucide-svelte/icons/droplets";
   import Gauge from "lucide-svelte/icons/gauge";
   import MapPin from "lucide-svelte/icons/map-pin";
+  import RefreshCw from "lucide-svelte/icons/refresh-cw";
   import Snowflake from "lucide-svelte/icons/snowflake";
   import Sun from "lucide-svelte/icons/sun";
   import Wind from "lucide-svelte/icons/wind";
   import X from "lucide-svelte/icons/x";
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import {
     updateDashboardWidgetConfig,
     type DashboardWidget,
@@ -33,11 +34,13 @@
     settings,
     onUpdate,
     onToast,
+    onRegisterEditor,
   }: {
     widget: DashboardWidget;
     settings: UserSettings;
     onUpdate: (widget: DashboardWidget) => void;
     onToast: (message: string) => void;
+    onRegisterEditor?: (editor?: () => void) => void;
   } = $props();
 
   let snapshots = $state.raw<WeatherSnapshot[]>([]);
@@ -49,13 +52,20 @@
   let searchQuery = $state("");
   let searchResults = $state.raw<WeatherLocation[]>([]);
   let searchLoading = $state(false);
+  let draftTitle = $state("");
   let draftLocations = $state.raw<WeatherLocation[]>([]);
   let draftUnit = $state<TemperatureUnit>("celsius");
+  let draftForecastStyle = $state<"current" | "hourly">("hourly");
   let configDialog = $state<HTMLDialogElement>();
   let detailDialog = $state<HTMLDialogElement>();
   let searchController: AbortController | undefined;
   let weatherController: AbortController | undefined;
   let initialized = false;
+
+  onMount(() => {
+    onRegisterEditor?.(openConfig);
+    return () => onRegisterEditor?.();
+  });
 
   let locations = $derived(readLocations(widget.config.locations));
   let unit = $derived<TemperatureUnit>(
@@ -89,6 +99,14 @@
   let CurrentWeatherIcon = $derived(
     weatherIcon(selectedWeather?.current.weatherCode ?? 0),
   );
+  let displayName = $derived(
+    typeof widget.config.title === "string" && widget.config.title.trim()
+      ? widget.config.title.trim()
+      : "Weather",
+  );
+  let showHourlyForecast = $derived(
+    widget.config.forecast_style !== "current",
+  );
 
   $effect(() => {
     if (initialized) return;
@@ -117,8 +135,12 @@
   }
 
   function openConfig() {
+    draftTitle =
+      typeof widget.config.title === "string" ? widget.config.title : "";
     draftLocations = locations.map((location) => ({ ...location }));
     draftUnit = unit;
+    draftForecastStyle =
+      widget.config.forecast_style === "current" ? "current" : "hourly";
     searchQuery = "";
     searchResults = [];
     formError = "";
@@ -180,8 +202,14 @@
     saving = true;
     formError = "";
     try {
+      const config: Record<string, unknown> = {
+        locations: draftLocations,
+        unit: draftUnit,
+        forecast_style: draftForecastStyle,
+      };
+      if (draftTitle.trim()) config.title = draftTitle.trim();
       const updated = await updateDashboardWidgetConfig(widget.id, {
-        config: { locations: draftLocations, unit: draftUnit },
+        config,
       });
       onUpdate(updated);
       selectedLocationId = draftLocations[0]?.id ?? null;
@@ -291,31 +319,34 @@
     <div class="weather-actions">
       {#if locations.length > 0}
         <button
-          class="ui-button ui-button--ghost text-button"
+          class="ui-button ui-button--ghost ui-button--icon"
           type="button"
           disabled={loading}
           onclick={() => loadWeather()}
+          aria-label={`Refresh ${displayName}`}
+          title={loading ? "Refreshing…" : `Refresh ${displayName}`}
+          data-od-id={`refresh-widget-${widget.id}`}
         >
-          Refresh
+          <RefreshCw
+            class={loading ? "spinning" : undefined}
+            size={16}
+            strokeWidth={1.8}
+            aria-hidden="true"
+          />
         </button>
       {/if}
-      <button class="ui-button ui-button--ghost text-button" type="button" onclick={openConfig}
-        >Configure</button
-      >
     </div>
   </div>
 
   {#if locations.length === 0}
-    <button
+    <div
       class="weather-empty"
-      type="button"
-      onclick={openConfig}
       data-od-id={`weather-add-city-${widget.id}`}
     >
       <MapPin size={24} strokeWidth={1.7} aria-hidden="true" />
-      <strong>Choose cities to follow</strong>
-      <span>This weather widget keeps its own locations.</span>
-    </button>
+      <strong>No cities configured</strong>
+      <span>Enter Edit layout, right-click this widget, and choose Edit widget.</span>
+    </div>
   {:else}
     <div class="city-tabs" aria-label="Tracked cities">
       {#each locations as location (location.id)}
@@ -377,18 +408,20 @@
           </div>
         </div>
 
-        <div
-          class="weather-hour-strip weather-reveal"
-          aria-label="Upcoming hourly forecast"
-        >
-          {#each upcomingHours.slice(0, widget.size === "compact" ? 3 : widget.size === "standard" ? 5 : 8) as hour (hour.time)}
-            <div>
-              <span class="mono">{formatHour(hour.time)}</span>
-              <strong class="mono">{Math.round(hour.temperature)}°</strong>
-              <small>{Math.round(hour.precipitationProbability)}% rain</small>
-            </div>
-          {/each}
-        </div>
+        {#if showHourlyForecast}
+          <div
+            class="weather-hour-strip weather-reveal"
+            aria-label="Upcoming hourly forecast"
+          >
+            {#each upcomingHours.slice(0, widget.size === "compact" ? 3 : widget.size === "standard" ? 5 : 8) as hour (hour.time)}
+              <div>
+                <span class="mono">{formatHour(hour.time)}</span>
+                <strong class="mono">{Math.round(hour.temperature)}°</strong>
+                <small>{Math.round(hour.precipitationProbability)}% rain</small>
+              </div>
+            {/each}
+          </div>
+        {/if}
 
         <button
           class="weather-details-button weather-reveal"
@@ -420,8 +453,8 @@
 >
   <div class="settings-heading">
     <div>
-      <h2>Weather locations</h2>
-      <p>Track up to eight cities in this widget.</p>
+      <h2>Configure {displayName}</h2>
+      <p>Choose the cities and forecast depth for this widget.</p>
     </div>
     <button
       class="ui-button ui-button--ghost ui-button--icon dialog-close"
@@ -434,6 +467,15 @@
   </div>
   <form class="settings-form weather-config-form" onsubmit={saveConfig}>
     <div class="settings-form-scroll weather-config-fields">
+      <label for={`weather-title-${widget.id}`}>Widget name</label>
+      <input
+        id={`weather-title-${widget.id}`}
+        class="text-input"
+        bind:value={draftTitle}
+        maxlength="80"
+        placeholder="Weather"
+      />
+
       <label for={`weather-search-${widget.id}`}>Find a city</label>
       <div class="weather-search-row">
         <input
@@ -507,6 +549,16 @@
       >
         <option value="celsius">Celsius</option>
         <option value="fahrenheit">Fahrenheit</option>
+      </select>
+
+      <label for={`weather-forecast-style-${widget.id}`}>Dashboard display</label>
+      <select
+        id={`weather-forecast-style-${widget.id}`}
+        class="select-input"
+        bind:value={draftForecastStyle}
+      >
+        <option value="hourly">Conditions and hourly forecast</option>
+        <option value="current">Current conditions only</option>
       </select>
 
       {#if formError}<p class="form-error" role="alert">{formError}</p>{/if}
@@ -1154,6 +1206,26 @@
 
   :global(.widget-size-compact) .weather-temperature {
     font-size: 62px;
+  }
+
+  @container dashboard-widget (max-width: 460px) {
+    .weather-current {
+      grid-template-columns: 1fr;
+    }
+
+    .weather-quick-stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .weather-temperature {
+      font-size: 62px;
+    }
+
+    .weather-condition small,
+    .weather-status {
+      display: none;
+    }
   }
 
   @media (max-width: 620px) {

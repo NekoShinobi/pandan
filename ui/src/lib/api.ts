@@ -743,6 +743,37 @@ export interface TradingStreamEvent {
   snapshot: TradingResponse;
 }
 
+export type TradingSecFeedSource =
+  | "press-releases"
+  | "speeches-statements"
+  | "litigation-releases"
+  | "administrative-proceedings"
+  | "trading-suspensions";
+
+export interface TradingSecFeedSourceStatus {
+  id: TradingSecFeedSource;
+  label: string;
+  url: string;
+  item_count: number;
+  error: string | null;
+}
+
+export interface TradingSecFeedItem {
+  id: string;
+  source: TradingSecFeedSource;
+  source_label: string;
+  title: string;
+  url: string;
+  published_at: string;
+}
+
+export interface TradingSecFeedResponse {
+  fetched_at: string;
+  sources: TradingSecFeedSourceStatus[];
+  items: TradingSecFeedItem[];
+  warning: string | null;
+}
+
 export type CodingProvider =
   "github" | "gitlab" | "codeberg" | "gitea" | "forgejo";
 
@@ -846,6 +877,14 @@ export interface UpdateJournalNodeInput {
 }
 
 export type WidgetKind =
+  | "welcome"
+  | "local-time"
+  | "calendar-overview"
+  | "bookmarks"
+  | "section-header"
+  | "divider"
+  | "image-frame"
+  | "music-visualizer"
   | "weather"
   | "task-summary"
   | "focus"
@@ -865,6 +904,12 @@ export type WidgetKind =
   | "bible-verse";
 
 export type WidgetSize = "compact" | "standard" | "wide" | "full";
+
+export type DashboardTemplateId =
+  | "daily-overview"
+  | "focus-planner"
+  | "signal-desk"
+  | "media-studio";
 
 export interface DashboardWidget {
   id: string;
@@ -1780,6 +1825,17 @@ export function updateDashboardWidgetLayout(
   });
 }
 
+export function applyDashboardTemplate(
+  template: DashboardTemplateId,
+): Promise<DashboardWidget[]> {
+  return requestJson<DashboardWidget[]>("/api/widgets/template", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ template }),
+  });
+}
+
 export function fetchWidgetCapabilities(): Promise<WidgetCapabilities> {
   return requestJson<WidgetCapabilities>("/api/widgets/capabilities");
 }
@@ -1800,6 +1856,33 @@ export function updateDashboardWidgetConfig(
       credentials: "same-origin",
       body: JSON.stringify(input),
     },
+  );
+}
+
+export function dashboardWidgetImageUrl(id: string, version?: string): string {
+  const suffix = version ? `?v=${encodeURIComponent(version)}` : "";
+  return `/api/widgets/${encodeURIComponent(id)}/image${suffix}`;
+}
+
+export function uploadDashboardWidgetImage(
+  id: string,
+  file: File,
+): Promise<DashboardWidget> {
+  return requestJson<DashboardWidget>(
+    `/api/widgets/${encodeURIComponent(id)}/image`,
+    {
+      method: "PUT",
+      headers: { "content-type": file.type },
+      credentials: "same-origin",
+      body: file,
+    },
+  );
+}
+
+export function deleteDashboardWidgetImage(id: string): Promise<DashboardWidget> {
+  return requestJson<DashboardWidget>(
+    `/api/widgets/${encodeURIComponent(id)}/image`,
+    { method: "DELETE", credentials: "same-origin" },
   );
 }
 
@@ -3276,6 +3359,12 @@ export function fetchTrading(): Promise<TradingResponse> {
 export function refreshTrading(): Promise<TradingResponse> {
   return requestJson<TradingResponse>("/api/trading/refresh", {
     method: "POST",
+    credentials: "same-origin",
+  });
+}
+
+export function fetchTradingSecFeed(): Promise<TradingSecFeedResponse> {
+  return requestJson<TradingSecFeedResponse>("/api/trading/sec-feed", {
     credentials: "same-origin",
   });
 }

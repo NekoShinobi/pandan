@@ -2,6 +2,7 @@
   import Check from "lucide-svelte/icons/check";
   import Bookmark from "lucide-svelte/icons/bookmark";
   import MessageCircle from "lucide-svelte/icons/message-circle";
+  import RefreshCw from "lucide-svelte/icons/refresh-cw";
   import X from "lucide-svelte/icons/x";
   import { onMount } from "svelte";
   import {
@@ -18,16 +19,16 @@
 
   let {
     widget,
-    variant = "widget",
     onUpdate,
     onToast,
     onOpenCalendarDate,
+    onRegisterEditor,
   }: {
     widget: DashboardWidget;
-    variant?: "widget" | "rail";
     onUpdate: (widget: DashboardWidget) => void;
     onToast: (message: string) => void;
     onOpenCalendarDate: (date: string) => void;
+    onRegisterEditor?: (editor?: () => void) => void;
   } = $props();
 
   const remoteKinds = new Set([
@@ -39,6 +40,19 @@
     "streams",
   ]);
   const dataKinds = new Set([...remoteKinds, "bible-verse"]);
+  const widgetNames: Record<string, string> = {
+    youtube: "YouTube uploads",
+    rss: "RSS feeds",
+    reddit: "Reddit",
+    stocks: "Stock tickers",
+    calendar: "Calendar",
+    clock: "Clock",
+    iframe: "Custom iframe",
+    html: "Custom HTML",
+    releases: "Code releases",
+    streams: "Live channels",
+    "bible-verse": "Bible Verse",
+  };
   const calendarWeekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
   type CalendarMonthDay = {
@@ -59,6 +73,7 @@
   let formError = $state("");
   let secretStorageEnabled = $state(false);
   let configDialog = $state<HTMLDialogElement>();
+  let draftTitle = $state("");
   let listPrimary = $state("");
   let listSecondary = $state("");
   let textPrimary = $state("");
@@ -78,6 +93,11 @@
 
   let isRemote = $derived(remoteKinds.has(widget.kind));
   let isDataBacked = $derived(dataKinds.has(widget.kind));
+  let displayName = $derived(
+    typeof widget.config.title === "string" && widget.config.title.trim()
+      ? widget.config.title.trim()
+      : (widgetNames[widget.kind] ?? "Widget"),
+  );
   let isConfigured = $derived.by(() => {
     const config = widget.config;
     switch (widget.kind) {
@@ -92,7 +112,7 @@
       case "clock":
         return hasList(config.timezones);
       case "iframe":
-        return hasText(config.url);
+        return typeof config.url === "string" && isSafeIframeUrl(config.url);
       case "html":
         return hasText(config.source);
       case "releases":
@@ -108,12 +128,10 @@
     }
   });
   let visibleItems = $derived(
-    variant === "rail" && widget.kind === "streams"
-      ? (data?.items ?? [])
-      : (data?.items.slice(
-          0,
-          widget.size === "compact" ? 3 : widget.size === "standard" ? 5 : 10,
-        ) ?? []),
+    data?.items.slice(
+      0,
+      widget.size === "compact" ? 3 : widget.size === "standard" ? 5 : 10,
+    ) ?? [],
   );
   let configuredTimezones = $derived(
     stringArray(widget.config.timezones).slice(0, 8),
@@ -143,6 +161,7 @@
   );
 
   onMount(() => {
+    if (widget.kind !== "bible-verse") onRegisterEditor?.(openConfig);
     const timer = window.setInterval(() => {
       now = new Date();
       if (
@@ -163,6 +182,7 @@
       }
     }, 5 * 60_000);
     return () => {
+      if (widget.kind !== "bible-verse") onRegisterEditor?.();
       window.clearInterval(timer);
       window.clearInterval(rssTimer);
     };
@@ -198,6 +218,20 @@
       .split(/[\n,]/)
       .map((item) => item.trim())
       .filter(Boolean);
+  }
+
+  function isSafeIframeUrl(value: string) {
+    try {
+      const url = new URL(value.trim());
+      return (
+        url.protocol === "https:" &&
+        Boolean(url.hostname) &&
+        !url.username &&
+        !url.password
+      );
+    } catch {
+      return false;
+    }
   }
 
   function isValidTimezone(value: string) {
@@ -293,6 +327,7 @@
 
   function openConfig() {
     const config = widget.config;
+    draftTitle = typeof config.title === "string" ? config.title : "";
     listPrimary = "";
     listSecondary = "";
     textPrimary = "";
@@ -401,7 +436,7 @@
       : [...rssSelectedSubscriptionIds, subscriptionId];
   }
 
-  function buildConfig(): Record<string, unknown> {
+  function buildKindConfig(): Record<string, unknown> {
     switch (widget.kind) {
       case "youtube":
         return {
@@ -441,9 +476,6 @@
         return { repositories: splitLines(listPrimary) };
       case "streams":
         return {
-          ...(configPlacement(widget.config)
-            ? { placement: configPlacement(widget.config) }
-            : {}),
           twitch_channels: splitLines(listPrimary),
           kick_channels: splitLines(listSecondary),
           client_id: textSecondary.trim(),
@@ -451,6 +483,12 @@
       default:
         return {};
     }
+  }
+
+  function buildConfig(): Record<string, unknown> {
+    const config = buildKindConfig();
+    if (draftTitle.trim()) config.title = draftTitle.trim();
+    return config;
   }
 
   async function saveConfig(event: SubmitEvent) {
@@ -470,6 +508,10 @@
     }
     if (widget.kind === "rss" && rssSelectedSubscriptionIds.length === 0) {
       formError = "Choose at least one RSS subscription.";
+      return;
+    }
+    if (widget.kind === "iframe" && !isSafeIframeUrl(textPrimary)) {
+      formError = "Enter an HTTPS URL without embedded credentials.";
       return;
     }
     if (
@@ -568,12 +610,9 @@
     }
   }
 
-  function configPlacement(config: Record<string, unknown>) {
-    return typeof config.placement === "string" ? config.placement : "";
-  }
 </script>
 
-<div class={["integration-widget", variant === "rail" && "is-rail"]}>
+<div class="integration-widget">
   <div class="integration-head">
     <span class="widget-kicker">
       {widget.kind === "youtube"
@@ -592,24 +631,26 @@
                     ? "Daily verse"
                     : widget.kind}
     </span>
-    <div class="integration-actions">
-      {#if isRemote && isConfigured && widget.kind !== "rss"}
+    {#if isRemote && isConfigured && widget.kind !== "rss"}
+      <div class="integration-actions">
         <button
-          class="ui-button ui-button--ghost text-button"
+          class="ui-button ui-button--ghost ui-button--icon"
           type="button"
           disabled={loading || refreshing}
           onclick={() => loadData(true)}
-          >{loading || refreshing ? "Loading…" : "Refresh"}</button
+          aria-label={`Refresh ${displayName}`}
+          title={loading || refreshing ? "Refreshing…" : `Refresh ${displayName}`}
+          data-od-id={`refresh-widget-${widget.id}`}
         >
-      {/if}
-      {#if widget.kind !== "bible-verse"}
-        <button
-          class="ui-button ui-button--ghost text-button"
-          type="button"
-          onclick={openConfig}>Configure</button
-        >
-      {/if}
-    </div>
+          <RefreshCw
+            class={loading || refreshing ? "spinning" : undefined}
+            size={16}
+            strokeWidth={1.8}
+            aria-hidden="true"
+          />
+        </button>
+      </div>
+    {/if}
   </div>
 
   {#if loadError && data}
@@ -645,10 +686,14 @@
   {/if}
 
   {#if !isConfigured}
-    <button class="integration-empty" type="button" onclick={openConfig}>
-      <strong>Connect this widget</strong>
-      <span>Add its sources and display preferences.</span>
-    </button>
+    <div
+      class="integration-empty"
+      role="status"
+      data-od-id={`widget-setup-${widget.id}`}
+    >
+      <strong>Not configured</strong>
+      <span>Enter Edit layout, right-click this widget, and choose Edit widget.</span>
+    </div>
   {:else if widget.kind === "clock"}
     <div class="clock-grid">
       {#each configuredTimezones.slice(0, widget.size === "compact" ? 3 : 8) as timezone (timezone)}
@@ -764,6 +809,11 @@
         <span>{data?.items[0]?.version ?? "English Revised Version"}</span>
       </figcaption>
     </figure>
+  {:else if widget.kind !== "rss" && isDataBacked && data && visibleItems.length === 0}
+    <div class="integration-zero" role="status">
+      <strong>No matching items</strong>
+      <span>The latest provider response did not contain anything to show.</span>
+    </div>
   {:else if widget.kind === "youtube"}
     <div class="video-grid">
       {#each visibleItems as item (item.url)}
@@ -941,7 +991,7 @@
 >
   <div class="settings-heading">
     <div>
-      <h2>Configure {widget.kind}</h2>
+      <h2>Configure {displayName}</h2>
       <p>Settings apply only to this widget.</p>
     </div>
     <button
@@ -954,6 +1004,15 @@
   </div>
   <form class="settings-form integration-form" onsubmit={saveConfig}>
     <div class="settings-form-scroll integration-form-fields">
+      <label for={`integration-title-${widget.id}`}>Widget name</label>
+      <input
+        id={`integration-title-${widget.id}`}
+        bind:value={draftTitle}
+        maxlength="80"
+        placeholder={widgetNames[widget.kind] ?? "Widget"}
+      />
+      <p class="field-note">Shown in edit mode and the widget action menu.</p>
+
       {#if widget.kind === "youtube"}
         <label for={`channels-${widget.id}`}>Channel IDs</label>
         <textarea id={`channels-${widget.id}`} bind:value={listPrimary} rows="4"

@@ -289,6 +289,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "073_ollama_settings",
         include_str!("../migrations/073_ollama_settings.sql"),
     ),
+    (
+        "074_customizable_dashboard",
+        include_str!("../migrations/074_customizable_dashboard.sql"),
+    ),
+    (
+        "075_dashboard_media_widgets",
+        include_str!("../migrations/075_dashboard_media_widgets.sql"),
+    ),
 ];
 
 /// Maps migration names used by earlier development builds to their canonical names.
@@ -442,6 +450,186 @@ mod tests {
         assert_eq!(
             usize::try_from(count).expect("migration count fits usize"),
             MIGRATIONS.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_widget_images_are_account_scoped_and_cascade() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (owner, _) = queries::create_account(
+            &pool,
+            "widget-image-owner@example.com",
+            "$argon2id$widget-image-owner",
+            "Widget Image Owner",
+        )
+        .await
+        .expect("owner creates");
+        let (other, _) = queries::create_account(
+            &pool,
+            "widget-image-other@example.com",
+            "$argon2id$widget-image-other",
+            "Widget Image Other",
+        )
+        .await
+        .expect("other account creates");
+        let widget =
+            queries::create_dashboard_widget(&pool, &owner.id, "image-frame", 0, "standard")
+                .await
+                .expect("image widget creates");
+        let png = [0x89, b'P', b'N', b'G'];
+
+        queries::upsert_dashboard_widget_image(&pool, &owner.id, &widget.id, "image/png", &png)
+            .await
+            .expect("widget image stores")
+            .expect("owned widget updates");
+        let stored = queries::find_dashboard_widget_image(&pool, &owner.id, &widget.id)
+            .await
+            .expect("owner image lookup succeeds")
+            .expect("owner image exists");
+        assert_eq!(stored.image_data, png);
+        assert!(
+            queries::find_dashboard_widget_image(&pool, &other.id, &widget.id)
+                .await
+                .expect("other image lookup succeeds")
+                .is_none()
+        );
+        assert!(
+            queries::upsert_dashboard_widget_image(
+                &pool,
+                &other.id,
+                &widget.id,
+                "image/png",
+                &png,
+            )
+            .await
+            .expect("unowned widget lookup succeeds")
+            .is_none()
+        );
+
+        queries::delete_dashboard_widget(&pool, &owner.id, &widget.id)
+            .await
+            .expect("widget deletes");
+        assert!(
+            queries::find_dashboard_widget_image(&pool, &owner.id, &widget.id)
+                .await
+                .expect("deleted image lookup succeeds")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_templates_reuse_widgets_and_keep_additional_content() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (owner, _) = queries::create_account(
+            &pool,
+            "template-owner@example.com",
+            "$argon2id$template-owner",
+            "Template Owner",
+        )
+        .await
+        .expect("owner creates");
+        let (other, _) = queries::create_account(
+            &pool,
+            "template-other@example.com",
+            "$argon2id$template-other",
+            "Template Other",
+        )
+        .await
+        .expect("other account creates");
+        let image =
+            queries::create_dashboard_widget(&pool, &owner.id, "image-frame", 0, "standard")
+                .await
+                .expect("image widget creates");
+        queries::update_dashboard_widget_config(
+            &pool,
+            &owner.id,
+            &image.id,
+            r#"{"caption":"Keep this caption"}"#,
+        )
+        .await
+        .expect("image widget config updates");
+        queries::upsert_dashboard_widget_image(
+            &pool,
+            &owner.id,
+            &image.id,
+            "image/png",
+            &[0x89, b'P', b'N', b'G'],
+        )
+        .await
+        .expect("image stores");
+        let youtube = queries::create_dashboard_widget(&pool, &owner.id, "youtube", 0, "standard")
+            .await
+            .expect("additional widget creates");
+        queries::upsert_widget_secret(&pool, &owner.id, &youtube.id, "encrypted-token")
+            .await
+            .expect("additional widget secret stores");
+        let owner_count = queries::list_dashboard_widgets(&pool, &owner.id)
+            .await
+            .expect("owner widgets load")
+            .len();
+        let other_before = queries::list_dashboard_widgets(&pool, &other.id)
+            .await
+            .expect("other widgets load");
+
+        let widgets = queries::apply_dashboard_widget_template(
+            &pool,
+            &owner.id,
+            &[
+                entities::DashboardWidgetTemplateSlot {
+                    kind: "welcome".to_owned(),
+                    size: "full".to_owned(),
+                    position: 0,
+                    grid_x: 0,
+                    grid_y: 0,
+                    grid_w: 12,
+                    grid_h: 3,
+                    config_json: "{}".to_owned(),
+                },
+                entities::DashboardWidgetTemplateSlot {
+                    kind: "image-frame".to_owned(),
+                    size: "standard".to_owned(),
+                    position: 1,
+                    grid_x: 0,
+                    grid_y: 3,
+                    grid_w: 6,
+                    grid_h: 5,
+                    config_json: r#"{"fit":"contain","has_image":false}"#.to_owned(),
+                },
+            ],
+        )
+        .await
+        .expect("template applies");
+
+        assert_eq!(widgets.len(), owner_count);
+        let preserved_image = widgets
+            .iter()
+            .find(|widget| widget.id == image.id)
+            .expect("image widget is reused");
+        assert_eq!(preserved_image.grid_y, 3);
+        assert_eq!(preserved_image.config["caption"], "Keep this caption");
+        assert!(
+            queries::find_dashboard_widget_image(&pool, &owner.id, &image.id)
+                .await
+                .expect("image lookup succeeds")
+                .is_some()
+        );
+        let preserved_youtube = widgets
+            .iter()
+            .find(|widget| widget.id == youtube.id)
+            .expect("additional widget remains");
+        assert!(preserved_youtube.grid_y >= 8);
+        assert_eq!(
+            queries::get_widget_secret(&pool, &owner.id, &youtube.id)
+                .await
+                .expect("secret lookup succeeds")
+                .as_deref(),
+            Some("encrypted-token")
+        );
+        assert_eq!(
+            queries::list_dashboard_widgets(&pool, &other.id)
+                .await
+                .expect("other widgets reload"),
+            other_before
         );
     }
 
