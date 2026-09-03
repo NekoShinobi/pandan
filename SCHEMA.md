@@ -394,16 +394,16 @@ may update them. They are independent from every account's Main background proce
 
 Singleton public brand assets for the instance. Only administrators may replace or remove these
 bytes. The logo is shown in the signed-out and authenticated application chrome, while the favicon
-is applied to the browser document. Both fall back to the packaged Pandan assets when absent. SVG is
-not accepted, so the instance never serves administrator-supplied active image content from its own
-origin.
+is applied to the browser document. Both fall back to the packaged Pandan assets when absent. SVG
+uploads are accepted, rendered without external resources, and stored as PNG so the instance never
+serves administrator-supplied active image content from its own origin.
 
 | Column                 | Type    | Constraints                                               |
 | ---------------------- | ------- | --------------------------------------------------------- |
 | `id`                   | INTEGER | Primary key; singleton value `1`                          |
-| `logo_mime_type`       | TEXT    | Nullable AVIF, JPEG, PNG, or WebP media type               |
+| `logo_mime_type`       | TEXT    | Nullable stored AVIF, JPEG, PNG, or WebP media type        |
 | `logo_data`            | BLOB    | Nullable image bytes, 1 byte through 10 MiB                |
-| `favicon_mime_type`    | TEXT    | Nullable AVIF, JPEG, PNG, or WebP media type               |
+| `favicon_mime_type`    | TEXT    | Nullable stored AVIF, JPEG, PNG, or WebP media type        |
 | `favicon_data`         | BLOB    | Nullable image bytes, 1 byte through 1 MiB                 |
 | `updated_at`           | TEXT    | Required, RFC 3339 timestamp                               |
 

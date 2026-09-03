@@ -69,6 +69,8 @@ const MAX_WALLPAPER_BYTES: usize = 30 * 1024 * 1024;
 const MAX_AVATAR_BYTES: usize = 10 * 1024 * 1024;
 const MAX_BRAND_LOGO_BYTES: usize = 10 * 1024 * 1024;
 const MAX_BRAND_FAVICON_BYTES: usize = 1024 * 1024;
+const BRAND_LOGO_SVG_MAX_DIMENSION: u32 = 1024;
+const BRAND_FAVICON_SVG_MAX_DIMENSION: u32 = 256;
 const MAX_WIDGET_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TASK_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 const MAX_RSS_IMAGE_BYTES: usize = 10 * 1024 * 1024;
@@ -2464,10 +2466,34 @@ async fn update_brand_asset(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.split(';').next())
         .ok_or(ApiError::BadRequest("brand image type is required"))?;
-    validate_image_upload(mime_type, &image_data, label)?;
-    let branding =
-        db::queries::upsert_instance_brand_asset(&state.pool, asset, mime_type, &image_data)
-            .await?;
+    let (stored_mime_type, stored_image_data) = if mime_type == "image/svg+xml" {
+        let source = image_data.to_vec();
+        let max_dimension = if asset == "favicon" {
+            BRAND_FAVICON_SVG_MAX_DIMENSION
+        } else {
+            BRAND_LOGO_SVG_MAX_DIMENSION
+        };
+        let render_error = if asset == "favicon" {
+            "favicon SVG could not be rendered"
+        } else {
+            "logo SVG could not be rendered"
+        };
+        let rendered = web::block(move || rasterize_brand_svg(&source, max_dimension, limit))
+            .await
+            .map_err(|_| ApiError::BadRequest(render_error))?
+            .map_err(|()| ApiError::BadRequest(render_error))?;
+        ("image/png", rendered)
+    } else {
+        validate_image_upload(mime_type, &image_data, label)?;
+        (mime_type, image_data.to_vec())
+    };
+    let branding = db::queries::upsert_instance_brand_asset(
+        &state.pool,
+        asset,
+        stored_mime_type,
+        &stored_image_data,
+    )
+    .await?;
     info!(
         actor_user_id = %administrator.id,
         brand_asset = asset,
@@ -2498,6 +2524,35 @@ fn validate_brand_asset(asset: &str) -> Result<&str, ApiError> {
     } else {
         Err(ApiError::BadRequest("brand asset is invalid"))
     }
+}
+
+fn rasterize_brand_svg(
+    image_data: &[u8],
+    max_dimension: u32,
+    max_output_bytes: usize,
+) -> Result<Vec<u8>, ()> {
+    let options = resvg::usvg::Options {
+        resources_dir: None,
+        image_href_resolver: resvg::usvg::ImageHrefResolver {
+            resolve_data: Box::new(|_, _, _| None),
+            resolve_string: Box::new(|_, _| None),
+        },
+        ..resvg::usvg::Options::default()
+    };
+    let tree = resvg::usvg::Tree::from_data(image_data, &options).map_err(|_| ())?;
+    let source_size = tree.size();
+    let target_size = u16::try_from(max_dimension).map_err(|_| ())?;
+    let scale = f32::from(target_size) / source_size.width().max(source_size.height());
+    let width = (source_size.width() * scale).ceil().max(1.0) as u32;
+    let height = (source_size.height() * scale).ceil().max(1.0) as u32;
+    let transform = resvg::tiny_skia::Transform::from_scale(scale, scale);
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height).ok_or(())?;
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    let png = pixmap.encode_png().map_err(|_| ())?;
+    if png.is_empty() || png.len() > max_output_bytes {
+        return Err(());
+    }
+    Ok(png)
 }
 
 async fn get_login_wallpaper(state: web::Data<AppState>) -> Result<HttpResponse, ApiError> {
@@ -4896,7 +4951,7 @@ mod tests {
             &app,
             test::TestRequest::put()
                 .uri("/api/admin/branding/logo")
-                .cookie(administrator_cookie)
+                .cookie(administrator_cookie.clone())
                 .insert_header((header::CONTENT_TYPE, "image/png"))
                 .set_payload(png.clone())
                 .to_request(),
@@ -4917,6 +4972,38 @@ mod tests {
             "image/png"
         );
         assert_eq!(test::read_body(public_logo).await.as_ref(), png);
+
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" fill="#72D577"/></svg>"##;
+        let branding: InstanceBranding = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::put()
+                .uri("/api/admin/branding/favicon")
+                .cookie(administrator_cookie)
+                .insert_header((header::CONTENT_TYPE, "image/svg+xml"))
+                .set_payload(svg.as_slice())
+                .to_request(),
+        )
+        .await;
+        assert!(branding.has_favicon);
+        assert_eq!(branding.favicon_content_type.as_deref(), Some("image/png"));
+
+        let public_favicon = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/appearance/branding/favicon")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(public_favicon.status(), StatusCode::OK);
+        assert_eq!(
+            public_favicon.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+        assert!(
+            test::read_body(public_favicon)
+                .await
+                .starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a])
+        );
 
         let forbidden = test::call_service(
             &app,
@@ -4964,7 +5051,7 @@ mod tests {
         )
         .await;
         assert!(config.has_logo);
-        assert!(!config.has_favicon);
+        assert!(config.has_favicon);
     }
 
     #[actix_web::test]

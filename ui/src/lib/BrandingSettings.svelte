@@ -65,11 +65,15 @@
     const file = input.files?.[0];
     if (!file) return;
     if (
-      !["image/jpeg", "image/png", "image/webp", "image/avif"].includes(
-        file.type,
-      )
+      ![
+        "image/svg+xml",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/avif",
+      ].includes(file.type)
     ) {
-      error = "Choose a JPEG, PNG, WebP, or AVIF image.";
+      error = "Choose an SVG, JPEG, PNG, WebP, or AVIF image.";
       input.value = "";
       return;
     }
@@ -171,7 +175,7 @@
   <p class="settings-supporting-copy">
     Replace Pandan's mark across the login and application shell, and set the
     icon shown by browser tabs. Uploads are stored locally and never fetched
-    from a third party.
+    from a third party. SVG uploads are rendered to safe PNGs before storage.
   </p>
 
   <div class="branding-asset-grid" aria-labelledby="instance-branding-heading">
@@ -190,8 +194,8 @@
       <div class="branding-asset-copy">
         <strong>Instance logo</strong>
         <span>
-          PNG is recommended. JPEG, WebP, and AVIF are also supported, up to 10
-          MB.
+          SVG or PNG is recommended. JPEG, WebP, and AVIF are also supported, up
+          to 10 MB.
         </span>
       </div>
       <div class="branding-asset-actions">
@@ -199,7 +203,7 @@
           Choose logo
           <input
             type="file"
-            accept="image/jpeg,image/png,image/webp,image/avif"
+            accept="image/svg+xml,image/jpeg,image/png,image/webp,image/avif"
             onchange={(event) => selectAsset("logo", event)}
             data-od-id="choose-instance-logo"
           />
@@ -230,8 +234,8 @@
       <div class="branding-asset-copy">
         <strong>Browser favicon</strong>
         <span>
-          Use a square image with a transparent background. Maximum file size: 1
-          MB.
+          Use a square SVG or raster image with a transparent background.
+          Maximum file size: 1 MB.
         </span>
       </div>
       <div class="branding-asset-actions">
@@ -239,7 +243,7 @@
           Choose favicon
           <input
             type="file"
-            accept="image/jpeg,image/png,image/webp,image/avif"
+            accept="image/svg+xml,image/jpeg,image/png,image/webp,image/avif"
             onchange={(event) => selectAsset("favicon", event)}
             data-od-id="choose-instance-favicon"
           />
