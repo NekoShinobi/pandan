@@ -82,6 +82,11 @@
       : "Untitled section";
   }
 
+  function configuredTitle(fallback: string) {
+    const title = widget.config.title;
+    return typeof title === "string" && title.trim() ? title.trim() : fallback;
+  }
+
   function configuredClockStyle() {
     return widget.config.clock_style === "digital" ? "digital" : "analog";
   }
@@ -100,7 +105,6 @@
     class="dashboard-welcome-widget"
     data-od-id={`dashboard-welcome-${widget.id}`}
   >
-    <p class="widget-kicker">[ SESSION / READY ]</p>
     <h2>welcome:{firstName}</h2>
     {#if widget.config.show_status !== false}
       <span>$ dashboard status --widgets</span>
@@ -111,7 +115,11 @@
     class="dashboard-local-widget utility-analog-clock"
     data-od-id={`dashboard-local-time-${widget.id}`}
   >
-    <p class="widget-kicker">[ LOCAL.TIME ]</p>
+    <header class="dashboard-widget-heading">
+      <h2 data-od-id={`dashboard-local-time-title-${widget.id}`}>
+        {configuredTitle("Local time")}
+      </h2>
+    </header>
     <div
       class="utility-clock-list"
       aria-label="Saved local times"
@@ -162,7 +170,11 @@
     class="dashboard-local-widget utility-calendar"
     data-od-id={`dashboard-calendar-${widget.id}`}
   >
-    <p class="widget-kicker">[ CALENDAR ]</p>
+    <header class="dashboard-widget-heading">
+      <h2 data-od-id={`dashboard-calendar-title-${widget.id}`}>
+        {configuredTitle("Calendar")}
+      </h2>
+    </header>
     <div class="utility-calendar-date">
       <div class="utility-calendar-date-copy">
         <strong>{calendarMonthLabel}</strong>
@@ -244,8 +256,10 @@
     class="dashboard-local-widget utility-bookmarks"
     data-od-id={`dashboard-bookmarks-${widget.id}`}
   >
-    <div class="utility-bookmarks-head">
-      <p class="widget-kicker">[ BOOKMARKS ]</p>
+    <header class="dashboard-widget-heading utility-bookmarks-head">
+      <h2 data-od-id={`dashboard-bookmarks-title-${widget.id}`}>
+        {configuredTitle("Bookmarks")}
+      </h2>
       <button
         class="ui-button ui-button--ghost ui-button--icon"
         type="button"
@@ -255,7 +269,7 @@
       >
         <Plus size={16} strokeWidth={1.8} aria-hidden="true" />
       </button>
-    </div>
+    </header>
     {#if bookmarks.length > 0}
       <div
         class="utility-bookmark-list overlay-scroll-region"
@@ -308,7 +322,6 @@
     class="dashboard-section-widget"
     data-od-id={`dashboard-section-header-${widget.id}`}
   >
-    <span>Category</span>
     <strong data-od-id={`dashboard-section-label-${widget.id}`}
       >{configuredSectionLabel()}</strong
     >
@@ -330,6 +343,20 @@
     min-height: 100%;
     display: flex;
     flex-direction: column;
+  }
+
+  .dashboard-widget-heading {
+    min-width: 0;
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .dashboard-widget-heading h2 {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .dashboard-welcome-widget {
@@ -381,17 +408,8 @@
   .dashboard-section-widget {
     min-height: 100%;
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     align-items: center;
-    gap: 12px;
-  }
-
-  .dashboard-section-widget > span {
-    color: var(--muted);
-    font-size: 9px;
-    font-weight: 620;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
   }
 
   .dashboard-section-widget strong {

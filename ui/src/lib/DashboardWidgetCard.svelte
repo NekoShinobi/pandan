@@ -1,15 +1,22 @@
 <script lang="ts">
   import ArrowRight from "lucide-svelte/icons/arrow-right";
+  import CalendarDays from "lucide-svelte/icons/calendar-days";
   import Check from "lucide-svelte/icons/check";
+  import CheckSquare2 from "lucide-svelte/icons/check-square-2";
+  import Paperclip from "lucide-svelte/icons/paperclip";
+  import Repeat2 from "lucide-svelte/icons/repeat-2";
+  import RotateCcw from "lucide-svelte/icons/rotate-ccw";
   import DashboardLocalWidget from "$lib/DashboardLocalWidget.svelte";
   import DashboardMediaWidget from "$lib/DashboardMediaWidget.svelte";
   import IntegrationWidget from "$lib/IntegrationWidget.svelte";
+  import NtfyPriority from "$lib/NtfyPriority.svelte";
   import WeatherWidget from "$lib/WeatherWidget.svelte";
   import type { Bookmark, DashboardWidget, Task, UserSettings } from "$lib/api";
 
   let {
     widget,
     editing,
+    highlightColor,
     tasks,
     settings,
     completedCount,
@@ -40,6 +47,7 @@
   }: {
     widget: DashboardWidget;
     editing: boolean;
+    highlightColor: string;
     tasks: Task[];
     settings: UserSettings;
     completedCount: number;
@@ -70,10 +78,7 @@
       currentMonth: boolean;
       today: boolean;
     }>;
-    calendarEventsByDate: Record<
-      string,
-      { count: number; colors: string[] }
-    >;
+    calendarEventsByDate: Record<string, { count: number; colors: string[] }>;
     bookmarks: Bookmark[];
     onShowCurrentMonth: () => void;
     onChangeCalendarMonth: (offset: number) => void;
@@ -120,31 +125,31 @@
     }
     return (
       {
-      welcome: "Welcome",
-      "local-time": "Local time",
-      "calendar-overview": "Calendar overview",
-      bookmarks: "Bookmarks",
-      "section-header": "Category header",
-      divider: "Line divider",
-      "image-frame": "Image frame",
-      "music-visualizer": "Music visualizer",
-      weather: "Weather",
-      "task-summary": "Today",
-      focus: "Next focus",
-      "task-list": "Tasks",
-      "feed-list": "Feed",
-      "feed-sources": "Sources",
-      youtube: "YouTube",
-      rss: "RSS feeds",
-      reddit: "Reddit",
-      stocks: "Stocks",
-      calendar: "Calendar",
-      clock: "Clock",
-      iframe: "Custom frame",
-      html: "Custom HTML",
-      releases: "Releases",
-      streams: "Channels",
-      "bible-verse": "Bible Verse",
+        welcome: "Welcome",
+        "local-time": "Local time",
+        "calendar-overview": "Calendar overview",
+        bookmarks: "Bookmarks",
+        "section-header": "Category header",
+        divider: "Line divider",
+        "image-frame": "Image frame",
+        "music-visualizer": "Music visualizer",
+        weather: "Weather",
+        "task-summary": "Today",
+        focus: "Next focus",
+        "task-list": "Tasks",
+        "feed-list": "Feed",
+        "feed-sources": "Sources",
+        youtube: "YouTube",
+        rss: "RSS feeds",
+        reddit: "Reddit",
+        stocks: "Stocks",
+        calendar: "Calendar",
+        clock: "Clock",
+        iframe: "Custom frame",
+        html: "Custom HTML",
+        releases: "Releases",
+        streams: "Channels",
+        "bible-verse": "Bible Verse",
       }[widget.kind] ?? "Widget"
     );
   });
@@ -171,15 +176,32 @@
     onStartFocus(subject, minutes);
   }
 
+  function taskPriorityLevel(priority: Task["priority"]) {
+    return ({ p1: 5, p2: 4, p3: 3, p4: 2, none: 3 } as const)[priority];
+  }
+
+  function taskPriorityLabel(priority: Task["priority"]) {
+    return priority.toUpperCase();
+  }
+
+  function taskRepeatLabel(task: Task) {
+    if (task.repeat_rule === "none") return "";
+    if (task.repeat_rule !== "custom") return task.repeat_rule;
+    return `every ${task.repeat_interval} ${task.repeat_unit}`;
+  }
+
+  function formatTaskDate(value: string) {
+    return new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }).format(new Date(`${value}T12:00:00`));
+  }
+
   function openWidgetContextMenu(event: MouseEvent) {
     if (!editing) return;
     event.preventDefault();
-    onOpenContextMenu(
-      widget,
-      widgetTitle,
-      event.clientX,
-      event.clientY,
-    );
+    onOpenContextMenu(widget, widgetTitle, event.clientX, event.clientY);
   }
 
   function handleWidgetKeydown(event: KeyboardEvent) {
@@ -188,10 +210,7 @@
       event.key === " " ||
       event.key === "ContextMenu" ||
       (event.shiftKey && event.key === "F10");
-    if (
-      !editing ||
-      !opensMenu
-    ) {
+    if (!editing || !opensMenu) {
       return;
     }
     event.preventDefault();
@@ -221,9 +240,8 @@
       oncontextmenu={openWidgetContextMenu}
       onkeydown={handleWidgetKeydown}
     ></div>
-    <span
-      class="widget-edit-label"
-      data-od-id={`widget-edit-name-${widget.id}`}>{widgetTitle}</span
+    <span class="widget-edit-label" data-od-id={`widget-edit-name-${widget.id}`}
+      >{widgetTitle}</span
     >
   {/if}
 
@@ -271,7 +289,8 @@
             <div class="agenda-row">
               <span class={["status-dot", task.completed && "filled"]}></span>
               <span>{task.title}</span>
-              <span class="time">{task.completed ? "done" : task.priority}</span>
+              <span class="time">{task.completed ? "done" : task.priority}</span
+              >
             </div>
           {:else}
             <p class="empty-state">No tasks due today.</p>
@@ -280,7 +299,7 @@
       {/if}
     {:else if widget.kind === "focus"}
       <form class="focus-widget-form" onsubmit={submitFocus}>
-        <p class="widget-kicker">Next focus</p>
+        <h2 data-od-id={`focus-widget-title-${widget.id}`}>{widgetTitle}</h2>
         <label class="focus-widget-goal" for={`focus-goal-${widget.id}`}>
           <span>Goal</span>
           <input
@@ -316,61 +335,131 @@
         </button>
       </form>
     {:else if widget.kind === "task-list"}
-      <div class="widget-head">
-        <h2>Tasks</h2>
-        <button
-          class="ui-button ui-button--danger"
-          onclick={onClearCompleted}
-          disabled={completedCount === 0}>Clear completed</button
-        >
-      </div>
-      <div class="task-list">
-        {#each tasks.slice(0, visibleTaskCount) as task (task.id)}
-          <div
-            class={["task-row", task.completed && "done"]}
-            data-od-id={`task-row-${task.id}`}
-          >
-            <button
-              class="task-check"
-              aria-label={task.completed
-                ? `Mark ${task.title} incomplete`
-                : `Mark ${task.title} complete`}
-              onclick={() => onToggleTask(task)}
-            >
-              <Check size={17} strokeWidth={2} aria-hidden="true" />
-            </button>
-            <span class="task-copy">{task.title}</span>
-            {#if showTaskPriorities}
-              <span class="priority"
-                >{task.completed ? "done" : task.priority}</span
-              >
-            {/if}
+      <section class="task-widget-shell">
+        <header class="widget-head task-widget-header">
+          <div>
+            <h2 data-od-id={`task-widget-title-${widget.id}`}>{widgetTitle}</h2>
+            <span class="task-widget-count mono muted">
+              {tasks.length}
+              {tasks.length === 1 ? "task" : "tasks"}
+            </span>
           </div>
-        {:else}
-          <p class="empty-state roomy">No tasks yet. Add one below.</p>
-        {/each}
-      </div>
-      <form class="add-task" onsubmit={submitTask}>
-        <label class="sr-only" for={`new-task-${widget.id}`}>New task</label>
-        <input
-          class="text-input"
-          id={`new-task-${widget.id}`}
-          bind:value={newTaskTitle}
-          placeholder="Add a task…"
-          maxlength="120"
-          required
-        />
-        <button
-          class="ui-button ui-button--primary primary-btn"
-          type="submit"
-          disabled={savingTask}
+          <button
+            class="ui-button ui-button--danger"
+            onclick={onClearCompleted}
+            disabled={completedCount === 0}>Clear completed</button
+          >
+        </header>
+        <div
+          class="task-widget-list"
+          data-od-id={`task-widget-list-${widget.id}`}
         >
-          {savingTask ? "Adding…" : "Add task"}
-        </button>
-      </form>
+          {#each tasks as task (task.id)}
+            <article
+              class={["task-widget-row", task.completed && "is-complete"]}
+              data-od-id={`dashboard-task-${widget.id}-${task.id}`}
+            >
+              <div class="task-widget-row-main">
+                <span class="task-row-heading">
+                  {#if showTaskPriorities && task.priority !== "none"}
+                    <NtfyPriority
+                      priority={taskPriorityLevel(task.priority)}
+                      ariaLabel={`${taskPriorityLabel(task.priority)} priority`}
+                    />
+                  {/if}
+                  <strong>{task.title}</strong>
+                </span>
+                <span class="task-row-metadata">
+                  {#if task.due_date}
+                    <span>
+                      <CalendarDays
+                        size={13}
+                        strokeWidth={1.8}
+                        aria-hidden="true"
+                      />
+                      {formatTaskDate(task.due_date)}
+                    </span>
+                  {/if}
+                  {#if task.repeat_rule !== "none"}
+                    <span>
+                      <Repeat2 size={13} strokeWidth={1.8} aria-hidden="true" />
+                      {taskRepeatLabel(task)}
+                    </span>
+                  {/if}
+                  {#if task.subtasks.length}
+                    <span>
+                      <CheckSquare2
+                        size={13}
+                        strokeWidth={1.8}
+                        aria-hidden="true"
+                      />
+                      {task.subtasks.filter((item) => item.completed)
+                        .length}/{task.subtasks.length}
+                    </span>
+                  {/if}
+                  {#if task.attachments.length}
+                    <span>
+                      <Paperclip
+                        size={13}
+                        strokeWidth={1.8}
+                        aria-hidden="true"
+                      />
+                      {task.attachments.length}
+                    </span>
+                  {/if}
+                </span>
+                {#if task.labels.length}
+                  <span class="task-label-list">
+                    {#each task.labels as label (label)}
+                      <span>{label}</span>
+                    {/each}
+                  </span>
+                {/if}
+              </div>
+              <button
+                class="ui-button ui-button--secondary ui-button--icon task-widget-toggle"
+                type="button"
+                aria-label={task.completed
+                  ? `Mark ${task.title} incomplete`
+                  : `Mark ${task.title} complete`}
+                aria-pressed={task.completed}
+                title={task.completed ? "Reopen task" : "Complete task"}
+                onclick={() => onToggleTask(task)}
+              >
+                {#if task.completed}
+                  <RotateCcw size={15} strokeWidth={1.8} aria-hidden="true" />
+                {:else}
+                  <Check size={16} strokeWidth={1.8} aria-hidden="true" />
+                {/if}
+              </button>
+            </article>
+          {:else}
+            <p class="empty-state roomy">No tasks yet. Add one below.</p>
+          {/each}
+        </div>
+        <form class="add-task task-widget-composer" onsubmit={submitTask}>
+          <label class="sr-only" for={`new-task-${widget.id}`}>New task</label>
+          <input
+            class="text-input"
+            id={`new-task-${widget.id}`}
+            bind:value={newTaskTitle}
+            placeholder="Add a task…"
+            maxlength="120"
+            required
+          />
+          <button
+            class="ui-button ui-button--primary primary-btn"
+            type="submit"
+            disabled={savingTask}
+          >
+            {savingTask ? "Adding…" : "Add task"}
+          </button>
+        </form>
+      </section>
     {:else}
       <IntegrationWidget
         {widget}
+        {highlightColor}
         onUpdate={onUpdateWidget}
         {onToast}
         {onOpenCalendarDate}

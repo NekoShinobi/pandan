@@ -297,6 +297,22 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "075_dashboard_media_widgets",
         include_str!("../migrations/075_dashboard_media_widgets.sql"),
     ),
+    (
+        "076_rss_item_images",
+        include_str!("../migrations/076_rss_item_images.sql"),
+    ),
+    (
+        "077_rss_item_xml_snippets",
+        include_str!("../migrations/077_rss_item_xml_snippets.sql"),
+    ),
+    (
+        "078_instance_branding_and_highlight",
+        include_str!("../migrations/078_instance_branding_and_highlight.sql"),
+    ),
+    (
+        "079_restore_pandan_highlight",
+        include_str!("../migrations/079_restore_pandan_highlight.sql"),
+    ),
 ];
 
 /// Maps migration names used by earlier development builds to their canonical names.
@@ -1307,6 +1323,180 @@ mod tests {
                 .await
                 .expect("migrated item loads");
         assert!(comments_url.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rss_item_image_migration_preserves_existing_items() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::from_str("sqlite::memory:")
+                    .expect("memory url parses")
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("database connects");
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS _migrations (\
+             name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("migration ledger creates");
+
+        let image_index = MIGRATIONS
+            .iter()
+            .position(|(name, _)| *name == "076_rss_item_images")
+            .expect("RSS item image migration is registered");
+        for (name, migration_sql) in MIGRATIONS.iter().take(image_index) {
+            let mut transaction = pool.begin().await.expect("migration starts");
+            sqlx::raw_sql(*migration_sql)
+                .execute(&mut *transaction)
+                .await
+                .expect("existing migration applies");
+            sqlx::query("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)")
+                .bind(*name)
+                .bind(chrono::Utc::now().to_rfc3339())
+                .execute(&mut *transaction)
+                .await
+                .expect("existing migration records");
+            transaction.commit().await.expect("migration commits");
+        }
+
+        let (owner, _) = queries::create_account(
+            &pool,
+            "rss-image-upgrade@example.com",
+            "$argon2id$upgrade",
+            "RSS Image Upgrade",
+        )
+        .await
+        .expect("owner creates");
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO rss_subscriptions \
+             (id, user_id, url, base_url, title, category, auto_delete_days, auto_delete_mode, \
+              current_entry_limit, last_fetched_at, last_attempted_at, refresh_generation, created_at, updated_at) \
+             VALUES ('legacy-rss-image', ?, 'https://example.com/feed.xml', 'https://example.com', \
+                     'Legacy image feed', 'General', 7, 'all', 25, ?, ?, 1, ?, ?)",
+        )
+        .bind(&owner.id)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("legacy subscription stores");
+        sqlx::query(
+            "INSERT INTO rss_items \
+             (id, subscription_id, external_id, url, comments_url, title, summary, \
+              published_at, fetched_at, last_seen_generation) \
+             VALUES ('legacy-image-item', 'legacy-rss-image', 'legacy-entry', \
+                     'https://example.com/article', '', 'Legacy article', '', ?, ?, 1)",
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("legacy item stores");
+
+        run_migrations(&pool)
+            .await
+            .expect("RSS item image migration applies");
+
+        let image_url: String =
+            sqlx::query_scalar("SELECT image_url FROM rss_items WHERE id = 'legacy-image-item'")
+                .fetch_one(&pool)
+                .await
+                .expect("migrated item loads");
+        assert!(image_url.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rss_item_xml_snippet_migration_preserves_existing_items() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::from_str("sqlite::memory:")
+                    .expect("memory url parses")
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("database connects");
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS _migrations (\
+             name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("migration ledger creates");
+
+        let snippet_index = MIGRATIONS
+            .iter()
+            .position(|(name, _)| *name == "077_rss_item_xml_snippets")
+            .expect("RSS item XML snippet migration is registered");
+        for (name, migration_sql) in MIGRATIONS.iter().take(snippet_index) {
+            let mut transaction = pool.begin().await.expect("migration starts");
+            sqlx::raw_sql(*migration_sql)
+                .execute(&mut *transaction)
+                .await
+                .expect("existing migration applies");
+            sqlx::query("INSERT INTO _migrations (name, applied_at) VALUES (?, ?)")
+                .bind(*name)
+                .bind(chrono::Utc::now().to_rfc3339())
+                .execute(&mut *transaction)
+                .await
+                .expect("existing migration records");
+            transaction.commit().await.expect("migration commits");
+        }
+
+        let (owner, _) = queries::create_account(
+            &pool,
+            "rss-xml-upgrade@example.com",
+            "$argon2id$upgrade",
+            "RSS XML Upgrade",
+        )
+        .await
+        .expect("owner creates");
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO rss_subscriptions \
+             (id, user_id, url, base_url, title, category, auto_delete_days, auto_delete_mode, \
+              current_entry_limit, last_fetched_at, last_attempted_at, refresh_generation, created_at, updated_at) \
+             VALUES ('legacy-rss-xml', ?, 'https://example.com/feed.xml', 'https://example.com', \
+                     'Legacy XML feed', 'General', 7, 'all', 25, ?, ?, 1, ?, ?)",
+        )
+        .bind(&owner.id)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("legacy subscription stores");
+        sqlx::query(
+            "INSERT INTO rss_items \
+             (id, subscription_id, external_id, url, comments_url, image_url, title, summary, \
+              published_at, fetched_at, last_seen_generation) \
+             VALUES ('legacy-xml-item', 'legacy-rss-xml', 'legacy-entry', \
+                     'https://example.com/article', '', '', 'Legacy article', '', ?, ?, 1)",
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("legacy item stores");
+
+        run_migrations(&pool)
+            .await
+            .expect("RSS item XML snippet migration applies");
+
+        let xml_snippet: String =
+            sqlx::query_scalar("SELECT xml_snippet FROM rss_items WHERE id = 'legacy-xml-item'")
+                .fetch_one(&pool)
+                .await
+                .expect("migrated item loads");
+        assert!(xml_snippet.is_empty());
     }
 
     #[tokio::test]
@@ -2799,6 +2989,8 @@ mod tests {
                 external_id: "old-entry".to_owned(),
                 url: "https://example.com/old".to_owned(),
                 comments_url: "https://example.com/old/comments".to_owned(),
+                image_url: "https://cdn.example.com/old-entry.webp".to_owned(),
+                xml_snippet: "<item><guid>old-entry</guid></item>".to_owned(),
                 title: "Old entry".to_owned(),
                 summary: String::new(),
                 published_at: "2000-01-01T00:00:00Z".to_owned(),
@@ -2825,6 +3017,33 @@ mod tests {
             .unwrap()
             .remove(0);
         assert_eq!(item.comments_url, "https://example.com/old/comments");
+        assert!(item.has_image);
+        assert_eq!(
+            queries::get_rss_item_xml_snippet(&pool, &owner.id, &item.id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("<item><guid>old-entry</guid></item>")
+        );
+        assert!(
+            queries::get_rss_item_xml_snippet(&pool, &other.id, &item.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            queries::get_rss_item_image_url(&pool, &owner.id, &item.id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("https://cdn.example.com/old-entry.webp")
+        );
+        assert!(
+            queries::get_rss_item_image_url(&pool, &other.id, &item.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert!(item.is_current);
         assert_eq!(
             queries::list_current_rss_items(
@@ -2849,6 +3068,7 @@ mod tests {
             .unwrap()
             .expect("owner can mark the item read");
         assert_eq!(read_item.comments_url, item.comments_url);
+        assert!(read_item.has_image);
         assert!(
             queries::set_rss_item_saved(&pool, &other.id, &item.id, true)
                 .await
@@ -2943,6 +3163,8 @@ mod tests {
                     external_id: "newest".to_owned(),
                     url: "https://example.com/newest".to_owned(),
                     comments_url: String::new(),
+                    image_url: String::new(),
+                    xml_snippet: String::new(),
                     title: "Newest entry".to_owned(),
                     summary: String::new(),
                     published_at: "2000-01-03T00:00:00Z".to_owned(),
@@ -2951,6 +3173,8 @@ mod tests {
                     external_id: "middle".to_owned(),
                     url: "https://example.com/middle".to_owned(),
                     comments_url: String::new(),
+                    image_url: String::new(),
+                    xml_snippet: String::new(),
                     title: "Middle entry".to_owned(),
                     summary: String::new(),
                     published_at: "2000-01-02T00:00:00Z".to_owned(),
@@ -2959,6 +3183,8 @@ mod tests {
                     external_id: "oldest".to_owned(),
                     url: "https://example.com/oldest".to_owned(),
                     comments_url: String::new(),
+                    image_url: String::new(),
+                    xml_snippet: String::new(),
                     title: "Oldest entry".to_owned(),
                     summary: String::new(),
                     published_at: "2000-01-01T00:00:00Z".to_owned(),
@@ -3659,6 +3885,82 @@ mod tests {
             .await
             .expect("appearance loads");
         assert_eq!(appearance.background_brightness, 78);
+        assert_eq!(appearance.highlight_color, "#72D577");
+    }
+
+    #[tokio::test]
+    async fn instance_branding_and_highlight_updates_round_trip() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (user, _) = queries::create_account(
+            &pool,
+            "branding@example.com",
+            "$argon2id$branding",
+            "Branding Owner",
+        )
+        .await
+        .expect("account creates");
+
+        let appearance = queries::update_user_highlight_color(&pool, &user.id, "#3366CC")
+            .await
+            .expect("highlight updates");
+        assert_eq!(appearance.highlight_color, "#3366CC");
+
+        let empty = queries::get_instance_branding(&pool)
+            .await
+            .expect("branding metadata loads");
+        assert!(!empty.has_logo);
+        assert!(!empty.has_favicon);
+
+        let with_logo =
+            queries::upsert_instance_brand_asset(&pool, "logo", "image/png", b"brand-logo")
+                .await
+                .expect("logo stores");
+        assert!(with_logo.has_logo);
+        assert_eq!(with_logo.logo_content_type.as_deref(), Some("image/png"));
+        let logo = queries::get_instance_brand_asset(&pool, "logo")
+            .await
+            .expect("logo query completes")
+            .expect("logo loads");
+        assert_eq!(logo.image_data, b"brand-logo");
+
+        let cleared = queries::delete_instance_brand_asset(&pool, "logo")
+            .await
+            .expect("logo deletes");
+        assert!(!cleared.has_logo);
+        assert!(
+            queries::get_instance_brand_asset(&pool, "logo")
+                .await
+                .expect("deleted logo query completes")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn temporary_highlight_default_is_forward_corrected() {
+        let pool = connect("sqlite::memory:").await.expect("database connects");
+        let (user, _) = queries::create_account(
+            &pool,
+            "highlight-repair@example.com",
+            "$argon2id$highlight-repair",
+            "Highlight Repair",
+        )
+        .await
+        .expect("account creates");
+
+        queries::update_user_highlight_color(&pool, &user.id, "#68DD7E")
+            .await
+            .expect("temporary default stores");
+        sqlx::raw_sql(include_str!(
+            "../migrations/079_restore_pandan_highlight.sql"
+        ))
+        .execute(&pool)
+        .await
+        .expect("highlight correction applies");
+
+        let appearance = queries::find_user_appearance(&pool, &user.id)
+            .await
+            .expect("appearance loads");
+        assert_eq!(appearance.highlight_color, "#72D577");
     }
 
     #[tokio::test]

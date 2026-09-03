@@ -341,6 +341,7 @@ export interface RssReaderItem {
   base_url: string;
   url: string;
   comments_url: string;
+  has_image: boolean;
   title: string;
   summary: string;
   published_at: string;
@@ -353,6 +354,10 @@ export interface RssReaderItem {
 export interface RssReaderResponse {
   subscriptions: RssSubscription[];
   items: RssReaderItem[];
+}
+
+export interface RssItemXmlSnippetResponse {
+  xml: string;
 }
 
 export interface RssSubscriptionInput {
@@ -906,10 +911,7 @@ export type WidgetKind =
 export type WidgetSize = "compact" | "standard" | "wide" | "full";
 
 export type DashboardTemplateId =
-  | "daily-overview"
-  | "focus-planner"
-  | "signal-desk"
-  | "media-studio";
+  "daily-overview" | "focus-planner" | "signal-desk" | "media-studio";
 
 export interface DashboardWidget {
   id: string;
@@ -1245,6 +1247,7 @@ export interface UserAppearance {
   background_brightness: number;
   background_contrast: number;
   background_saturation: number;
+  highlight_color: `#${string}`;
   updated_at: string;
 }
 
@@ -1276,7 +1279,15 @@ export interface OidcConfig {
   provider_name: string | null;
 }
 
-export interface AuthenticationConfig {
+export interface InstanceBranding {
+  has_logo: boolean;
+  logo_content_type: string | null;
+  has_favicon: boolean;
+  favicon_content_type: string | null;
+  branding_updated_at: string;
+}
+
+export interface AuthenticationConfig extends InstanceBranding {
   password_login_enabled: boolean;
   password_registration_enabled: boolean;
   oidc_enabled: boolean;
@@ -1879,7 +1890,9 @@ export function uploadDashboardWidgetImage(
   );
 }
 
-export function deleteDashboardWidgetImage(id: string): Promise<DashboardWidget> {
+export function deleteDashboardWidgetImage(
+  id: string,
+): Promise<DashboardWidget> {
   return requestJson<DashboardWidget>(
     `/api/widgets/${encodeURIComponent(id)}/image`,
     { method: "DELETE", credentials: "same-origin" },
@@ -2169,6 +2182,45 @@ export function updateAppearance(input: {
     headers: { "content-type": "application/json" },
     credentials: "same-origin",
     body: JSON.stringify(input),
+  });
+}
+
+export function updateHighlightColor(
+  highlightColor: `#${string}`,
+): Promise<UserAppearance> {
+  return requestJson<UserAppearance>("/api/settings/appearance/highlight", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ highlight_color: highlightColor }),
+  });
+}
+
+export function brandAssetUrl(
+  asset: "logo" | "favicon",
+  revision: string,
+): string {
+  return `/api/appearance/branding/${asset}?v=${encodeURIComponent(revision)}`;
+}
+
+export function updateBrandAsset(
+  asset: "logo" | "favicon",
+  file: File,
+): Promise<InstanceBranding> {
+  return requestJson<InstanceBranding>(`/api/admin/branding/${asset}`, {
+    method: "PUT",
+    headers: { "content-type": file.type },
+    credentials: "same-origin",
+    body: file,
+  });
+}
+
+export function deleteBrandAsset(
+  asset: "logo" | "favicon",
+): Promise<InstanceBranding> {
+  return requestJson<InstanceBranding>(`/api/admin/branding/${asset}`, {
+    method: "DELETE",
+    credentials: "same-origin",
   });
 }
 
@@ -2914,6 +2966,19 @@ export function setRssItemRead(
       credentials: "same-origin",
       body: JSON.stringify({ read }),
     },
+  );
+}
+
+export function rssItemImageUrl(id: string): string {
+  return `/api/rss/items/${encodeURIComponent(id)}/image`;
+}
+
+export function fetchRssItemXmlSnippet(
+  id: string,
+): Promise<RssItemXmlSnippetResponse> {
+  return requestJson<RssItemXmlSnippetResponse>(
+    `/api/rss/items/${encodeURIComponent(id)}/xml`,
+    { credentials: "same-origin" },
   );
 }
 

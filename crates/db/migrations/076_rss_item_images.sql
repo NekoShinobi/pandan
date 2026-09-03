@@ -1,0 +1,2 @@
+ALTER TABLE rss_items
+ADD COLUMN image_url TEXT NOT NULL DEFAULT '';

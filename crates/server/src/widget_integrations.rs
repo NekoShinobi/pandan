@@ -14,7 +14,7 @@ use futures_util::{
     stream::{self, StreamExt},
 };
 use primp::{Client as BrowserClient, Impersonate, ImpersonateOS};
-use quick_xml::{Reader, de::from_str, events::Event};
+use quick_xml::{Reader, Writer, de::from_str, events::Event};
 use regex::Regex;
 use reqwest::{Client, ClientBuilder, Method, StatusCode, Url, header};
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use sqlx::SqlitePool;
 use std::{
     cmp::Reverse,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::IpAddr,
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
@@ -100,6 +100,8 @@ pub struct RssFeedEntry {
     pub external_id: String,
     pub url: String,
     pub comments_url: String,
+    pub image_url: String,
+    pub xml_snippet: String,
     pub title: String,
     pub summary: String,
     pub published_at: String,
@@ -135,6 +137,8 @@ struct RedditPost {
     permalink: String,
     #[serde(default)]
     selftext: String,
+    #[serde(default)]
+    thumbnail: String,
     #[serde(default)]
     is_self: bool,
     #[serde(default)]
@@ -793,6 +797,67 @@ impl WidgetIntegrationService {
     ) -> Result<(String, Vec<u8>), String> {
         let (client, url) = self.client_for(source, NetworkAccessScope::Images).await?;
         self.fetch_validated_image(&client, url, max_bytes).await
+    }
+
+    /// Fetches one RSS item image while revalidating every redirect through the RSS policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe provider error when policy, redirect, media type, or size validation fails.
+    pub async fn fetch_rss_item_image(
+        &self,
+        source: &str,
+        max_bytes: usize,
+    ) -> Result<(String, Vec<u8>), String> {
+        const MAX_IMAGE_REDIRECTS: usize = 3;
+        let mut current = source.to_owned();
+        for redirect_count in 0..=MAX_IMAGE_REDIRECTS {
+            let (client, url) = self.client_for(&current, NetworkAccessScope::Rss).await?;
+            let response = client
+                .get(url.clone())
+                .header(
+                    header::ACCEPT,
+                    "image/avif,image/webp,image/png,image/jpeg,*/*;q=0.1",
+                )
+                .send()
+                .await
+                .map_err(request_error)?;
+            if response.status().is_redirection() {
+                if redirect_count == MAX_IMAGE_REDIRECTS {
+                    return Err("RSS image redirected too many times".to_owned());
+                }
+                let location = response
+                    .headers()
+                    .get(header::LOCATION)
+                    .and_then(|value| value.to_str().ok())
+                    .ok_or_else(|| "RSS image redirect was missing a destination".to_owned())?;
+                current = url
+                    .join(location)
+                    .map_err(|_| "RSS image redirect destination was invalid".to_owned())?
+                    .to_string();
+                continue;
+            }
+            let response = response.error_for_status().map_err(request_error)?;
+            let content_type = response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(';').next())
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| {
+                    matches!(
+                        value.as_str(),
+                        "image/jpeg" | "image/png" | "image/webp" | "image/avif"
+                    )
+                })
+                .ok_or_else(|| "RSS image type is unsupported".to_owned())?;
+            let bytes = response_bytes_with_limit(response, max_bytes).await?;
+            if bytes.is_empty() {
+                return Err("RSS image was empty".to_owned());
+            }
+            return Ok((content_type, bytes));
+        }
+        Err("RSS image request failed".to_owned())
     }
 
     /// Fetches a small favicon while revalidating every redirect through the image policy.
@@ -2191,6 +2256,8 @@ fn parse_rss_feed_snapshot(bytes: &[u8]) -> Result<RssFeedSnapshot, String> {
         .map_or_else(|| "Untitled feed".to_owned(), |value| value.content.clone());
     let scanned_comments = scan_rss_comments_urls(bytes);
     let comments_align = scanned_comments.len() == feed.entries.len().min(200);
+    let scanned_xml = scan_rss_entry_xml_snippets(bytes, 200);
+    let xml_align = scanned_xml.len() == feed.entries.len().min(200);
     let fetched_at = chrono::Utc::now().to_rfc3339();
     let items = feed
         .entries
@@ -2202,6 +2269,10 @@ fn parse_rss_feed_snapshot(bytes: &[u8]) -> Result<RssFeedSnapshot, String> {
                 .then(|| scanned_comments[index].as_deref())
                 .flatten();
             let (url, comments_url) = reader_entry_links(&entry, raw_comments);
+            let image_url = reader_entry_image_url(&entry);
+            let xml_snippet = xml_align
+                .then(|| scanned_xml[index].clone())
+                .unwrap_or_default();
             let published_at = entry
                 .published
                 .or(entry.updated)
@@ -2227,6 +2298,8 @@ fn parse_rss_feed_snapshot(bytes: &[u8]) -> Result<RssFeedSnapshot, String> {
                 external_id,
                 url,
                 comments_url,
+                image_url,
+                xml_snippet,
                 title,
                 summary: content,
                 published_at,
@@ -2286,6 +2359,117 @@ fn safe_rss_entry_url(value: &str) -> String {
     }
 }
 
+fn reader_entry_image_url(entry: &Entry) -> String {
+    for media in &entry.media {
+        for content in &media.content {
+            let is_image = content
+                .content_type
+                .as_ref()
+                .is_some_and(|value| value.to_string().to_ascii_lowercase().starts_with("image/"));
+            if let Some(url) = content.url.as_ref()
+                && (is_image || looks_like_image_url(url.as_str()))
+            {
+                let candidate = safe_rss_image_url(url.as_str(), entry);
+                if !candidate.is_empty() {
+                    return candidate;
+                }
+            }
+        }
+        for thumbnail in &media.thumbnails {
+            let candidate = safe_rss_image_url(&thumbnail.image.uri, entry);
+            if !candidate.is_empty() {
+                return candidate;
+            }
+        }
+    }
+
+    for link in &entry.links {
+        let is_image = link
+            .media_type
+            .as_deref()
+            .is_some_and(|value| value.to_ascii_lowercase().starts_with("image/"));
+        let is_image_enclosure = link
+            .rel
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("enclosure"))
+            && looks_like_image_url(&link.href);
+        if is_image || is_image_enclosure {
+            let candidate = safe_rss_image_url(&link.href, entry);
+            if !candidate.is_empty() {
+                return candidate;
+            }
+        }
+    }
+
+    for document in [
+        entry
+            .content
+            .as_ref()
+            .and_then(|value| value.body.as_deref()),
+        entry.summary.as_ref().map(|value| value.content.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(source) = first_html_image_source(document) {
+            let candidate = safe_rss_image_url(source, entry);
+            if !candidate.is_empty() {
+                return candidate;
+            }
+        }
+    }
+    String::new()
+}
+
+fn safe_rss_image_url(value: &str, entry: &Entry) -> String {
+    let decoded = quick_xml::escape::unescape(value.trim())
+        .map_or_else(|_| value.trim().to_owned(), std::borrow::Cow::into_owned);
+    let parsed = Url::parse(&decoded)
+        .ok()
+        .or_else(|| {
+            entry
+                .base
+                .as_deref()
+                .and_then(|base| Url::parse(base).ok())
+                .and_then(|base| base.join(&decoded).ok())
+        })
+        .or_else(|| {
+            entry.links.iter().find_map(|link| {
+                Url::parse(&link.href)
+                    .ok()
+                    .and_then(|base| base.join(&decoded).ok())
+            })
+        });
+    parsed.map_or_else(String::new, |url| safe_rss_entry_url(url.as_str()))
+}
+
+fn first_html_image_source(document: &str) -> Option<&str> {
+    let lowercase = document.to_ascii_lowercase();
+    let mut offset = 0;
+    while let Some(relative_start) = lowercase[offset..].find("<img") {
+        let start = offset + relative_start;
+        let Some(relative_end) = lowercase[start..].find('>') else {
+            break;
+        };
+        let end = start + relative_end;
+        let tag = &document[start..=end];
+        if let Some(source) = html_attribute_case_insensitive(tag, "src") {
+            return Some(source);
+        }
+        offset = end + 1;
+    }
+    None
+}
+
+fn looks_like_image_url(value: &str) -> bool {
+    Url::parse(value).is_ok_and(|url| {
+        let path = url.path().to_ascii_lowercase();
+        [".avif", ".jpeg", ".jpg", ".png", ".webp"]
+            .iter()
+            .any(|extension| path.ends_with(extension))
+    })
+}
+
 fn is_reddit_comments_url(value: &str) -> bool {
     Url::parse(value).is_ok_and(|url| {
         url.host_str().is_some_and(|host| {
@@ -2294,6 +2478,212 @@ fn is_reddit_comments_url(value: &str) -> bool {
                 && url.path().contains("/comments/")
         })
     })
+}
+
+/// Formats a stored RSS or Atom entry fragment for the developer viewer.
+///
+/// Invalid fragments remain readable: formatting falls back to the exact stored source instead
+/// of turning an optional developer aid into an item-loading failure.
+pub(crate) fn format_rss_xml_snippet(source: &str) -> String {
+    let mut reader = Reader::from_reader(source.as_bytes());
+    reader.config_mut().trim_text(false);
+    let mut buffer = Vec::new();
+    let mut events = Vec::new();
+    let mut open_elements: Vec<(Vec<u8>, usize)> = Vec::new();
+    let mut mixed_elements = HashSet::new();
+
+    loop {
+        let event = match reader.read_event_into(&mut buffer) {
+            Ok(Event::Eof) if open_elements.is_empty() => break,
+            Ok(Event::Eof) => return source.to_owned(),
+            Ok(Event::Start(element)) => {
+                open_elements.push((element.name().as_ref().to_vec(), events.len()));
+                Event::Start(element.into_owned())
+            }
+            Ok(Event::End(element)) => {
+                let Some((start_name, _)) = open_elements.pop() else {
+                    return source.to_owned();
+                };
+                if start_name.as_slice() != element.name().as_ref() {
+                    return source.to_owned();
+                }
+                Event::End(element.into_owned())
+            }
+            Ok(Event::Text(text)) => {
+                if !text.as_ref().iter().all(|byte| byte.is_ascii_whitespace())
+                    && let Some((_, start_index)) = open_elements.last()
+                {
+                    mixed_elements.insert(*start_index);
+                }
+                Event::Text(text.into_owned())
+            }
+            Ok(Event::CData(cdata)) => {
+                if let Some((_, start_index)) = open_elements.last() {
+                    mixed_elements.insert(*start_index);
+                }
+                Event::CData(cdata.into_owned())
+            }
+            Ok(Event::GeneralRef(reference)) => {
+                if let Some((_, start_index)) = open_elements.last() {
+                    mixed_elements.insert(*start_index);
+                }
+                Event::GeneralRef(reference.into_owned())
+            }
+            Ok(event) => event.into_owned(),
+            Err(_) => return source.to_owned(),
+        };
+        events.push(event);
+        buffer.clear();
+    }
+
+    let mut writer = Writer::new(Vec::new());
+    let mut preserve_whitespace = Vec::new();
+    let mut wrote_event = false;
+    for (index, event) in events.into_iter().enumerate() {
+        let depth = preserve_whitespace.len();
+        let parent_preserves = preserve_whitespace.last().copied().unwrap_or(false);
+        match event {
+            Event::Start(element) => {
+                if wrote_event && !parent_preserves {
+                    write_rss_xml_indent(&mut writer, depth);
+                }
+                if writer.write_event(Event::Start(element)).is_err() {
+                    return source.to_owned();
+                }
+                preserve_whitespace.push(parent_preserves || mixed_elements.contains(&index));
+                wrote_event = true;
+            }
+            Event::End(element) => {
+                let current_preserves = preserve_whitespace.last().copied().unwrap_or(false);
+                if wrote_event && !current_preserves {
+                    write_rss_xml_indent(&mut writer, depth.saturating_sub(1));
+                }
+                if writer.write_event(Event::End(element)).is_err() {
+                    return source.to_owned();
+                }
+                preserve_whitespace.pop();
+                wrote_event = true;
+            }
+            Event::Text(text)
+                if text.as_ref().iter().all(|byte| byte.is_ascii_whitespace())
+                    && !parent_preserves => {}
+            event @ (Event::Empty(_)
+            | Event::Comment(_)
+            | Event::Decl(_)
+            | Event::PI(_)
+            | Event::DocType(_)) => {
+                if wrote_event && !parent_preserves {
+                    write_rss_xml_indent(&mut writer, depth);
+                }
+                if writer.write_event(event).is_err() {
+                    return source.to_owned();
+                }
+                wrote_event = true;
+            }
+            event => {
+                if writer.write_event(event).is_err() {
+                    return source.to_owned();
+                }
+                wrote_event = true;
+            }
+        }
+    }
+
+    String::from_utf8(writer.into_inner()).unwrap_or_else(|_| source.to_owned())
+}
+
+fn write_rss_xml_indent(writer: &mut Writer<Vec<u8>>, depth: usize) {
+    let output = writer.get_mut();
+    output.push(b'\n');
+    output.extend(std::iter::repeat_n(b' ', depth.saturating_mul(2)));
+}
+
+/// Collects each source `<item>` or `<entry>` element in document order.
+///
+/// The feed parser intentionally exposes normalized fields only. Keeping this bounded fragment
+/// alongside the normalized entry gives the reader a precise developer view without returning or
+/// refetching the complete feed document.
+fn scan_rss_entry_xml_snippets(bytes: &[u8], max_items: usize) -> Vec<String> {
+    if max_items == 0 {
+        return Vec::new();
+    }
+    let mut reader = Reader::from_reader(bytes);
+    reader.config_mut().trim_text(false);
+    let mut buffer = Vec::new();
+    let mut snippets = Vec::new();
+    let mut writer: Option<Writer<Vec<u8>>> = None;
+    let mut depth = 0_usize;
+
+    loop {
+        let Ok(event) = reader.read_event_into(&mut buffer) else {
+            break;
+        };
+        match event {
+            Event::Start(element) => {
+                if let Some(active) = writer.as_mut() {
+                    depth = depth.saturating_add(1);
+                    if active
+                        .write_event(Event::Start(element.into_owned()))
+                        .is_err()
+                    {
+                        break;
+                    }
+                } else {
+                    let is_entry = {
+                        let name = element.name();
+                        is_rss_entry_element(name.as_ref())
+                    };
+                    if is_entry {
+                        let mut next = Writer::new(Vec::new());
+                        if next
+                            .write_event(Event::Start(element.into_owned()))
+                            .is_err()
+                        {
+                            break;
+                        }
+                        writer = Some(next);
+                        depth = 1;
+                    }
+                }
+            }
+            Event::End(element) => {
+                if let Some(active) = writer.as_mut() {
+                    if active
+                        .write_event(Event::End(element.into_owned()))
+                        .is_err()
+                    {
+                        break;
+                    }
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let completed = writer
+                            .take()
+                            .expect("RSS entry writer exists while capture depth is active")
+                            .into_inner();
+                        snippets.push(String::from_utf8_lossy(&completed).into_owned());
+                        if snippets.len() >= max_items {
+                            break;
+                        }
+                    }
+                }
+            }
+            Event::Eof => break,
+            event => {
+                if let Some(active) = writer.as_mut()
+                    && active.write_event(event.into_owned()).is_err()
+                {
+                    break;
+                }
+            }
+        }
+        buffer.clear();
+    }
+    snippets
+}
+
+fn is_rss_entry_element(name: &[u8]) -> bool {
+    let local_name = name.rsplit(|byte| *byte == b':').next().unwrap_or(name);
+    local_name.eq_ignore_ascii_case(b"item") || local_name.eq_ignore_ascii_case(b"entry")
 }
 
 /// Collects one RSS 2.0 `<comments>` destination per feed item in document order.
@@ -2608,10 +2998,9 @@ pub fn validate_widget_config(kind: &str, config: &Value) -> Result<(), &'static
         "task-list" => validate_bool(config, "show_priorities"),
         "weather" => validate_enum(config, "unit", &["celsius", "fahrenheit"])
             .and_then(|()| validate_enum(config, "forecast_style", &["current", "hourly"])),
-        "youtube" => validate_array(config, "channels", 12)
-            .and_then(|()| validate_array(config, "playlists", 12))
-            .and_then(|()| validate_bool(config, "include_shorts"))
-            .and_then(|()| validate_integer_range(config, "limit", 1, 20)),
+        "youtube" => validate_text(config, "youtube_scope", 64)
+            .and_then(|()| validate_integer_range(config, "limit", 1, 40))
+            .and_then(|()| validate_enum(config, "display_style", &["grid", "table"])),
         "rss" => validate_array(config, "urls", 8)
             .and_then(|()| validate_array(config, "subscription_ids", 32))
             .and_then(|()| validate_integer_range(config, "limit", 1, 40))
@@ -3590,12 +3979,24 @@ fn reddit_listing_snapshot(
             };
             let title = quick_xml::escape::unescape(&post.title)
                 .map_or_else(|_| post.title.clone(), std::borrow::Cow::into_owned);
+            let summary = post.selftext.clone();
+            let image_url = reddit_post_image_url(post);
+            let xml_snippet = normalized_reddit_item_xml(
+                &external_id,
+                &title,
+                &url,
+                &comments_url,
+                &summary,
+                &published_at,
+            );
             Some(RssFeedEntry {
                 external_id,
                 url,
                 comments_url,
+                image_url,
+                xml_snippet,
                 title,
-                summary: post.selftext.clone(),
+                summary,
                 published_at,
             })
         })
@@ -3604,6 +4005,47 @@ fn reddit_listing_snapshot(
         title: format!("r/{}", source.subreddit),
         items,
     }
+}
+
+fn normalized_reddit_item_xml(
+    external_id: &str,
+    title: &str,
+    url: &str,
+    comments_url: &str,
+    summary: &str,
+    published_at: &str,
+) -> String {
+    let external_id = quick_xml::escape::escape(external_id);
+    let title = quick_xml::escape::escape(title);
+    let url = quick_xml::escape::escape(url);
+    let comments_url = quick_xml::escape::escape(comments_url);
+    let summary = quick_xml::escape::escape(summary);
+    let published_at = quick_xml::escape::escape(published_at);
+    format!(
+        "<!-- Normalized by Pandan from Reddit's JSON listing; not upstream XML. -->\n\
+         <item>\n\
+           <guid>{external_id}</guid>\n\
+           <title>{title}</title>\n\
+           <link>{url}</link>\n\
+           <comments>{comments_url}</comments>\n\
+           <description>{summary}</description>\n\
+           <pubDate>{published_at}</pubDate>\n\
+         </item>"
+    )
+}
+
+fn reddit_post_image_url(post: &RedditPost) -> String {
+    if !post.is_self && looks_like_image_url(&post.url) {
+        let candidate = safe_rss_entry_url(&post.url);
+        if !candidate.is_empty() {
+            return candidate;
+        }
+    }
+    let thumbnail = quick_xml::escape::unescape(post.thumbnail.trim()).map_or_else(
+        |_| post.thumbnail.trim().to_owned(),
+        std::borrow::Cow::into_owned,
+    );
+    safe_rss_entry_url(&thumbnail)
 }
 
 fn reddit_published_at(value: &serde_json::Number) -> Option<String> {
@@ -4784,6 +5226,7 @@ mod tests {
                         "url": "https://example.com/article",
                         "permalink": "/r/selfhosted/comments/example/pandan_reddit/",
                         "selftext": "A short summary",
+                        "thumbnail": "https://preview.redd.it/example.jpg?width=640&amp;auto=webp",
                         "is_self": false,
                         "created_utc": 1788163200.0,
                         "ups": 42,
@@ -4801,10 +5244,44 @@ mod tests {
         assert_eq!(snapshot.items[0].external_id, "t3_example");
         assert_eq!(snapshot.items[0].title, "Pandan & Reddit");
         assert_eq!(snapshot.items[0].url, "https://example.com/article");
+        assert!(
+            snapshot.items[0]
+                .xml_snippet
+                .starts_with("<!-- Normalized by Pandan from Reddit's JSON listing")
+        );
+        assert!(
+            snapshot.items[0]
+                .xml_snippet
+                .contains("<title>Pandan &amp; Reddit</title>")
+        );
+        assert_eq!(
+            snapshot.items[0].image_url,
+            "https://preview.redd.it/example.jpg?width=640&auto=webp"
+        );
         assert_eq!(
             snapshot.items[0].comments_url,
             "https://www.reddit.com/r/selfhosted/comments/example/pandan_reddit/"
         );
+    }
+
+    #[test]
+    fn rss_xml_snippets_are_indented_without_changing_content() {
+        let compact = r#"<!-- source --><item><guid>entry</guid><description><![CDATA[<p>Body</p>]]></description><link>https://example.com/?a=1&amp;b=2</link></item>"#;
+
+        let formatted = format_rss_xml_snippet(compact);
+
+        assert!(formatted.starts_with("<!-- source -->\n<item>"));
+        assert!(formatted.contains("\n  <guid>entry</guid>"));
+        assert!(formatted.contains("\n  <description><![CDATA[<p>Body</p>]]></description>"));
+        assert!(formatted.contains("\n  <link>https://example.com/?a=1&amp;b=2</link>"));
+        assert!(formatted.ends_with("\n</item>"));
+    }
+
+    #[test]
+    fn invalid_rss_xml_snippets_fall_back_to_stored_source() {
+        let invalid = "<item><title>Incomplete";
+
+        assert_eq!(format_rss_xml_snippet(invalid), invalid);
     }
 
     #[tokio::test]
@@ -4885,6 +5362,77 @@ mod tests {
         assert_eq!(snapshot.items[0].title, "Redirected entry");
     }
 
+    #[tokio::test]
+    async fn rss_image_fetch_revalidates_relative_redirects() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+
+        let pool = db::connect("sqlite::memory:")
+            .await
+            .expect("test database connects");
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("test server binds");
+        let address = listener.local_addr().expect("test address resolves");
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO network_access_rules (\
+             id, action, scheme, host, port, integration, created_at, updated_at\
+             ) VALUES ('allow-rss-image-redirect-test', 'allow', 'http', '127.0.0.1', ?, 'rss', ?, ?)",
+        )
+        .bind(i64::from(address.port()))
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("RSS image test allow rule inserts");
+
+        let server = tokio::spawn(async move {
+            for redirected in [false, true] {
+                let (mut socket, _) = listener.accept().await.expect("request accepts");
+                let mut request = [0_u8; 2048];
+                let request_len = socket.read(&mut request).await.expect("request reads");
+                let request = String::from_utf8_lossy(&request[..request_len]);
+                if redirected {
+                    assert!(request.starts_with("GET /image.png HTTP/1.1"));
+                    let image = [0x89_u8, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+                    let headers = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        image.len()
+                    );
+                    socket
+                        .write_all(headers.as_bytes())
+                        .await
+                        .expect("response headers write");
+                    socket
+                        .write_all(&image)
+                        .await
+                        .expect("response body writes");
+                } else {
+                    assert!(request.starts_with("GET /image HTTP/1.1"));
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 302 Found\r\nLocation: /image.png\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .expect("redirect writes");
+                }
+            }
+        });
+
+        let (content_type, image) = WidgetIntegrationService::for_tests(pool)
+            .expect("service initializes")
+            .fetch_rss_item_image(&format!("http://{address}/image"), 1024)
+            .await
+            .expect("redirected RSS image loads");
+        server.await.expect("test server completes");
+
+        assert_eq!(content_type, "image/png");
+        assert_eq!(image, [0x89_u8, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+    }
+
     #[test]
     fn rss_reader_preserves_rss_comments_destinations() {
         let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
@@ -4935,6 +5483,59 @@ mod tests {
         assert_eq!(
             snapshot.items[0].comments_url,
             "https://example.com/article/comments"
+        );
+    }
+
+    #[test]
+    fn rss_reader_discovers_structured_and_embedded_images() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+          <rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+            <channel>
+              <title>Illustrated feed</title>
+              <link>https://example.com/</link>
+              <description>Entries with images</description>
+              <item>
+                <guid>entry-media</guid>
+                <title>Structured image</title>
+                <link>https://example.com/articles/structured</link>
+                <media:content url="https://cdn.example.com/structured.webp" type="image/webp" />
+              </item>
+              <item>
+                <guid>entry-html</guid>
+                <title>Embedded image</title>
+                <link>https://example.com/articles/embedded</link>
+                <description><![CDATA[<p><img src="/images/embedded.jpg" alt="Example"></p>]]></description>
+              </item>
+              <item>
+                <guid>entry-unsafe</guid>
+                <title>Unsafe image</title>
+                <link>https://example.com/articles/unsafe</link>
+                <description><![CDATA[<img src="data:image/png;base64,AAAA">]]></description>
+              </item>
+            </channel>
+          </rss>"#;
+
+        let snapshot = parse_rss_feed_snapshot(xml).expect("RSS feed parses");
+
+        assert_eq!(
+            snapshot.items[0].image_url,
+            "https://cdn.example.com/structured.webp"
+        );
+        assert_eq!(
+            snapshot.items[1].image_url,
+            "https://example.com/images/embedded.jpg"
+        );
+        assert!(snapshot.items[2].image_url.is_empty());
+        assert!(snapshot.items[0].xml_snippet.starts_with("<item>"));
+        assert!(
+            snapshot.items[0]
+                .xml_snippet
+                .contains("<media:content url=\"https://cdn.example.com/structured.webp\"")
+        );
+        assert!(
+            snapshot.items[1]
+                .xml_snippet
+                .contains("<![CDATA[<p><img src=\"/images/embedded.jpg\"")
         );
     }
 
@@ -5045,6 +5646,28 @@ END:VCARD</card:address-data></d:prop></d:propstat></d:response>
         );
         assert!(validate_widget_config("focus", &json!({ "default_minutes": 0 })).is_err());
         assert!(validate_widget_config("weather", &json!({ "forecast_style": "radar" })).is_err());
+        assert!(
+            validate_widget_config(
+                "youtube",
+                &json!({
+                    "youtube_scope": "all",
+                    "limit": 10,
+                    "display_style": "grid",
+                }),
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_widget_config(
+                "youtube",
+                &json!({
+                    "youtube_scope": "all",
+                    "limit": 41,
+                    "display_style": "carousel",
+                }),
+            )
+            .is_err()
+        );
     }
 
     #[test]

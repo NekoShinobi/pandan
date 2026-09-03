@@ -303,7 +303,7 @@
 <div class="weather-widget" data-od-id={`weather-content-${widget.id}`}>
   <div class="weather-toolbar">
     <div>
-      <p class="widget-kicker">Open-Meteo forecast</p>
+      <h2 data-od-id={`weather-widget-title-${widget.id}`}>{displayName}</h2>
       <span class="weather-status">
         {#if loading}
           <span
@@ -585,7 +585,6 @@
   {#if selectedWeather}
     <div class="settings-heading weather-detail-heading">
       <div>
-        <p class="widget-kicker">7-day forecast</p>
         <h2>{selectedWeather.location.name}</h2>
         <p>
           {locationLabel(selectedWeather.location)} · {selectedWeather.location.timezone.replaceAll(
@@ -1082,10 +1081,6 @@
 
   .weather-detail-dialog {
     width: min(880px, calc(100vw - 32px));
-  }
-
-  .weather-detail-heading .widget-kicker {
-    margin-bottom: 5px;
   }
 
   .weather-detail-body {

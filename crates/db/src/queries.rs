@@ -2245,7 +2245,8 @@ pub async fn list_rss_items(pool: &SqlitePool, user_id: &str) -> Result<Vec<RssI
          ) \
          SELECT i.id, i.subscription_id, COALESCE(s.custom_name, s.title) AS source, \
          s.category, s.base_url, i.url, \
-         i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at, \
+         i.comments_url, CASE WHEN i.image_url = '' THEN 0 ELSE 1 END AS has_image, \
+         i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at, \
          CASE WHEN ranked_current.current_rank <= s.current_entry_limit \
               THEN 1 ELSE 0 END AS is_current \
          FROM rss_items i JOIN rss_subscriptions s ON s.id = i.subscription_id \
@@ -2290,7 +2291,8 @@ pub async fn list_current_rss_items(
          ) \
          SELECT i.id, i.subscription_id, COALESCE(s.custom_name, s.title) AS source, \
          s.category, s.base_url, i.url, \
-         i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at, \
+         i.comments_url, CASE WHEN i.image_url = '' THEN 0 ELSE 1 END AS has_image, \
+         i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at, \
          1 AS is_current FROM ranked_current \
          JOIN rss_items i ON i.id = ranked_current.id \
          JOIN rss_subscriptions s ON s.id = i.subscription_id \
@@ -2391,11 +2393,12 @@ async fn upsert_rss_items(
     for item in items {
         sqlx::query(
             "INSERT INTO rss_items \
-             (id, subscription_id, external_id, url, comments_url, title, summary, published_at, \
-              fetched_at, last_seen_generation) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             (id, subscription_id, external_id, url, comments_url, image_url, xml_snippet, title, summary, \
+              published_at, fetched_at, last_seen_generation) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(subscription_id, external_id) DO UPDATE SET \
              url = excluded.url, comments_url = excluded.comments_url, \
+             image_url = excluded.image_url, xml_snippet = excluded.xml_snippet, \
              title = excluded.title, summary = excluded.summary, \
              published_at = excluded.published_at, fetched_at = excluded.fetched_at, \
              last_seen_generation = excluded.last_seen_generation",
@@ -2405,6 +2408,8 @@ async fn upsert_rss_items(
         .bind(&item.external_id)
         .bind(&item.url)
         .bind(&item.comments_url)
+        .bind(&item.image_url)
+        .bind(&item.xml_snippet)
         .bind(&item.title)
         .bind(&item.summary)
         .bind(&item.published_at)
@@ -2625,7 +2630,8 @@ pub async fn set_rss_item_read(
          ) \
          SELECT i.id, i.subscription_id, COALESCE(s.custom_name, s.title) AS source, \
          s.category, s.base_url, i.url, \
-         i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at, \
+         i.comments_url, CASE WHEN i.image_url = '' THEN 0 ELSE 1 END AS has_image, \
+         i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at, \
          CASE WHEN ranked_current.current_rank <= s.current_entry_limit \
               THEN 1 ELSE 0 END AS is_current \
          FROM rss_items i JOIN rss_subscriptions s ON s.id = i.subscription_id \
@@ -2692,7 +2698,8 @@ pub async fn set_rss_item_saved(
          ) \
          SELECT i.id, i.subscription_id, COALESCE(s.custom_name, s.title) AS source, \
          s.category, s.base_url, i.url, \
-         i.comments_url, i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at, \
+         i.comments_url, CASE WHEN i.image_url = '' THEN 0 ELSE 1 END AS has_image, \
+         i.title, i.summary, i.published_at, i.fetched_at, i.read_at, rl.saved_at, \
          CASE WHEN ranked_current.current_rank <= s.current_entry_limit \
               THEN 1 ELSE 0 END AS is_current \
          FROM rss_items i JOIN rss_subscriptions s ON s.id = i.subscription_id \
@@ -2702,6 +2709,48 @@ pub async fn set_rss_item_saved(
     )
     .bind(user_id)
     .bind(user_id)
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Loads the remote image URL for one user-owned RSS entry.
+///
+/// # Errors
+///
+/// Returns the underlying SQLx error when ownership or image metadata cannot be checked.
+pub async fn get_rss_item_image_url(
+    pool: &SqlitePool,
+    user_id: &str,
+    id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT i.image_url FROM rss_items i \
+         JOIN rss_subscriptions s ON s.id = i.subscription_id \
+         WHERE i.id = ? AND s.user_id = ? AND i.image_url <> ''",
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Loads the stored XML fragment for one user-owned RSS entry.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when ownership or source metadata cannot be checked.
+pub async fn get_rss_item_xml_snippet(
+    pool: &SqlitePool,
+    user_id: &str,
+    id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT i.xml_snippet FROM rss_items i \
+         JOIN rss_subscriptions s ON s.id = i.subscription_id \
+         WHERE i.id = ? AND s.user_id = ? AND i.xml_snippet <> ''",
+    )
     .bind(id)
     .bind(user_id)
     .fetch_optional(pool)
@@ -5217,7 +5266,7 @@ pub async fn find_user_appearance(
                   AND walls.status = 'approved' \
                   AND users.role = 'administrator') AS has_login_wallpaper, \
                 background_blur, background_brightness, \
-                background_contrast, background_saturation, updated_at \
+                background_contrast, background_saturation, highlight_color, updated_at \
          FROM user_appearance WHERE user_id = ?",
     )
     .bind(user_id)
@@ -5253,6 +5302,126 @@ pub async fn update_user_appearance(
     .execute(pool)
     .await?;
     find_user_appearance(pool, user_id).await
+}
+
+/// Updates the authenticated user's highlight color and reloads their appearance.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the update cannot be completed.
+pub async fn update_user_highlight_color(
+    pool: &SqlitePool,
+    user_id: &str,
+    highlight_color: &str,
+) -> Result<UserAppearance, sqlx::Error> {
+    sqlx::query("UPDATE user_appearance SET highlight_color = ?, updated_at = ? WHERE user_id = ?")
+        .bind(highlight_color)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    find_user_appearance(pool, user_id).await
+}
+
+/// Loads public metadata for the singleton instance branding record.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the query cannot be completed.
+pub async fn get_instance_branding(
+    pool: &SqlitePool,
+) -> Result<crate::entities::InstanceBranding, sqlx::Error> {
+    sqlx::query_as::<_, crate::entities::InstanceBranding>(
+        "SELECT logo_data IS NOT NULL AS has_logo, logo_mime_type AS logo_content_type, \
+                favicon_data IS NOT NULL AS has_favicon, \
+                favicon_mime_type AS favicon_content_type, updated_at \
+         FROM instance_branding WHERE id = 1",
+    )
+    .fetch_one(pool)
+    .await
+}
+
+/// Loads one public instance brand asset.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the asset query cannot be completed.
+pub async fn get_instance_brand_asset(
+    pool: &SqlitePool,
+    asset: &str,
+) -> Result<Option<crate::entities::BrandAsset>, sqlx::Error> {
+    let query = match asset {
+        "logo" => {
+            "SELECT logo_mime_type AS mime_type, logo_data AS image_data, updated_at \
+             FROM instance_branding WHERE id = 1 AND logo_data IS NOT NULL"
+        }
+        "favicon" => {
+            "SELECT favicon_mime_type AS mime_type, favicon_data AS image_data, updated_at \
+             FROM instance_branding WHERE id = 1 AND favicon_data IS NOT NULL"
+        }
+        _ => return Ok(None),
+    };
+    sqlx::query_as::<_, crate::entities::BrandAsset>(query)
+        .fetch_optional(pool)
+        .await
+}
+
+/// Replaces one singleton instance brand asset and returns current public metadata.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the update or reload cannot be completed.
+pub async fn upsert_instance_brand_asset(
+    pool: &SqlitePool,
+    asset: &str,
+    mime_type: &str,
+    image_data: &[u8],
+) -> Result<crate::entities::InstanceBranding, sqlx::Error> {
+    let query = match asset {
+        "logo" => {
+            "UPDATE instance_branding SET logo_mime_type = ?, logo_data = ?, updated_at = ? \
+             WHERE id = 1"
+        }
+        "favicon" => {
+            "UPDATE instance_branding SET favicon_mime_type = ?, favicon_data = ?, updated_at = ? \
+             WHERE id = 1"
+        }
+        _ => return get_instance_branding(pool).await,
+    };
+    sqlx::query(query)
+        .bind(mime_type)
+        .bind(image_data)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(pool)
+        .await?;
+    get_instance_branding(pool).await
+}
+
+/// Removes one singleton instance brand asset and returns current public metadata.
+///
+/// # Errors
+///
+/// Returns the underlying `SQLx` error when the update or reload cannot be completed.
+pub async fn delete_instance_brand_asset(
+    pool: &SqlitePool,
+    asset: &str,
+) -> Result<crate::entities::InstanceBranding, sqlx::Error> {
+    let query = match asset {
+        "logo" => {
+            "UPDATE instance_branding SET logo_mime_type = NULL, logo_data = NULL, updated_at = ? \
+             WHERE id = 1"
+        }
+        "favicon" => {
+            "UPDATE instance_branding SET favicon_mime_type = NULL, favicon_data = NULL, \
+                    updated_at = ? WHERE id = 1"
+        }
+        _ => return get_instance_branding(pool).await,
+    };
+    sqlx::query(query)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(pool)
+        .await?;
+    get_instance_branding(pool).await
 }
 
 /// Loads the singleton processing controls for the public login background.

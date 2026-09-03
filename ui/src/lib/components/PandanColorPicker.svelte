@@ -521,10 +521,15 @@
     overflow: hidden;
     border: 1px solid color-mix(in oklch, var(--fg) 28%, var(--border));
     background:
-      linear-gradient(to top, oklch(0% 0 0), transparent),
+      linear-gradient(
+        to bottom,
+        oklch(100% 0 0),
+        transparent 50%,
+        oklch(0% 0 0)
+      ),
       linear-gradient(
         to right,
-        oklch(100% 0 0),
+        hsl(var(--picker-hue) 0% 50%),
         hsl(var(--picker-hue) 100% 50%)
       );
     touch-action: none;

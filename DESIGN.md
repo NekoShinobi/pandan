@@ -4,8 +4,9 @@ This file is the persistent visual and interaction contract for Pandan. Read it 
 
 ## Product language
 
-- Preserve the terminal visual system: near-black surfaces, restrained green accents, monospaced utility text, crisp borders, and translucent structure over wallpaper.
+- Preserve the terminal visual system: near-black surfaces, restrained account-selected highlights (green by default), monospaced utility text, crisp borders, and translucent structure over wallpaper.
 - Reuse shared tokens and control classes from `ui/src/app.css`; do not create isolated component palettes.
+- Terminal colors derive from the root `--highlight-base` palette. Feature scopes may consume `--accent`, `--muted`, `--border`, and the shared terminal tokens, but must not hard-code a replacement highlight family.
 - Interactive targets must be at least 44 px, keyboard accessible, visibly focused, and usable with reduced motion.
 
 ## Toggle switches

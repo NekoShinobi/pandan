@@ -207,6 +207,23 @@ pub struct LoginAppearance {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
+pub struct InstanceBranding {
+    pub has_logo: bool,
+    pub logo_content_type: Option<String>,
+    pub has_favicon: bool,
+    pub favicon_content_type: Option<String>,
+    #[serde(rename = "branding_updated_at")]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, FromRow, PartialEq, Eq)]
+pub struct BrandAsset {
+    pub mime_type: String,
+    pub image_data: Vec<u8>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
 pub struct NetworkAccessRule {
     pub id: String,
     pub action: String,
@@ -267,6 +284,7 @@ pub struct UserAppearance {
     pub background_brightness: i64,
     pub background_contrast: i64,
     pub background_saturation: i64,
+    pub highlight_color: String,
     pub updated_at: String,
 }
 
@@ -381,6 +399,7 @@ pub struct RssItem {
     pub base_url: String,
     pub url: String,
     pub comments_url: String,
+    pub has_image: bool,
     pub title: String,
     pub summary: String,
     pub published_at: String,
@@ -414,6 +433,8 @@ pub struct RssItemDraft {
     pub external_id: String,
     pub url: String,
     pub comments_url: String,
+    pub image_url: String,
+    pub xml_snippet: String,
     pub title: String,
     pub summary: String,
     pub published_at: String,

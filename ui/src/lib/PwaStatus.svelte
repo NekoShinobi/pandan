@@ -37,12 +37,12 @@
 
 <style>
   .pwa-status {
-    --pwa-bg: oklch(11% 0.012 165);
-    --pwa-surface: oklch(15% 0.014 165);
-    --pwa-fg: oklch(91% 0.016 150);
-    --pwa-muted: oklch(65% 0.02 155);
-    --pwa-border: oklch(38% 0.025 155);
-    --pwa-accent: oklch(79% 0.16 145);
+    --pwa-bg: var(--palette-terminal-bg);
+    --pwa-surface: var(--palette-terminal-surface);
+    --pwa-fg: var(--palette-terminal-fg);
+    --pwa-muted: var(--palette-terminal-muted);
+    --pwa-border: var(--palette-terminal-border);
+    --pwa-accent: var(--palette-highlight-on-dark);
     position: fixed;
     top: calc(max(12px, env(safe-area-inset-top)) + 76px);
     right: max(12px, env(safe-area-inset-right));

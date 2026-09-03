@@ -9,22 +9,26 @@
     fetchWidgetCapabilities,
     fetchWidgetData,
     fetchRssReader,
+    fetchYoutubeReader,
     setRssItemSaved,
     updateDashboardWidgetConfig,
     type DashboardWidget,
     type RssSubscription,
     type WidgetData,
     type WidgetDataItem,
+    type YoutubeGroup,
   } from "$lib/api";
 
   let {
     widget,
+    highlightColor,
     onUpdate,
     onToast,
     onOpenCalendarDate,
     onRegisterEditor,
   }: {
     widget: DashboardWidget;
+    highlightColor: string;
     onUpdate: (widget: DashboardWidget) => void;
     onToast: (message: string) => void;
     onOpenCalendarDate: (date: string) => void;
@@ -89,6 +93,13 @@
   let rssLimit = $state(24);
   let rssDensity = $state<"compact" | "comfortable">("compact");
   let rssSavingItemId = $state("");
+  let youtubeGroups = $state.raw<YoutubeGroup[]>([]);
+  let youtubeSubscriptionCount = $state(0);
+  let youtubeOptionsLoading = $state(false);
+  let youtubeOptionsError = $state("");
+  let youtubeScope = $state("");
+  let youtubeLimit = $state(10);
+  let youtubeDisplayStyle = $state<"grid" | "table">("grid");
   let now = $state(new Date());
 
   let isRemote = $derived(remoteKinds.has(widget.kind));
@@ -102,7 +113,7 @@
     const config = widget.config;
     switch (widget.kind) {
       case "youtube":
-        return hasList(config.channels) || hasList(config.playlists);
+        return hasText(config.youtube_scope);
       case "rss":
         return hasList(config.subscription_ids) || hasList(config.urls);
       case "reddit":
@@ -130,7 +141,13 @@
   let visibleItems = $derived(
     data?.items.slice(
       0,
-      widget.size === "compact" ? 3 : widget.size === "standard" ? 5 : 10,
+      widget.kind === "youtube"
+        ? Math.min(40, Math.max(1, Number(widget.config.limit) || 10))
+        : widget.size === "compact"
+          ? 3
+          : widget.size === "standard"
+            ? 5
+            : 10,
     ) ?? [],
   );
   let configuredTimezones = $derived(
@@ -157,7 +174,7 @@
       .reduce((count, day) => count + day.eventCount, 0),
   );
   let htmlDocument = $derived(
-    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>html{color-scheme:dark}body{margin:0;padding:18px;background:oklch(0.2 0.01 155);color:oklch(0.94 0.01 155);font:15px/1.55 ui-sans-serif,system-ui}a{color:inherit}</style>${String(widget.config.source ?? "")}`,
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>:root{--highlight-base:${highlightColor}}html{color-scheme:dark}body{margin:0;padding:18px;background:oklch(0.2 0.01 155);color:oklch(0.94 0.01 155);font:15px/1.55 ui-sans-serif,system-ui}a{color:inherit}@supports(color:oklch(from red l c h)){body{background:oklch(from var(--highlight-base) 0.2 min(c,0.01) calc(h + 10));color:oklch(from var(--highlight-base) 0.94 min(c,0.01) calc(h + 10))}}</style>${String(widget.config.source ?? "")}`,
   );
 
   onMount(() => {
@@ -341,20 +358,26 @@
     rssSelectedSubscriptionIds = [];
     rssLimit = 24;
     rssDensity = "compact";
+    youtubeGroups = [];
+    youtubeSubscriptionCount = 0;
+    youtubeOptionsError = "";
+    youtubeScope = "";
+    youtubeLimit = 10;
+    youtubeDisplayStyle = "grid";
     formError = "";
     switch (widget.kind) {
       case "youtube":
-        listPrimary = lines(config.channels);
-        listSecondary = lines(config.playlists);
-        toggleValue = config.include_shorts === true;
+        youtubeScope = String(config.youtube_scope ?? "");
+        youtubeLimit = Math.min(40, Math.max(1, Number(config.limit) || 10));
+        youtubeDisplayStyle =
+          config.display_style === "table" ? "table" : "grid";
+        void loadYoutubeOptions();
         break;
       case "rss":
         rssSelectedSubscriptionIds = stringArray(config.subscription_ids);
-        rssLimit = Math.min(
-          40,
-          Math.max(1, Number(config.limit) || 24),
-        );
-        rssDensity = config.density === "comfortable" ? "comfortable" : "compact";
+        rssLimit = Math.min(40, Math.max(1, Number(config.limit) || 24));
+        rssDensity =
+          config.density === "comfortable" ? "comfortable" : "compact";
         void loadRssSubscriptions(config);
         break;
       case "reddit":
@@ -401,6 +424,23 @@
     configDialog?.showModal();
   }
 
+  async function loadYoutubeOptions() {
+    youtubeOptionsLoading = true;
+    youtubeOptionsError = "";
+    try {
+      const reader = await fetchYoutubeReader();
+      youtubeGroups = reader.groups;
+      youtubeSubscriptionCount = reader.subscriptions.length;
+    } catch (reason: unknown) {
+      youtubeOptionsError =
+        reason instanceof Error
+          ? reason.message
+          : "YouTube categories could not be loaded";
+    } finally {
+      youtubeOptionsLoading = false;
+    }
+  }
+
   async function loadRssSubscriptions(config: Record<string, unknown>) {
     rssSubscriptionsLoading = true;
     rssSubscriptionsError = "";
@@ -440,10 +480,9 @@
     switch (widget.kind) {
       case "youtube":
         return {
-          channels: splitLines(listPrimary),
-          playlists: splitLines(listSecondary),
-          include_shorts: toggleValue,
-          limit: 20,
+          youtube_scope: youtubeScope,
+          limit: Math.min(40, Math.max(1, Math.round(youtubeLimit || 10))),
+          display_style: youtubeDisplayStyle,
         };
       case "rss":
         return {
@@ -508,6 +547,10 @@
     }
     if (widget.kind === "rss" && rssSelectedSubscriptionIds.length === 0) {
       formError = "Choose at least one RSS subscription.";
+      return;
+    }
+    if (widget.kind === "youtube" && !youtubeScope) {
+      formError = "Choose All channels or one YouTube category.";
       return;
     }
     if (widget.kind === "iframe" && !isSafeIframeUrl(textPrimary)) {
@@ -609,28 +652,11 @@
       rssSavingItemId = "";
     }
   }
-
 </script>
 
 <div class="integration-widget">
   <div class="integration-head">
-    <span class="widget-kicker">
-      {widget.kind === "youtube"
-        ? "YouTube uploads"
-        : widget.kind === "rss"
-          ? "RSS current"
-          : widget.kind === "reddit"
-            ? "Reddit"
-            : widget.kind === "stocks"
-              ? "Markets"
-              : widget.kind === "releases"
-                ? "Releases"
-                : widget.kind === "streams"
-                  ? "Live channels"
-                  : widget.kind === "bible-verse"
-                    ? "Daily verse"
-                    : widget.kind}
-    </span>
+    <h2 data-od-id={`integration-widget-title-${widget.id}`}>{displayName}</h2>
     {#if isRemote && isConfigured && widget.kind !== "rss"}
       <div class="integration-actions">
         <button
@@ -639,7 +665,9 @@
           disabled={loading || refreshing}
           onclick={() => loadData(true)}
           aria-label={`Refresh ${displayName}`}
-          title={loading || refreshing ? "Refreshing…" : `Refresh ${displayName}`}
+          title={loading || refreshing
+            ? "Refreshing…"
+            : `Refresh ${displayName}`}
           data-od-id={`refresh-widget-${widget.id}`}
         >
           <RefreshCw
@@ -673,9 +701,8 @@
           : "is waiting for its first refresh"}
       </span>
       <span>
-        {data.source_count ?? 0} {(data.source_count ?? 0) === 1
-          ? "source"
-          : "sources"}
+        {data.source_count ?? 0}
+        {(data.source_count ?? 0) === 1 ? "source" : "sources"}
         {#if data.stale_source_count}
           · {data.stale_source_count} need attention
         {:else if data.pending_source_count}
@@ -692,7 +719,9 @@
       data-od-id={`widget-setup-${widget.id}`}
     >
       <strong>Not configured</strong>
-      <span>Enter Edit layout, right-click this widget, and choose Edit widget.</span>
+      <span
+        >Enter Edit layout, right-click this widget, and choose Edit widget.</span
+      >
     </div>
   {:else if widget.kind === "clock"}
     <div class="clock-grid">
@@ -812,34 +841,66 @@
   {:else if widget.kind !== "rss" && isDataBacked && data && visibleItems.length === 0}
     <div class="integration-zero" role="status">
       <strong>No matching items</strong>
-      <span>The latest provider response did not contain anything to show.</span>
+      <span>The latest provider response did not contain anything to show.</span
+      >
     </div>
   {:else if widget.kind === "youtube"}
-    <div class="video-grid">
-      {#each visibleItems as item (item.url)}
-        <!-- eslint-disable svelte/no-navigation-without-resolve -- provider-supplied external URL -->
-        <a
-          class="video-card"
-          href={openItem(item)}
-          target="_blank"
-          rel="noreferrer"
-        >
-          {#if item.thumbnail}
-            <img
-              src={item.thumbnail}
-              alt=""
-              loading="lazy"
-              referrerpolicy="no-referrer"
-            />
-          {/if}
-          <span>
-            <strong>{item.title}</strong>
-            <small>{item.source} · {formatRelative(item.published_at)}</small>
-          </span>
-        </a>
-        <!-- eslint-enable svelte/no-navigation-without-resolve -->
-      {/each}
-    </div>
+    {#if widget.config.display_style === "table"}
+      <div
+        class="youtube-widget-table"
+        data-od-id={`youtube-widget-table-${widget.id}`}
+      >
+        {#each visibleItems as item (item.id ?? item.url)}
+          <!-- eslint-disable svelte/no-navigation-without-resolve -- stored YouTube destination -->
+          <a
+            class="youtube-widget-row"
+            href={openItem(item)}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {#if item.thumbnail}
+              <img
+                src={item.thumbnail}
+                alt=""
+                loading="lazy"
+                referrerpolicy="no-referrer"
+              />
+            {/if}
+            <span>
+              <strong>{item.title}</strong>
+              <small>{item.source} · {formatRelative(item.published_at)}</small>
+            </span>
+          </a>
+          <!-- eslint-enable svelte/no-navigation-without-resolve -->
+        {/each}
+      </div>
+    {:else}
+      <div class="video-grid" data-od-id={`youtube-widget-grid-${widget.id}`}>
+        {#each visibleItems as item (item.id ?? item.url)}
+          <!-- eslint-disable svelte/no-navigation-without-resolve -- stored YouTube destination -->
+          <a
+            class="video-card"
+            href={openItem(item)}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {#if item.thumbnail}
+              <img
+                src={item.thumbnail}
+                alt=""
+                loading="lazy"
+                referrerpolicy="no-referrer"
+              />
+            {/if}
+            <span>
+              <strong>{item.title}</strong>
+              <small>{item.source} · {formatRelative(item.published_at)}</small>
+            </span>
+          </a>
+          <!-- eslint-enable svelte/no-navigation-without-resolve -->
+        {/each}
+      </div>
+    {/if}
   {:else if widget.kind === "rss"}
     <div
       class={[
@@ -894,7 +955,9 @@
               aria-label={item.saved_at
                 ? `Remove ${item.title} from Read Later`
                 : `Save ${item.title} to Read Later`}
-              title={item.saved_at ? "Remove from Read Later" : "Save to Read Later"}
+              title={item.saved_at
+                ? "Remove from Read Later"
+                : "Save to Read Later"}
               onclick={() => toggleRssSaved(item)}
             >
               <Bookmark
@@ -1014,35 +1077,64 @@
       <p class="field-note">Shown in edit mode and the widget action menu.</p>
 
       {#if widget.kind === "youtube"}
-        <label for={`channels-${widget.id}`}>Channel IDs</label>
-        <textarea id={`channels-${widget.id}`} bind:value={listPrimary} rows="4"
-        ></textarea>
+        <label for={`youtube-scope-${widget.id}`}>Uploads source</label>
+        {#if youtubeOptionsLoading}
+          <p class="rss-widget-source-state" role="status">
+            Loading YouTube categories…
+          </p>
+        {:else if youtubeOptionsError}
+          <p class="form-error" role="alert">{youtubeOptionsError}</p>
+        {:else if youtubeSubscriptionCount === 0}
+          <p class="rss-widget-source-state">
+            Follow channels from the YouTube page before configuring this
+            widget.
+          </p>
+        {:else}
+          <select id={`youtube-scope-${widget.id}`} bind:value={youtubeScope}>
+            <option value="">Choose a source…</option>
+            <option value="all">All channels</option>
+            {#if youtubeGroups.length > 0}
+              <optgroup label="Categories">
+                {#each youtubeGroups as group (group.id)}
+                  <option value={group.id}>{group.name}</option>
+                {/each}
+              </optgroup>
+            {/if}
+          </select>
+        {/if}
         <p class="field-note">
-          One UC… channel ID per line. Uploads-only feeds exclude Shorts by
-          default, matching Glance.
+          Uses the subscriptions and categories already managed in YouTube.
         </p>
-        <label for={`playlists-${widget.id}`}>Playlist IDs</label>
-        <textarea
-          id={`playlists-${widget.id}`}
-          bind:value={listSecondary}
-          rows="3"></textarea>
-        <button
-          class="ui-toggle-button switch-row"
-          type="button"
-          aria-pressed={toggleValue}
-          onclick={() => (toggleValue = !toggleValue)}
-        >
-          <span class="ui-toggle-indicator" aria-hidden="true"
-            >{#if toggleValue}<Check size={13} />{/if}</span
-          >
-          <span>Include Shorts when channel feeds support them</span>
-        </button>
+        <div class="youtube-widget-display-settings">
+          <label for={`youtube-limit-${widget.id}`}>
+            <span>Number of videos</span>
+            <input
+              id={`youtube-limit-${widget.id}`}
+              type="number"
+              min="1"
+              max="40"
+              step="1"
+              bind:value={youtubeLimit}
+            />
+          </label>
+          <label for={`youtube-style-${widget.id}`}>
+            <span>Display style</span>
+            <select
+              id={`youtube-style-${widget.id}`}
+              bind:value={youtubeDisplayStyle}
+            >
+              <option value="grid">Grid</option>
+              <option value="table">Table</option>
+            </select>
+          </label>
+        </div>
       {:else if widget.kind === "rss"}
         <div class="rss-widget-source-heading">
           <div>
             <span class="rss-widget-source-label">Subscriptions</span>
             <p class="field-note">
-              The dashboard reads the latest background-cached snapshot. It never fetches feeds on demand.
+              The dashboard reads the latest background-cached snapshot. It
+              never fetches feeds on demand.
             </p>
           </div>
           {#if rssSubscriptions.length > 0}
@@ -1062,7 +1154,9 @@
           {/if}
         </div>
         {#if rssSubscriptionsLoading}
-          <p class="rss-widget-source-state" role="status">Loading subscriptions…</p>
+          <p class="rss-widget-source-state" role="status">
+            Loading subscriptions…
+          </p>
         {:else if rssSubscriptionsError}
           <p class="form-error" role="alert">{rssSubscriptionsError}</p>
         {:else if rssSubscriptions.length === 0}
@@ -1070,17 +1164,24 @@
             Add a feed from the RSS page before configuring this widget.
           </p>
         {:else}
-          <div class="rss-widget-source-picker" data-od-id={`rss-widget-sources-${widget.id}`}>
+          <div
+            class="rss-widget-source-picker"
+            data-od-id={`rss-widget-sources-${widget.id}`}
+          >
             {#each rssSubscriptions as subscription (subscription.id)}
               <button
                 class="ui-toggle-button rss-widget-source-option"
                 type="button"
-                aria-pressed={rssSelectedSubscriptionIds.includes(subscription.id)}
+                aria-pressed={rssSelectedSubscriptionIds.includes(
+                  subscription.id,
+                )}
                 onclick={() => toggleRssSubscription(subscription.id)}
               >
                 <span class="ui-toggle-indicator" aria-hidden="true"></span>
                 <span>
-                  <strong>{subscription.custom_name || subscription.title}</strong>
+                  <strong
+                    >{subscription.custom_name || subscription.title}</strong
+                  >
                   <small>{subscription.category}</small>
                 </span>
               </button>
@@ -1090,7 +1191,13 @@
         <div class="rss-widget-display-settings">
           <label for={`rss-limit-${widget.id}`}>
             <span>Cached item limit</span>
-            <input id={`rss-limit-${widget.id}`} type="number" min="1" max="40" bind:value={rssLimit} />
+            <input
+              id={`rss-limit-${widget.id}`}
+              type="number"
+              min="1"
+              max="40"
+              bind:value={rssLimit}
+            />
           </label>
           <label for={`rss-density-${widget.id}`}>
             <span>Row density</span>

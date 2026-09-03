@@ -362,6 +362,8 @@ the attempt without bytes so the interface stays on the packaged panel icon unti
 
 One Main background appearance record per user. A trigger creates the default row with each
 account. Values are intentionally bounded so the wallpaper remains usable behind terminal surfaces.
+The highlight is a normalized six-digit color used as the base for the account's derived terminal
+palette.
 
 | Column                  | Type    | Constraints                                         |
 | ----------------------- | ------- | --------------------------------------------------- |
@@ -370,6 +372,7 @@ account. Values are intentionally bounded so the wallpaper remains usable behind
 | `background_brightness` | INTEGER | Brightness percentage from 40–140                   |
 | `background_contrast`   | INTEGER | Contrast percentage from 50–160                     |
 | `background_saturation` | INTEGER | Saturation percentage from 0–180                    |
+| `highlight_color`       | TEXT    | Required `#RRGGBB` color; defaults to Pandan green  |
 | `updated_at`            | TEXT    | Required, RFC 3339 timestamp                        |
 
 ## `login_appearance`
@@ -386,6 +389,27 @@ may update them. They are independent from every account's Main background proce
 | `background_contrast`   | INTEGER | Contrast percentage from 50–160   |
 | `background_saturation` | INTEGER | Saturation percentage from 0–180  |
 | `updated_at`            | TEXT    | Required, RFC 3339 timestamp      |
+
+## `instance_branding`
+
+Singleton public brand assets for the instance. Only administrators may replace or remove these
+bytes. The logo is shown in the signed-out and authenticated application chrome, while the favicon
+is applied to the browser document. Both fall back to the packaged Pandan assets when absent. SVG is
+not accepted, so the instance never serves administrator-supplied active image content from its own
+origin.
+
+| Column                 | Type    | Constraints                                               |
+| ---------------------- | ------- | --------------------------------------------------------- |
+| `id`                   | INTEGER | Primary key; singleton value `1`                          |
+| `logo_mime_type`       | TEXT    | Nullable AVIF, JPEG, PNG, or WebP media type               |
+| `logo_data`            | BLOB    | Nullable image bytes, 1 byte through 10 MiB                |
+| `favicon_mime_type`    | TEXT    | Nullable AVIF, JPEG, PNG, or WebP media type               |
+| `favicon_data`         | BLOB    | Nullable image bytes, 1 byte through 1 MiB                 |
+| `updated_at`           | TEXT    | Required, RFC 3339 timestamp                               |
+
+Each asset's media type and bytes are either both null or both present. Branding metadata is exposed
+through the public authentication bootstrap, and the image endpoints use same-origin, no-sniff
+responses with revalidation.
 
 ## `sessions`
 
@@ -659,7 +683,13 @@ snapshot entries in Current; the limit defaults to 25 and may be set from 1 thro
 Fetched reader entries owned through their subscription. Refresh upserts by the source's stable
 identifier and preserves `read_at`. Automatic retention runs when the reader loads or a source
 refreshes; manual pruning can remove old read-only or all entries across one user's subscriptions.
-Entries may retain separate article and discussion destinations. Entries saved in `rss_read_later`
+Entries may retain separate article and discussion destinations plus one optional image destination
+discovered from structured media metadata, image enclosures, or feed-provided HTML. Image bytes are
+not stored in this table; the authenticated reader fetches them on demand through the RSS network
+policy so the browser never hotlinks the remote source. Each refresh also stores a bounded source
+`item` or `entry` XML fragment for the authenticated developer viewer instead of returning the full
+feed document. Reddit's JSON-backed listing path stores an explicitly labeled normalized XML
+representation because no upstream XML is fetched. Entries saved in `rss_read_later`
 are excluded from both automatic retention and manual pruning. Entries stamped with the
 subscription's latest successful generation are ranked newest-first. The configured latest entries
 form its Current projection and are also protected from retention while the source still exposes them.
@@ -671,6 +701,8 @@ form its Current projection and are also protected from retention while the sour
 | `external_id`          | TEXT    | Required, unique within the subscription            |
 | `url`                  | TEXT    | Entry destination, empty when omitted by the feed   |
 | `comments_url`         | TEXT    | Discussion destination, empty when omitted          |
+| `image_url`            | TEXT    | Remote image destination, empty when omitted        |
+| `xml_snippet`          | TEXT    | Bounded source fragment, empty before next refresh  |
 | `title`                | TEXT    | Required, trimmed length 1–500                      |
 | `summary`              | TEXT    | Required, defaults to an empty string               |
 | `published_at`         | TEXT    | RFC 3339; fetch time is used when the feed omits it |

@@ -151,6 +151,12 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
 - Main and Login background processing are separate appearance records with the same bounded blur,
   brightness, contrast, and saturation controls. Main is personal and editable by every account;
   Login is global, publicly readable for signed-out rendering, and administrator-writable only.
+- Each account owns one highlight base color. The browser derives the terminal accent, tinted
+  neutrals, borders, and on-accent foreground from that base; do not restore hard-coded green
+  variants inside individual feature scopes.
+- The instance logo and favicon are administrator-managed raster assets stored in SQLite and
+  publicly readable for signed-out chrome. Keep SVG unsupported, bound logo uploads to 10 MB and
+  favicon uploads to 1 MB, and retain the packaged Pandan fallbacks when either asset is absent.
 - For an existing authenticated session, render the Welcome loading overlay in the initial server response so the dashboard surface never flashes before the boot transition.
 - Wallpaper formats are JPEG, PNG, WebP, and AVIF, with a 30 MB limit.
 - Avatars are private, per user, use the same image formats, and have a 10 MB limit. An OIDC `picture` claim may initialize a missing avatar through the guarded server-fetch policy, but must never replace an existing avatar or block login when fetching fails.

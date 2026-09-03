@@ -1,0 +1,2 @@
+ALTER TABLE rss_items
+ADD COLUMN xml_snippet TEXT NOT NULL DEFAULT '';

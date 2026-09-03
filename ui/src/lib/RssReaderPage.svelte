@@ -3,6 +3,8 @@
   import Bookmark from "lucide-svelte/icons/bookmark";
   import Copy from "lucide-svelte/icons/copy";
   import ExternalLink from "lucide-svelte/icons/external-link";
+  import FileCode2 from "lucide-svelte/icons/file-code-2";
+  import ImageIcon from "lucide-svelte/icons/image";
   import Inbox from "lucide-svelte/icons/inbox";
   import MessageCircle from "lucide-svelte/icons/message-circle";
   import Plus from "lucide-svelte/icons/plus";
@@ -17,8 +19,10 @@
     createRssSubscription,
     deleteRssSubscription,
     fetchRssReader,
+    fetchRssItemXmlSnippet,
     pruneRssItems,
     refreshRssSubscription,
+    rssItemImageUrl,
     setRssItemRead,
     setRssItemSaved,
     updateRssSubscription,
@@ -52,7 +56,21 @@
   let subscriptionUrlInput = $state<HTMLInputElement>();
   let pruneDialog = $state<HTMLDialogElement>();
   let itemDialog = $state<HTMLDialogElement>();
+  let itemImageDialog = $state<HTMLDialogElement>();
+  let itemContextDialog = $state<HTMLDialogElement>();
+  let itemXmlDialog = $state<HTMLDialogElement>();
   let selectedItemId = $state<string | null>(null);
+  let imageItemId = $state<string | null>(null);
+  let xmlItemId = $state<string | null>(null);
+  let contextItem = $state.raw<RssReaderItem | null>(null);
+  let contextDialogX = $state(0);
+  let contextDialogY = $state(0);
+  let imageLoaded = $state(false);
+  let imageLoadFailed = $state(false);
+  let xmlSnippet = $state("");
+  let xmlSnippetError = $state("");
+  let xmlSnippetLoading = $state(false);
+  let xmlSnippetCopied = $state(false);
   let editingSubscriptionId = $state<string | null>(null);
   let feedSourceKind = $state<FeedSourceKind>("feed");
   let feedUrl = $state("");
@@ -126,6 +144,12 @@
   );
   let selectedItem = $derived(
     reader.items.find((item) => item.id === selectedItemId) ?? null,
+  );
+  let imageItem = $derived(
+    reader.items.find((item) => item.id === imageItemId) ?? null,
+  );
+  let xmlItem = $derived(
+    reader.items.find((item) => item.id === xmlItemId) ?? null,
   );
   let selectedItemContent = $derived(
     selectedItem ? plainText(selectedItem.summary) : "",
@@ -207,6 +231,27 @@
     itemDialog = node;
     return () => {
       itemDialog = undefined;
+    };
+  }
+
+  function captureItemImageDialog(node: HTMLDialogElement) {
+    itemImageDialog = node;
+    return () => {
+      itemImageDialog = undefined;
+    };
+  }
+
+  function captureItemContextDialog(node: HTMLDialogElement) {
+    itemContextDialog = node;
+    return () => {
+      itemContextDialog = undefined;
+    };
+  }
+
+  function captureItemXmlDialog(node: HTMLDialogElement) {
+    itemXmlDialog = node;
+    return () => {
+      itemXmlDialog = undefined;
     };
   }
 
@@ -424,6 +469,124 @@
 
   function closeItemDialog() {
     itemDialog?.close();
+  }
+
+  function openItemImage(item: RssReaderItem) {
+    imageItemId = item.id;
+    imageLoaded = false;
+    imageLoadFailed = false;
+    itemImageDialog?.showModal();
+  }
+
+  function closeItemImage() {
+    itemImageDialog?.close();
+  }
+
+  function resetItemImage() {
+    imageItemId = null;
+    imageLoaded = false;
+    imageLoadFailed = false;
+  }
+
+  function openItemContext(item: RssReaderItem, event: MouseEvent) {
+    event.preventDefault();
+    if (itemContextDialog?.open) {
+      closeItemContext();
+      return;
+    }
+    const menuWidth = 244;
+    const menuHeight = 58;
+    const inset = 12;
+    contextItem = item;
+    contextDialogX = Math.max(
+      inset,
+      Math.min(event.clientX, window.innerWidth - menuWidth - inset),
+    );
+    contextDialogY = Math.max(
+      inset,
+      Math.min(event.clientY, window.innerHeight - menuHeight - inset),
+    );
+    itemContextDialog?.showModal();
+  }
+
+  function openItemContextFromKeyboard(
+    item: RssReaderItem,
+    event: KeyboardEvent,
+  ) {
+    if (
+      event.key !== "ContextMenu" &&
+      !(event.shiftKey && event.key === "F10")
+    ) {
+      return;
+    }
+    event.preventDefault();
+    const trigger = event.currentTarget;
+    if (!(trigger instanceof HTMLElement)) return;
+    const rect = trigger.getBoundingClientRect();
+    openItemContext(
+      item,
+      new MouseEvent("contextmenu", {
+        clientX: rect.left + Math.min(rect.width - 12, 36),
+        clientY: rect.top + Math.min(rect.height - 12, 36),
+      }),
+    );
+  }
+
+  function closeItemContext() {
+    itemContextDialog?.close();
+  }
+
+  function resetItemContext() {
+    contextItem = null;
+  }
+
+  async function openItemXmlSnippet() {
+    if (!contextItem) return;
+    const item = contextItem;
+    closeItemContext();
+    xmlItemId = item.id;
+    xmlSnippet = "";
+    xmlSnippetError = "";
+    xmlSnippetLoading = true;
+    xmlSnippetCopied = false;
+    await tick();
+    itemXmlDialog?.showModal();
+    try {
+      const response = await fetchRssItemXmlSnippet(item.id);
+      if (xmlItemId === item.id) xmlSnippet = response.xml;
+    } catch (reason: unknown) {
+      if (xmlItemId !== item.id) return;
+      xmlSnippetError =
+        reason instanceof Error && reason.message.includes("not found")
+          ? "No XML snippet is stored for this item yet. Refresh its source and try again."
+          : reason instanceof Error
+            ? reason.message
+            : "Unable to load this item's XML snippet.";
+    } finally {
+      if (xmlItemId === item.id) xmlSnippetLoading = false;
+    }
+  }
+
+  function closeItemXmlSnippet() {
+    itemXmlDialog?.close();
+  }
+
+  function resetItemXmlSnippet() {
+    xmlItemId = null;
+    xmlSnippet = "";
+    xmlSnippetError = "";
+    xmlSnippetLoading = false;
+    xmlSnippetCopied = false;
+  }
+
+  async function copyItemXmlSnippet() {
+    if (!xmlSnippet) return;
+    try {
+      await navigator.clipboard.writeText(xmlSnippet);
+      xmlSnippetCopied = true;
+    } catch {
+      xmlSnippetError = "Unable to copy the XML snippet.";
+    }
   }
 
   function articleDestination(item: RssReaderItem) {
@@ -729,11 +892,15 @@
         </div>
       {:else}
         {#each filteredItems as item (item.id)}
-          <article class={["rss-item", item.read_at && "is-read"]}>
+          <article
+            class={["rss-item", item.read_at && "is-read"]}
+            oncontextmenu={(event) => openItemContext(item, event)}
+          >
             <button
               class="rss-item-open"
               type="button"
               onclick={() => openItemDetail(item)}
+              onkeydown={(event) => openItemContextFromKeyboard(item, event)}
               aria-label={`Open details for ${item.title}`}
               data-od-id={`rss-item-${item.id}`}
             >
@@ -769,6 +936,18 @@
                   aria-hidden="true"
                 />
               </button>
+              {#if item.has_image}
+                <button
+                  class="rss-item-action"
+                  type="button"
+                  aria-label={`View the image associated with ${item.title}`}
+                  title="View image"
+                  onclick={() => openItemImage(item)}
+                  data-od-id={`rss-view-image-${item.id}`}
+                >
+                  <ImageIcon size={16} strokeWidth={1.8} aria-hidden="true" />
+                </button>
+              {/if}
               {#if item.comments_url}
                 <button
                   class="rss-item-action"
@@ -1018,6 +1197,154 @@
             <ExternalLink size={15} strokeWidth={1.8} aria-hidden="true" />
           </button>
         {/if}
+      </footer>
+    {/if}
+  </dialog>
+
+  <dialog
+    class="rss-dialog rss-image-dialog"
+    {@attach captureItemImageDialog}
+    aria-labelledby="rss-image-dialog-title"
+    onclose={resetItemImage}
+    onclick={(event) => event.target === itemImageDialog && closeItemImage()}
+    data-od-id="rss-item-image-dialog"
+  >
+    {#if imageItem}
+      <header>
+        <div>
+          <span>[ FEED.MEDIA ]</span>
+          <h2 id="rss-image-dialog-title">{imageItem.title}</h2>
+        </div>
+        <button
+          class="ui-button ui-button--ghost ui-button--icon"
+          type="button"
+          aria-label="Close feed image"
+          onclick={closeItemImage}
+        >
+          <X size={18} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+      </header>
+      <div class="rss-image-stage">
+        {#if imageLoadFailed}
+          <div class="rss-image-error" role="status">
+            <ImageIcon size={28} strokeWidth={1.5} aria-hidden="true" />
+            <strong>Image unavailable</strong>
+            <p>The feed image could not be loaded through Pandan's network policy.</p>
+          </div>
+        {:else}
+          {#if !imageLoaded}
+            <span class="rss-image-loading" role="status">Loading feed image…</span>
+          {/if}
+          <img
+            class:ready={imageLoaded}
+            src={rssItemImageUrl(imageItem.id)}
+            alt={`Associated feed image for ${imageItem.title}`}
+            onload={() => (imageLoaded = true)}
+            onerror={() => (imageLoadFailed = true)}
+          />
+        {/if}
+      </div>
+    {/if}
+  </dialog>
+
+  <dialog
+    class="ui-dialog rss-context-dialog"
+    {@attach captureItemContextDialog}
+    style:--context-x={`${contextDialogX}px`}
+    style:--context-y={`${contextDialogY}px`}
+    aria-label="RSS listing developer actions"
+    onclose={resetItemContext}
+    onclick={(event) => event.target === event.currentTarget && closeItemContext()}
+    oncontextmenu={(event) => {
+      event.preventDefault();
+      closeItemContext();
+    }}
+    data-od-id="rss-item-context-dialog"
+  >
+    {#if contextItem}
+      <div class="rss-context-actions" role="group">
+        <button
+          type="button"
+          onclick={openItemXmlSnippet}
+          data-od-id="rss-view-item-xml"
+        >
+          <FileCode2 size={16} strokeWidth={1.8} aria-hidden="true" />
+          View XML snippet
+        </button>
+      </div>
+    {/if}
+  </dialog>
+
+  <dialog
+    class="rss-dialog rss-xml-dialog"
+    {@attach captureItemXmlDialog}
+    aria-labelledby="rss-xml-dialog-title"
+    onclose={resetItemXmlSnippet}
+    onclick={(event) => event.target === itemXmlDialog && closeItemXmlSnippet()}
+    data-od-id="rss-item-xml-dialog"
+  >
+    {#if xmlItem}
+      <header>
+        <div>
+          <span>[ FEED.XML.ITEM ]</span>
+          <h2 id="rss-xml-dialog-title">{xmlItem.title}</h2>
+        </div>
+        <button
+          class="ui-button ui-button--ghost ui-button--icon"
+          type="button"
+          aria-label="Close XML snippet"
+          onclick={closeItemXmlSnippet}
+        >
+          <X size={18} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+      </header>
+      <div class="rss-xml-stage">
+        {#if xmlSnippetLoading}
+          <div class="rss-xml-state" role="status">
+            <RefreshCw class="rss-loading-icon" size={22} strokeWidth={1.5} aria-hidden="true" />
+            <span>Loading XML snippet…</span>
+          </div>
+        {:else if xmlSnippetError && !xmlSnippet}
+          <div class="rss-xml-state" role="alert">
+            <FileCode2 size={24} strokeWidth={1.5} aria-hidden="true" />
+            <span>{xmlSnippetError}</span>
+          </div>
+        {:else}
+          <textarea
+            readonly
+            spellcheck="false"
+            aria-label="RSS item XML snippet"
+            value={xmlSnippet}
+          ></textarea>
+          {#if xmlSnippetError}
+            <p class="rss-xml-copy-error" role="alert">{xmlSnippetError}</p>
+          {/if}
+        {/if}
+      </div>
+      <footer class="rss-xml-actions">
+        <span>Only this listing’s stored source fragment is shown.</span>
+        <div>
+          <button
+            class="ui-button ui-button--secondary rss-secondary-button"
+            type="button"
+            disabled={xmlSnippetLoading || !xmlSnippet}
+            onclick={copyItemXmlSnippet}
+            data-od-id="rss-copy-item-xml"
+          >
+            {#if xmlSnippetCopied}
+              <Check size={15} strokeWidth={2} aria-hidden="true" />
+              Copied
+            {:else}
+              <Copy size={15} strokeWidth={1.8} aria-hidden="true" />
+              Copy snippet
+            {/if}
+          </button>
+          <button
+            class="ui-button ui-button--secondary rss-secondary-button"
+            type="button"
+            onclick={closeItemXmlSnippet}
+          >Close</button>
+        </div>
       </footer>
     {/if}
   </dialog>
@@ -1358,6 +1685,12 @@
   .rss-item-action:hover { border-color: var(--fg); background: var(--page-surface, var(--surface)); color: var(--fg); }
   .rss-item-action:active { transform: translateY(1px); }
   .rss-item-action.is-active { color: var(--fg); }
+  .rss-context-dialog::backdrop { background: color-mix(in oklch, var(--bg) 12%, transparent); backdrop-filter: none; }
+  .rss-context-dialog { position: fixed; inset: auto; top: var(--context-y); left: var(--context-x); width: min(244px, calc(100vw - 24px)); margin: 0; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 0; background: color-mix(in oklch, var(--surface) 98%, var(--bg)); color: var(--fg); box-shadow: 0 24px 64px color-mix(in oklch, var(--bg) 76%, transparent); }
+  .rss-context-actions { display: grid; padding: 5px; }
+  .rss-context-actions button { min-height: 44px; display: flex; align-items: center; gap: 9px; padding: 0 11px; border: 1px solid transparent; color: var(--fg); font-family: var(--font-mono); font-size: 10px; letter-spacing: .02em; text-align: left; }
+  .rss-context-actions button:hover:not(:disabled) { border-color: var(--fg); background: var(--fg); color: var(--surface); }
+  .rss-context-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .rss-source-list { border: 1px solid var(--border); }
   .rss-source { padding: 14px; border-bottom: 1px solid var(--border); }
   .rss-source:last-child { border-bottom: 0; }
@@ -1472,6 +1805,27 @@
   .rss-detail-content .rss-detail-empty { color: var(--muted); }
   .rss-detail-destination { overflow-wrap: anywhere; color: var(--muted); font-family: var(--font-mono); font-size: 9px; line-height: 1.5; }
   .rss-detail-actions { justify-content: space-between; padding: 14px 22px; border-top: 1px solid var(--border); }
+  .rss-image-dialog { width: min(1000px, calc(100vw - 32px)); overflow: hidden; }
+  .rss-image-dialog[open] { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+  .rss-image-dialog header h2 { max-width: 34ch; overflow: hidden; font-size: 20px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+  .rss-image-stage { position: relative; min-height: 260px; display: grid; place-items: center; overflow: auto; padding: 18px; background: var(--bg); }
+  .rss-image-stage img { display: block; width: auto; height: auto; max-width: 100%; max-height: calc(100dvh - 170px); object-fit: contain; opacity: 0; transition: opacity 150ms var(--ease-out); }
+  .rss-image-stage img.ready { opacity: 1; }
+  .rss-image-loading { color: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .04em; }
+  .rss-image-error { display: grid; place-items: center; gap: 7px; max-width: 42ch; color: var(--muted); text-align: center; }
+  .rss-image-error strong { color: var(--fg); font-family: var(--font-display); font-size: 18px; font-weight: 600; }
+  .rss-image-error p { margin: 0; font-size: 11px; line-height: 1.5; }
+  .rss-xml-dialog { width: min(900px, calc(100vw - 32px)); overflow: hidden; }
+  .rss-xml-dialog[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+  .rss-xml-dialog header h2 { max-width: 34ch; overflow: hidden; font-size: 20px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+  .rss-xml-stage { min-height: 300px; display: grid; overflow: auto; padding: 18px; background: var(--bg); scrollbar-gutter: stable; }
+  .rss-xml-stage textarea { width: 100%; min-height: 264px; margin: 0; padding: 16px; resize: none; border: 1px solid var(--border); background: var(--page-surface, var(--surface)); color: var(--fg); font-family: var(--font-mono); font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; tab-size: 2; white-space: pre-wrap; }
+  .rss-xml-stage textarea:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
+  .rss-xml-state { min-height: 264px; display: grid; place-items: center; align-content: center; gap: 9px; color: var(--muted); font-family: var(--font-mono); font-size: 10px; text-align: center; }
+  .rss-xml-copy-error { margin: 12px 0 0; color: var(--fg); font-family: var(--font-mono); font-size: 10px; }
+  .rss-xml-actions { justify-content: space-between; padding: 14px 18px max(14px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); }
+  .rss-xml-actions > span { color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
+  .rss-xml-actions > div { display: flex; align-items: center; gap: 8px; }
   .rss-form-error { padding: 10px; border: 1px solid color-mix(in oklch, var(--fg) 28%, var(--border)); background: var(--fg-soft); color: var(--fg); font-size: 11px; }
   .rss-prune-copy { color: var(--muted); font-size: 12px; line-height: 1.55; }
   @media (max-width: 920px) {
@@ -1499,6 +1853,9 @@
     .rss-dialog footer { flex-wrap: wrap; }
     .rss-dialog footer button { flex: 1; }
     .rss-dialog footer .rss-danger-button:first-child { flex-basis: 100%; margin-right: 0; }
+    .rss-xml-actions { align-items: stretch; flex-direction: column; }
+    .rss-xml-actions > div { width: 100%; }
+    .rss-xml-actions > div button { flex: 1; }
     .rss-reddit-options { grid-template-columns: 1fr; }
     .rss-feed-identity-grid { grid-template-columns: 1fr; }
     .rss-setting-indicators { grid-template-columns: 1fr; }
@@ -1509,5 +1866,6 @@
   @media (prefers-reduced-motion: reduce) {
     :global(.rss-loading-icon) { animation: none; }
     .rss-help-tooltip { transition: none; }
+    .rss-image-stage img { transition: none; }
   }
 </style>

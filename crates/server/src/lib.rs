@@ -11,10 +11,10 @@ use argon2::{
 use chrono::{Datelike, Duration as ChronoDuration, Utc};
 use db::entities::{
     AuthenticationSettings, Bookmark, CalendarEvent, CalendarSubscription, CodingProject, Contact,
-    DashboardWidget, DashboardWidgetTemplateSlot, FeedItem, JournalNode, LoginAppearance,
-    ManagedUser, PaymentSubscription, RssItem, RssItemDraft, RssRefreshTarget, RssSubscription,
-    RssSubscriptionDraft, SessionAccount, Task, TaskCompletion, TaskDraft, TaskSubtaskDraft, User,
-    UserAppearance, UserSettings,
+    DashboardWidget, DashboardWidgetTemplateSlot, FeedItem, InstanceBranding, JournalNode,
+    LoginAppearance, ManagedUser, PaymentSubscription, RssItem, RssItemDraft, RssRefreshTarget,
+    RssSubscription, RssSubscriptionDraft, SessionAccount, Task, TaskCompletion, TaskDraft,
+    TaskSubtaskDraft, User, UserAppearance, UserSettings,
 };
 use futures_util::future::join_all;
 use rand_core::OsRng;
@@ -67,8 +67,12 @@ const SESSION_DAYS: i64 = 30;
 const OIDC_AUTHORIZATION_MINUTES: i64 = 10;
 const MAX_WALLPAPER_BYTES: usize = 30 * 1024 * 1024;
 const MAX_AVATAR_BYTES: usize = 10 * 1024 * 1024;
+const MAX_BRAND_LOGO_BYTES: usize = 10 * 1024 * 1024;
+const MAX_BRAND_FAVICON_BYTES: usize = 1024 * 1024;
 const MAX_WIDGET_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TASK_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
+const MAX_RSS_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_RSS_XML_SNIPPET_CHARS: usize = 50_000;
 const RSS_REFRESH_MINUTES: i64 = 30;
 const RSS_REFRESH_BATCH_SIZE: usize = 100;
 const RSS_REFRESH_SPACING_SECONDS: u64 = 1;
@@ -118,6 +122,11 @@ pub struct AuthenticationConfigResponse {
     pub login_background_brightness: i64,
     pub login_background_contrast: i64,
     pub login_background_saturation: i64,
+    pub has_logo: bool,
+    pub logo_content_type: Option<String>,
+    pub has_favicon: bool,
+    pub favicon_content_type: Option<String>,
+    pub branding_updated_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -307,6 +316,11 @@ pub struct UpdateAppearanceRequest {
     pub background_brightness: i64,
     pub background_contrast: i64,
     pub background_saturation: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UpdateHighlightColorRequest {
+    pub highlight_color: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -611,6 +625,11 @@ pub struct RssReaderResponse {
     pub items: Vec<RssItem>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RssItemXmlSnippetResponse {
+    pub xml: String,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateRssSubscriptionRequest {
     pub url: String,
@@ -873,6 +892,7 @@ fn authentication_config_response(
     state: &AppState,
     settings: AuthenticationSettings,
     appearance: LoginAppearance,
+    branding: InstanceBranding,
 ) -> AuthenticationConfigResponse {
     AuthenticationConfigResponse {
         password_login_enabled: settings.password_login_enabled || state.oidc.is_none(),
@@ -884,18 +904,24 @@ fn authentication_config_response(
         login_background_brightness: appearance.background_brightness,
         login_background_contrast: appearance.background_contrast,
         login_background_saturation: appearance.background_saturation,
+        has_logo: branding.has_logo,
+        logo_content_type: branding.logo_content_type,
+        has_favicon: branding.has_favicon,
+        favicon_content_type: branding.favicon_content_type,
+        branding_updated_at: branding.updated_at,
     }
 }
 
 async fn authentication_config(
     state: web::Data<AppState>,
 ) -> Result<web::Json<AuthenticationConfigResponse>, ApiError> {
-    let (settings, appearance) = tokio::try_join!(
+    let (settings, appearance, branding) = tokio::try_join!(
         db::queries::get_authentication_settings(&state.pool),
         db::queries::get_login_appearance(&state.pool),
+        db::queries::get_instance_branding(&state.pool),
     )?;
     Ok(web::Json(authentication_config_response(
-        &state, settings, appearance,
+        &state, settings, appearance, branding,
     )))
 }
 
@@ -1504,6 +1530,11 @@ async fn widget_data(
             .await
             .map(web::Json);
     }
+    if widget.kind == "youtube" {
+        return youtube_widget_data(&state, &account.id, &widget)
+            .await
+            .map(web::Json);
+    }
     if query.refresh {
         state.widget_integrations.clear_cache(&widget_id).await;
     }
@@ -1515,6 +1546,79 @@ async fn widget_data(
         .await
         .map(web::Json)
         .map_err(ApiError::Integration)
+}
+
+async fn youtube_widget_data(
+    state: &AppState,
+    user_id: &str,
+    widget: &DashboardWidget,
+) -> Result<Value, ApiError> {
+    let scope = widget.config["youtube_scope"]
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ApiError::Integration(
+                "Choose All channels or one YouTube category for this widget".to_owned(),
+            )
+        })?;
+    let (videos, groups, memberships, subscriptions) = tokio::try_join!(
+        db::queries::list_youtube_videos(&state.pool, user_id),
+        db::queries::list_youtube_groups(&state.pool, user_id),
+        db::queries::list_youtube_group_channels(&state.pool, user_id),
+        db::queries::list_youtube_subscriptions(&state.pool, user_id),
+    )?;
+    let selected_channel_ids = if scope == "all" {
+        None
+    } else {
+        if !groups.iter().any(|group| group.id == scope) {
+            return Err(ApiError::Integration(
+                "The selected YouTube category no longer exists".to_owned(),
+            ));
+        }
+        Some(
+            memberships
+                .iter()
+                .filter(|membership| membership.group_id == scope)
+                .map(|membership| membership.channel_id.clone())
+                .collect::<HashSet<_>>(),
+        )
+    };
+    let limit = widget.config["limit"]
+        .as_u64()
+        .map_or(10, |value| value.clamp(1, 40) as usize);
+    let items = videos
+        .into_iter()
+        .filter(|video| {
+            selected_channel_ids
+                .as_ref()
+                .is_none_or(|channel_ids| channel_ids.contains(&video.channel_id))
+        })
+        .take(limit)
+        .map(|video| {
+            serde_json::json!({
+                "id": video.id,
+                "title": video.title,
+                "url": video.url,
+                "source": video.channel_title,
+                "thumbnail": video.thumbnail_url,
+                "published_at": video.published_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    let refreshed_at = subscriptions
+        .iter()
+        .filter_map(|subscription| subscription.last_fetched_at.as_ref())
+        .max()
+        .cloned();
+    let source_count = selected_channel_ids
+        .as_ref()
+        .map_or(subscriptions.len(), HashSet::len);
+    Ok(serde_json::json!({
+        "items": items,
+        "refreshed_at": refreshed_at,
+        "source_count": source_count,
+    }))
 }
 
 async fn rss_widget_data(
@@ -2264,6 +2368,19 @@ async fn update_appearance(
     ))
 }
 
+async fn update_highlight_color(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    payload: web::Json<UpdateHighlightColorRequest>,
+) -> Result<web::Json<UserAppearance>, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    let highlight_color = normalize_highlight_color(&payload.highlight_color)?;
+    Ok(web::Json(
+        db::queries::update_user_highlight_color(&state.pool, &account.id, &highlight_color)
+            .await?,
+    ))
+}
+
 async fn update_login_appearance(
     state: web::Data<AppState>,
     request: HttpRequest,
@@ -2289,6 +2406,98 @@ async fn update_login_appearance(
         )
         .await?,
     ))
+}
+
+fn normalize_highlight_color(value: &str) -> Result<String, ApiError> {
+    let candidate = value.trim();
+    if candidate.len() != 7
+        || !candidate.starts_with('#')
+        || !candidate.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+    {
+        return Err(ApiError::BadRequest(
+            "highlight color must use #RRGGBB hexadecimal notation",
+        ));
+    }
+    Ok(candidate.to_ascii_uppercase())
+}
+
+async fn get_brand_asset(
+    state: web::Data<AppState>,
+    asset: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let asset = validate_brand_asset(&asset)?;
+    let image = db::queries::get_instance_brand_asset(&state.pool, asset)
+        .await?
+        .ok_or(ApiError::NotFound("brand asset not found"))?;
+    Ok(HttpResponse::Ok()
+        .insert_header((header::CONTENT_TYPE, image.mime_type))
+        .insert_header((header::CACHE_CONTROL, "public, no-cache"))
+        .insert_header(("X-Content-Type-Options", "nosniff"))
+        .insert_header(("Cross-Origin-Resource-Policy", "same-origin"))
+        .insert_header((header::ETAG, format!("\"{}\"", image.updated_at)))
+        .body(image.image_data))
+}
+
+async fn update_brand_asset(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    asset: web::Path<String>,
+    image_data: web::Bytes,
+) -> Result<web::Json<InstanceBranding>, ApiError> {
+    let administrator = authenticated_administrator(&state, &request).await?;
+    let asset = validate_brand_asset(&asset)?;
+    let (limit, label) = if asset == "favicon" {
+        (MAX_BRAND_FAVICON_BYTES, "favicon")
+    } else {
+        (MAX_BRAND_LOGO_BYTES, "logo")
+    };
+    if image_data.is_empty() || image_data.len() > limit {
+        return Err(ApiError::BadRequest(if asset == "favicon" {
+            "favicon image must be between 1 byte and 1 MB"
+        } else {
+            "logo image must be between 1 byte and 10 MB"
+        }));
+    }
+    let mime_type = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .ok_or(ApiError::BadRequest("brand image type is required"))?;
+    validate_image_upload(mime_type, &image_data, label)?;
+    let branding =
+        db::queries::upsert_instance_brand_asset(&state.pool, asset, mime_type, &image_data)
+            .await?;
+    info!(
+        actor_user_id = %administrator.id,
+        brand_asset = asset,
+        "administrator updated instance branding"
+    );
+    Ok(web::Json(branding))
+}
+
+async fn delete_brand_asset(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    asset: web::Path<String>,
+) -> Result<web::Json<InstanceBranding>, ApiError> {
+    let administrator = authenticated_administrator(&state, &request).await?;
+    let asset = validate_brand_asset(&asset)?;
+    let branding = db::queries::delete_instance_brand_asset(&state.pool, asset).await?;
+    info!(
+        actor_user_id = %administrator.id,
+        brand_asset = asset,
+        "administrator removed instance branding"
+    );
+    Ok(web::Json(branding))
+}
+
+fn validate_brand_asset(asset: &str) -> Result<&str, ApiError> {
+    if matches!(asset, "logo" | "favicon") {
+        Ok(asset)
+    } else {
+        Err(ApiError::BadRequest("brand asset is invalid"))
+    }
 }
 
 async fn get_login_wallpaper(state: web::Data<AppState>) -> Result<HttpResponse, ApiError> {
@@ -2454,6 +2663,8 @@ fn validate_image_upload(
             return Err(ApiError::BadRequest(match image_label {
                 "avatar" => "avatar image type is not supported",
                 "contact photo" => "contact photo type is not supported",
+                "logo" => "logo image type is not supported",
+                "favicon" => "favicon image type is not supported",
                 "wall" => "wall image type is not supported",
                 "announcement image" => "announcement image type is not supported",
                 "widget image" => "widget image type is not supported",
@@ -2467,6 +2678,8 @@ fn validate_image_upload(
         Err(ApiError::BadRequest(match image_label {
             "avatar" => "avatar image content does not match its type",
             "contact photo" => "contact photo content does not match its type",
+            "logo" => "logo image content does not match its type",
+            "favicon" => "favicon image content does not match its type",
             "wall" => "wall image content does not match its type",
             "announcement image" => "announcement image content does not match its type",
             "widget image" => "widget image content does not match its type",
@@ -2946,12 +3159,13 @@ async fn get_authentication_settings(
     request: HttpRequest,
 ) -> Result<web::Json<AuthenticationConfigResponse>, ApiError> {
     authenticated_administrator(&state, &request).await?;
-    let (settings, appearance) = tokio::try_join!(
+    let (settings, appearance, branding) = tokio::try_join!(
         db::queries::get_authentication_settings(&state.pool),
         db::queries::get_login_appearance(&state.pool),
+        db::queries::get_instance_branding(&state.pool),
     )?;
     Ok(web::Json(authentication_config_response(
-        &state, settings, appearance,
+        &state, settings, appearance, branding,
     )))
 }
 
@@ -2980,9 +3194,12 @@ async fn update_authentication_settings(
         oidc_registration_enabled = settings.oidc_registration_enabled,
         "administrator updated authentication policy"
     );
-    let appearance = db::queries::get_login_appearance(&state.pool).await?;
+    let (appearance, branding) = tokio::try_join!(
+        db::queries::get_login_appearance(&state.pool),
+        db::queries::get_instance_branding(&state.pool),
+    )?;
     Ok(web::Json(authentication_config_response(
-        &state, settings, appearance,
+        &state, settings, appearance, branding,
     )))
 }
 
@@ -3299,6 +3516,45 @@ async fn set_rss_item_read(
         .ok_or(ApiError::NotFound("RSS item not found"))
 }
 
+async fn get_rss_item_image(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    item_id: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    let image_url = db::queries::get_rss_item_image_url(&state.pool, &account.id, &item_id)
+        .await?
+        .ok_or(ApiError::NotFound("RSS item image not found"))?;
+    let (mime_type, image_data) = state
+        .widget_integrations
+        .fetch_rss_item_image(&image_url, MAX_RSS_IMAGE_BYTES)
+        .await
+        .map_err(ApiError::Integration)?;
+
+    Ok(HttpResponse::Ok()
+        .insert_header((header::CONTENT_TYPE, mime_type))
+        .insert_header((header::CACHE_CONTROL, "private, no-store"))
+        .insert_header(("X-Content-Type-Options", "nosniff"))
+        .insert_header(("Cross-Origin-Resource-Policy", "same-origin"))
+        .body(image_data))
+}
+
+async fn get_rss_item_xml_snippet(
+    state: web::Data<AppState>,
+    request: HttpRequest,
+    item_id: web::Path<String>,
+) -> Result<web::Json<RssItemXmlSnippetResponse>, ApiError> {
+    let account = authenticated_account(&state, &request).await?;
+    db::queries::get_rss_item_xml_snippet(&state.pool, &account.id, &item_id)
+        .await?
+        .map(|xml| {
+            web::Json(RssItemXmlSnippetResponse {
+                xml: widget_integrations::format_rss_xml_snippet(&xml),
+            })
+        })
+        .ok_or(ApiError::NotFound("RSS item XML snippet not found"))
+}
+
 async fn set_rss_item_saved(
     state: web::Data<AppState>,
     request: HttpRequest,
@@ -3352,6 +3608,8 @@ async fn fetch_rss_snapshot(
             external_id: truncate_text(item.external_id.trim(), 2048, &item.published_at),
             url: truncate_text(item.url.trim(), 2048, ""),
             comments_url: truncate_text(item.comments_url.trim(), 2048, ""),
+            image_url: truncate_text(item.image_url.trim(), 2048, ""),
+            xml_snippet: truncate_text(item.xml_snippet.trim(), MAX_RSS_XML_SNIPPET_CHARS, ""),
             title: truncate_text(item.title.trim(), 500, "Untitled"),
             summary: truncate_text(item.summary.trim(), 10_000, ""),
             published_at: item.published_at,
@@ -4073,6 +4331,10 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
                 "/appearance/login-wallpaper",
                 web::get().to(get_login_wallpaper),
             )
+            .route(
+                "/appearance/branding/{asset}",
+                web::get().to(get_brand_asset),
+            )
             .route("/dashboard", web::get().to(dashboard))
             .configure(announcements::configure)
             .configure(bookmark_library::configure)
@@ -4118,6 +4380,10 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
                 web::delete().to(delete_user_content),
             )
             .route("/settings/appearance", web::put().to(update_appearance))
+            .route(
+                "/settings/appearance/highlight",
+                web::put().to(update_highlight_color),
+            )
             .service(
                 web::resource("/settings/avatar")
                     .app_data(web::PayloadConfig::new(MAX_AVATAR_BYTES))
@@ -4144,6 +4410,12 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
             .route(
                 "/admin/appearance/login",
                 web::put().to(update_login_appearance),
+            )
+            .service(
+                web::resource("/admin/branding/{asset}")
+                    .app_data(web::PayloadConfig::new(MAX_BRAND_LOGO_BYTES))
+                    .route(web::put().to(update_brand_asset))
+                    .route(web::delete().to(delete_brand_asset)),
             )
             .route("/admin/users/{user_id}", web::patch().to(update_user_role))
             .route("/admin/users/{user_id}", web::delete().to(delete_user))
@@ -4181,6 +4453,14 @@ pub fn configure_api(config: &mut web::ServiceConfig) {
                 web::post().to(refresh_rss_subscription),
             )
             .route("/rss/items/{item_id}", web::patch().to(set_rss_item_read))
+            .route(
+                "/rss/items/{item_id}/image",
+                web::get().to(get_rss_item_image),
+            )
+            .route(
+                "/rss/items/{item_id}/xml",
+                web::get().to(get_rss_item_xml_snippet),
+            )
             .route(
                 "/rss/items/{item_id}/read-later",
                 web::put().to(set_rss_item_saved),
@@ -4574,6 +4854,117 @@ mod tests {
             .expect("session cookie is set")
             .clone()
             .into_owned()
+    }
+
+    #[actix_web::test]
+    async fn branding_is_admin_managed_and_highlights_are_account_scoped() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state(test_pool().await))
+                .configure(configure_api),
+        )
+        .await;
+        let setup = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/setup")
+                .set_json(RegisterRequest {
+                    email: "branding-admin@example.com".to_owned(),
+                    password: "correct horse battery staple".to_owned(),
+                    display_name: "Branding Admin".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        let administrator_cookie = session_cookie(&setup);
+        let registration = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/api/auth/register")
+                .set_json(RegisterRequest {
+                    email: "branding-member@example.com".to_owned(),
+                    password: "correct horse battery staple".to_owned(),
+                    display_name: "Branding Member".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        let member_cookie = session_cookie(&registration);
+        let png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+        let branding: InstanceBranding = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::put()
+                .uri("/api/admin/branding/logo")
+                .cookie(administrator_cookie)
+                .insert_header((header::CONTENT_TYPE, "image/png"))
+                .set_payload(png.clone())
+                .to_request(),
+        )
+        .await;
+        assert!(branding.has_logo);
+
+        let public_logo = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/appearance/branding/logo")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(public_logo.status(), StatusCode::OK);
+        assert_eq!(
+            public_logo.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+        assert_eq!(test::read_body(public_logo).await.as_ref(), png);
+
+        let forbidden = test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri("/api/admin/branding/favicon")
+                .cookie(member_cookie.clone())
+                .insert_header((header::CONTENT_TYPE, "image/png"))
+                .set_payload(png)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+        let appearance: UserAppearance = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::put()
+                .uri("/api/settings/appearance/highlight")
+                .cookie(member_cookie.clone())
+                .set_json(UpdateHighlightColorRequest {
+                    highlight_color: "#3366cc".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        assert_eq!(appearance.highlight_color, "#3366CC");
+
+        let invalid = test::call_service(
+            &app,
+            test::TestRequest::put()
+                .uri("/api/settings/appearance/highlight")
+                .cookie(member_cookie)
+                .set_json(UpdateHighlightColorRequest {
+                    highlight_color: "green".to_owned(),
+                })
+                .to_request(),
+        )
+        .await;
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+
+        let config: AuthenticationConfigResponse = test::call_and_read_body_json(
+            &app,
+            test::TestRequest::get()
+                .uri("/api/auth/config")
+                .to_request(),
+        )
+        .await;
+        assert!(config.has_logo);
+        assert!(!config.has_favicon);
     }
 
     #[actix_web::test]

@@ -2,6 +2,7 @@
   import RotateCcw from "lucide-svelte/icons/rotate-ccw";
   import { onDestroy, untrack } from "svelte";
   import {
+    brandAssetUrl,
     deleteWallpaper,
     updateAppearance,
     updateLoginAppearance,
@@ -104,6 +105,11 @@
   let fileLabel = $derived(
     file?.name ??
       (useDefault || !hasCustom ? "Wired terminal default" : "Custom image"),
+  );
+  let logoSource = $derived(
+    authConfig.has_logo
+      ? brandAssetUrl("logo", authConfig.branding_updated_at)
+      : "",
   );
 
   onDestroy(() => {
@@ -223,7 +229,13 @@
         data-od-id="main-page-image-preview"
       >
         <div class="main-preview-rail" aria-hidden="true">
-          <b>P&gt;</b>
+          <b>
+            {#if logoSource}
+              <img src={logoSource} alt="" />
+            {:else}
+              P&gt;
+            {/if}
+          </b>
           <i></i><i></i><i></i><i></i>
         </div>
         <div class="main-preview-canvas" aria-hidden="true">
@@ -252,7 +264,13 @@
         data-od-id="login-page-image-preview"
       >
         <div class="login-preview-brand" aria-hidden="true">
-          <span>P&gt;</span>
+          <span>
+            {#if logoSource}
+              <img src={logoSource} alt="" />
+            {:else}
+              P&gt;
+            {/if}
+          </span>
           <strong>PANDAN</strong>
         </div>
         <div class="login-preview-context" aria-hidden="true">

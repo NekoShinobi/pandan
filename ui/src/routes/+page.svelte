@@ -57,11 +57,13 @@
   } from "$lib/paymentSchedule";
   import { MediaQuery, SvelteMap, SvelteSet } from "svelte/reactivity";
   import AnimatedList from "$lib/components/AnimatedList.svelte";
+  import PandanColorPicker from "$lib/components/PandanColorPicker.svelte";
   import PandanDatePicker from "$lib/components/PandanDatePicker.svelte";
   import AnnouncementsPage from "$lib/AnnouncementsPage.svelte";
   import AudioVisualization from "$lib/AudioVisualization.svelte";
   import AudioVisualizationControl from "$lib/AudioVisualizationControl.svelte";
   import BackgroundSettings from "$lib/BackgroundSettings.svelte";
+  import BrandingSettings from "$lib/BrandingSettings.svelte";
   import BookmarksPage from "$lib/BookmarksPage.svelte";
   import PrismaticBurst from "$lib/components/PrismaticBurst.svelte";
   import CalendarPage from "$lib/CalendarPage.svelte";
@@ -103,6 +105,7 @@
   import {
     applyDashboardTemplate,
     archiveTask,
+    brandAssetUrl,
     bookmarkFaviconUrl,
     clearCompletedTasks,
     cloneTask,
@@ -136,6 +139,7 @@
     updateAuthenticationSettings,
     updateAvatar,
     updateDashboardWidgetLayout,
+    updateHighlightColor,
     updateManagedUserRole,
     updateUserSettings,
     uploadTaskAttachment,
@@ -148,6 +152,7 @@
     type DashboardWidget,
     type EmbeddedPage as EmbeddedPageRecord,
     type EmbeddedPagesResponse,
+    type InstanceBranding,
     type ManagedUser,
     type LoginAppearance,
     type KanbanSection,
@@ -165,6 +170,7 @@
     type WidgetKind,
     type WidgetSize,
   } from "$lib/api";
+  import type { ColorPreset, HexColor } from "$lib/color";
   import type { PageData } from "./$types";
 
   type AuthMode = "login" | "register";
@@ -236,6 +242,46 @@
     count: number;
     colors: string[];
   };
+
+  const defaultHighlightColor = "#72D577" as HexColor;
+  const highlightColorPresets: readonly ColorPreset[] = [
+    { value: defaultHighlightColor, label: "Pandan green" },
+    { value: "#35B9D0", label: "Signal cyan" },
+    { value: "#5F91F2", label: "Terminal blue" },
+    { value: "#A985F5", label: "Violet" },
+    { value: "#E36F9A", label: "Rose" },
+    { value: "#E69A45", label: "Amber" },
+  ];
+
+  function mixHexColor(
+    base: HexColor,
+    target: HexColor,
+    targetWeight: number,
+  ): HexColor {
+    const channel = (source: HexColor, offset: number) =>
+      Number.parseInt(source.slice(offset, offset + 2), 16);
+    const mixed = [1, 3, 5]
+      .map((offset) =>
+        Math.round(
+          channel(base, offset) * (1 - targetWeight) +
+            channel(target, offset) * targetWeight,
+        )
+          .toString(16)
+          .padStart(2, "0"),
+      )
+      .join("");
+    return `#${mixed}` as HexColor;
+  }
+
+  function deriveFocusBurstColors(base: HexColor): string[] {
+    return [
+      mixHexColor(base, "#050706", 0.94),
+      base,
+      mixHexColor(base, "#FFFFFF", 0.48),
+      "#395fff",
+      "#c87dff",
+    ];
+  }
 
   const settingsGroups: SettingsGroup[] = [
     {
@@ -376,12 +422,7 @@
   let { data }: { data: PageData } = $props();
 
   type WidgetCatalogGroup =
-    | "Layout"
-    | "Planning"
-    | "Information"
-    | "Media"
-    | "Integrations"
-    | "Custom";
+    "Layout" | "Planning" | "Information" | "Media" | "Integrations" | "Custom";
   type WidgetMode = { size: WidgetSize; label: string };
   type WidgetCatalogItem = {
     kind: WidgetKind;
@@ -568,12 +609,13 @@
     {
       kind: "youtube",
       title: "YouTube uploads",
-      description: "Channel and playlist uploads using feed-based discovery.",
+      description:
+        "Recent uploads from all subscribed channels or one existing YouTube category.",
       defaultMode: "wide",
       modes: [
-        { size: "compact", label: "3 uploads" },
-        { size: "standard", label: "5 uploads" },
-        { size: "wide", label: "10 uploads" },
+        { size: "compact", label: "Single column" },
+        { size: "standard", label: "Balanced" },
+        { size: "wide", label: "Gallery" },
       ],
       group: "Integrations",
     },
@@ -891,6 +933,11 @@
   let welcomeLeaving = $state(false);
   let welcomeAnimationReady = $state(false);
   let dashboard = $derived(data.dashboard);
+  let highlightColor = $derived(
+    (dashboard?.appearance.highlight_color ??
+      defaultHighlightColor) as HexColor,
+  );
+  let focusBurstColors = $derived(deriveFocusBurstColors(highlightColor));
   let activeEmbeddedPage = $derived.by<EmbeddedPageRecord | null>(() => {
     if (activePage.kind !== "embedded") return null;
     return (
@@ -971,6 +1018,7 @@
     $state<UserSettings["temperature_unit"]>("celsius");
   let settingsLinesDefaultVisibility =
     $state<UserSettings["lines_default_visibility"]>("public");
+  let settingsHighlightColor = $state<HexColor>(defaultHighlightColor);
   // The shell owns the single audio element so playback survives section changes.
   let podcastAudio = $state<HTMLAudioElement>();
   let podcastVolumeOpen = $state(false);
@@ -1010,9 +1058,8 @@
   let searchEngine = $state<SearchEngineId>("duckduckgo");
   let widgetLibraryDialog = $state<HTMLDialogElement>();
   let dashboardTemplateDialog = $state<HTMLDialogElement>();
-  let selectedDashboardTemplateId = $state<DashboardTemplateId>(
-    "daily-overview",
-  );
+  let selectedDashboardTemplateId =
+    $state<DashboardTemplateId>("daily-overview");
   let applyingDashboardTemplate = $state(false);
   let dashboardTemplateError = $state("");
   let selectedDashboardTemplate = $derived(
@@ -1948,6 +1995,37 @@
     if (!loaded && source !== fallback) {
       await preloadImage(fallback);
     }
+  }
+
+  $effect(() => {
+    document.documentElement.style.setProperty(
+      "--highlight-base",
+      highlightColor,
+    );
+  });
+
+  $effect(() => {
+    const favicon = document.getElementById(
+      "pandan-favicon",
+    ) as HTMLLinkElement | null;
+    if (!favicon) return;
+    if (authConfig.has_favicon) {
+      favicon.href = brandAssetUrl("favicon", authConfig.branding_updated_at);
+      favicon.sizes.value = "any";
+      if (authConfig.favicon_content_type) {
+        favicon.type = authConfig.favicon_content_type;
+      } else {
+        favicon.removeAttribute("type");
+      }
+      return;
+    }
+    favicon.href = "/favicon-32.png";
+    favicon.sizes.value = "32x32";
+    favicon.type = "image/png";
+  });
+
+  function brandLogoUrl() {
+    return brandAssetUrl("logo", authConfig.branding_updated_at);
   }
 
   function refreshPrivateWallpaperRevisions() {
@@ -3339,6 +3417,7 @@
     settingsTemperatureUnit = dashboard.settings.temperature_unit;
     settingsLinesDefaultVisibility =
       dashboard.settings.lines_default_visibility;
+    settingsHighlightColor = dashboard.appearance.highlight_color as HexColor;
     settingsError = "";
     destructiveError = "";
     pendingContentDeletion = null;
@@ -3401,6 +3480,10 @@
       login_background_contrast: appearance.background_contrast,
       login_background_saturation: appearance.background_saturation,
     };
+  }
+
+  function applyInstanceBranding(branding: InstanceBranding) {
+    authConfig = { ...authConfig, ...branding };
   }
 
   function refreshSettingsWallpaper(
@@ -3553,15 +3636,18 @@
     savingSettings = true;
     settingsError = "";
     try {
-      const settings = await updateUserSettings({
-        display_name: dashboard.settings.display_name,
-        location: settingsLocation,
-        timezone: settingsTimezone,
-        calendar_week_start: settingsCalendarWeekStart,
-        temperature_unit: settingsTemperatureUnit,
-        lines_default_visibility: settingsLinesDefaultVisibility,
-      });
-      dashboard = { ...dashboard, settings };
+      const [settings, appearance] = await Promise.all([
+        updateUserSettings({
+          display_name: dashboard.settings.display_name,
+          location: settingsLocation,
+          timezone: settingsTimezone,
+          calendar_week_start: settingsCalendarWeekStart,
+          temperature_unit: settingsTemperatureUnit,
+          lines_default_visibility: settingsLinesDefaultVisibility,
+        }),
+        updateHighlightColor(settingsHighlightColor),
+      ]);
+      dashboard = { ...dashboard, settings, appearance };
       showToast("Preferences saved");
     } catch (reason: unknown) {
       settingsError =
@@ -4097,7 +4183,13 @@
     aria-live="polite"
     data-od-id="account-loading-screen"
   >
-    <div class="welcome-monogram" aria-hidden="true">P&gt;</div>
+    <div class="welcome-monogram" aria-hidden="true">
+      {#if authConfig.has_logo}
+        <img src={brandLogoUrl()} alt="" />
+      {:else}
+        P&gt;
+      {/if}
+    </div>
     <div class="welcome-copy">
       <strong>Welcome:{loadingWelcomeDisplayName}</strong>
       <div class="welcome-loading-track" aria-hidden="true"><i></i></div>
@@ -4119,7 +4211,13 @@
     data-od-id="administrator-onboarding"
   >
     <div class="auth-brand" aria-label="Pandan">
-      <span class="auth-brand-glyph" aria-hidden="true">P&gt;</span>
+      <span class="auth-brand-glyph" aria-hidden="true">
+        {#if authConfig.has_logo}
+          <img src={brandLogoUrl()} alt="" />
+        {:else}
+          P&gt;
+        {/if}
+      </span>
       <span>PANDAN</span>
     </div>
     <aside class="auth-context" aria-labelledby="setup-context-title">
@@ -4256,7 +4354,13 @@
     data-od-id="login-page"
   >
     <div class="auth-brand" aria-label="Pandan">
-      <span class="auth-brand-glyph" aria-hidden="true">P&gt;</span>
+      <span class="auth-brand-glyph" aria-hidden="true">
+        {#if authConfig.has_logo}
+          <img src={brandLogoUrl()} alt="" />
+        {:else}
+          P&gt;
+        {/if}
+      </span>
       <span>PANDAN</span>
     </div>
     <aside class="auth-context" aria-labelledby="auth-context-title">
@@ -4443,7 +4547,13 @@
         data-sidebar-title="Pandan dashboard"
         data-sidebar-description="Return to your personal dashboard overview."
       >
-        <span class="brand-glyph">P&gt;</span>
+        <span class="brand-glyph">
+          {#if authConfig.has_logo}
+            <img src={brandLogoUrl()} alt="" />
+          {:else}
+            P&gt;
+          {/if}
+        </span>
         <span class="brand-word">PANDAN / OS</span>
       </button>
       <span id="sidebar-desc-brand" class="sr-only"
@@ -4886,6 +4996,7 @@
                         <DashboardWidgetCard
                           {widget}
                           editing={layoutEditing}
+                          {highlightColor}
                           {tasks}
                           settings={dashboard.settings}
                           {completedCount}
@@ -6031,6 +6142,28 @@
                                 </label>
                               </div>
 
+                              <div
+                                class="highlight-color-setting"
+                                data-od-id="highlight-color-setting"
+                              >
+                                <div>
+                                  <strong>Interface highlight</strong>
+                                  <p>
+                                    Choose the base signal color for this
+                                    account. Pandan derives readable accents,
+                                    borders, and tinted terminal surfaces from
+                                    it.
+                                  </p>
+                                </div>
+                                <PandanColorPicker
+                                  id="settings-highlight"
+                                  label="Highlight color"
+                                  helpText="Choose a preset or enter an exact six-digit color."
+                                  presets={highlightColorPresets}
+                                  bind:value={settingsHighlightColor}
+                                />
+                              </div>
+
                               {#if settingsError}
                                 <p class="form-error" role="alert">
                                   {settingsError}
@@ -6448,6 +6581,11 @@
                         </section>
                       {:else if settingsCategory === "instance-settings" && dashboard.user.role === "administrator"}
                         <div class="settings-section-stack">
+                          <BrandingSettings
+                            branding={authConfig}
+                            onSaved={applyInstanceBranding}
+                            onToast={showToast}
+                          />
                           <section
                             class="authentication-policy"
                             aria-labelledby="authentication-policy-title"
@@ -7087,7 +7225,7 @@
           intensity={burstIntensity}
           speed={burstSpeed}
           animationType="hover"
-          colors={["#07140f", "#47dba2", "#9af7d6", "#395fff", "#c87dff"]}
+          colors={focusBurstColors}
           distort={burstDistort}
           paused={burstPaused}
           hoverDampness={burstHoverDampness}
@@ -7858,7 +7996,9 @@
     </div>
     <div class="widget-library-groups">
       {#each widgetCatalogGroups as group (group)}
-        {@const groupItems = widgetCatalog.filter((item) => item.group === group)}
+        {@const groupItems = widgetCatalog.filter(
+          (item) => item.group === group,
+        )}
         <section
           class="widget-library-group"
           data-od-id={`widget-library-${group.toLowerCase()}`}

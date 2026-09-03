@@ -19,6 +19,11 @@ export const load: PageLoad = async ({ fetch }) => {
       login_background_brightness: 78,
       login_background_contrast: 108,
       login_background_saturation: 72,
+      has_logo: false,
+      logo_content_type: null,
+      has_favicon: false,
+      favicon_content_type: null,
+      branding_updated_at: "default",
     })),
   ]);
   if (setup.required) {
