@@ -521,6 +521,7 @@ pub struct JournalNode {
     pub parent_id: Option<String>,
     pub name: String,
     pub content: String,
+    pub emoji: Option<String>,
     pub position: i64,
     pub created_at: String,
     pub updated_at: String,

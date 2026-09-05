@@ -227,7 +227,7 @@
     }>;
   };
   type TaskDueGroup = {
-    id: "today" | "this-week" | "next-week" | "later" | "never";
+    id: "overdue" | "today" | "this-week" | "this-month" | "future" | "never";
     label: string;
     range: string;
     tasks: Task[];
@@ -1176,6 +1176,7 @@
       filteredActiveTasks,
       currentTime,
       dashboard?.settings.timezone || "UTC",
+      dashboard?.settings.calendar_week_start ?? "sunday",
     ),
   );
   let profileInitials = $derived(
@@ -1760,56 +1761,120 @@
     return Math.round((dueDay - referenceDay) / 86_400_000);
   }
 
+  // The largest whole unit only: a task 3 years and 2 months out reads
+  // "3 years", never a compound span. Months are counted on the calendar
+  // rather than by dividing days, so the same day of a later month is a
+  // whole month regardless of how long that month happens to be.
+  function taskDueDistance(dueDate: string, reference: Date, timezone: string) {
+    const days = taskDayDistance(dueDate, reference, timezone);
+    if (days === 0) return { days: 0, unit: "day" as const, value: 0 };
+
+    const [dueYear, dueMonth, dueDay] = dueDate.split("-").map(Number);
+    const today = dateInTimezone(reference, timezone);
+    const earlier =
+      days > 0
+        ? {
+            year: today.getFullYear(),
+            month: today.getMonth() + 1,
+            day: today.getDate(),
+          }
+        : { year: dueYear, month: dueMonth, day: dueDay };
+    const later =
+      days > 0
+        ? { year: dueYear, month: dueMonth, day: dueDay }
+        : {
+            year: today.getFullYear(),
+            month: today.getMonth() + 1,
+            day: today.getDate(),
+          };
+
+    let months =
+      (later.year - earlier.year) * 12 + (later.month - earlier.month);
+    if (later.day < earlier.day) months -= 1;
+    const years = Math.floor(months / 12);
+
+    if (years >= 1) return { days, unit: "year" as const, value: years };
+    if (months >= 1) return { days, unit: "month" as const, value: months };
+    return { days, unit: "day" as const, value: Math.abs(days) };
+  }
+
   function groupTasksByDueDate(
     items: Task[],
     reference: Date,
     timezone: string,
+    weekStart: UserSettings["calendar_week_start"],
   ): TaskDueGroup[] {
     const groups: TaskDueGroup[] = [
       {
+        id: "overdue",
+        label: "Overdue",
+        range: "Past the due date",
+        tasks: [],
+      },
+      {
         id: "today",
-        label: "Due today",
-        range: "Today and earlier",
+        label: "Due Today",
+        range: "Due before the day ends",
         tasks: [],
       },
       {
         id: "this-week",
-        label: "Due in less than a week",
-        range: "Tomorrow through day 6",
+        label: "Due This Week",
+        range: "Before this week ends",
         tasks: [],
       },
       {
-        id: "next-week",
-        label: "Due next week",
-        range: "7–13 days away",
+        id: "this-month",
+        label: "Due This Month",
+        range: "Before this month ends",
         tasks: [],
       },
       {
-        id: "later",
-        label: "Due later",
-        range: "14 or more days away",
+        id: "future",
+        label: "Future",
+        range: "Beyond this month",
         tasks: [],
       },
       {
         id: "never",
-        label: "Never due",
+        label: "Never Due",
         range: "No due date",
         tasks: [],
       },
     ];
 
+    // Both windows are the remainder of the current calendar period, so the
+    // labels stay literally true: a task six days out that lands in next
+    // week's Monday is not "this week". Either window can be zero days long
+    // on the final day of its period, and the empty bucket is then hidden.
+    const today = dateInTimezone(reference, timezone);
+    const weekdayIndex =
+      weekStart === "monday" ? (today.getDay() + 6) % 7 : today.getDay();
+    const daysLeftInWeek = 6 - weekdayIndex;
+    const daysLeftInMonth =
+      new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate() -
+      today.getDate();
+
     for (const task of items) {
       if (!task.due_date) {
-        groups[4].tasks.push(task);
+        groups[5].tasks.push(task);
         continue;
       }
       const daysAway = taskDayDistance(task.due_date, reference, timezone);
       const groupIndex =
-        daysAway <= 0 ? 0 : daysAway < 7 ? 1 : daysAway < 14 ? 2 : 3;
+        daysAway < 0
+          ? 0
+          : daysAway === 0
+            ? 1
+            : daysAway <= daysLeftInWeek
+              ? 2
+              : daysAway <= daysLeftInMonth
+                ? 3
+                : 4;
       groups[groupIndex].tasks.push(task);
     }
 
-    return groups;
+    return groups.filter((group) => group.tasks.length > 0);
   }
 
   function formatFocusTime(totalSeconds: number) {
@@ -4146,16 +4211,18 @@
     return formatTaskDate(value);
   }
 
-  function taskOverdueLabel(task: Task) {
+  function taskDueLabel(task: Task) {
     if (task.completed || !task.due_date) return "";
-    const daysAway = taskDayDistance(
+    const distance = taskDueDistance(
       task.due_date,
       currentTime,
       dashboard?.settings.timezone || "UTC",
     );
-    if (daysAway >= 0) return "";
-    const daysOverdue = Math.abs(daysAway);
-    return `${daysOverdue} ${daysOverdue === 1 ? "day" : "days"} overdue`;
+    if (distance.days === 0) return "Due today";
+    const unit = `${distance.unit}${distance.value === 1 ? "" : "s"}`;
+    return distance.days < 0
+      ? `${distance.value} ${unit} overdue`
+      : `Due in ${distance.value} ${unit}`;
   }
 </script>
 
@@ -5232,9 +5299,18 @@
                                 />
                                 {formatTaskDate(task.due_date)}
                               </span>
-                              {#if taskOverdueLabel(task)}
-                                <span class="task-overdue-indicator">
-                                  {taskOverdueLabel(task)}
+                              {#if taskDueLabel(task)}
+                                <span
+                                  class={[
+                                    "task-due-indicator",
+                                    taskDayDistance(
+                                      task.due_date,
+                                      currentTime,
+                                      dashboard?.settings.timezone || "UTC",
+                                    ) < 0 && "task-overdue-indicator",
+                                  ]}
+                                >
+                                  {taskDueLabel(task)}
                                 </span>
                               {/if}
                             {/if}
@@ -5584,24 +5660,18 @@
                             </div>
                             <strong>{group.tasks.length}</strong>
                           </header>
-                          {#if group.tasks.length}
-                            <AnimatedList
-                              items={group.tasks}
-                              getKey={(task) => task.id}
-                              showGradients={false}
-                              enableArrowNavigation={false}
-                              displayScrollbar={false}
-                              class="tasks-animated-list"
-                            >
-                              {#snippet children(task)}
-                                {@render taskRow(task, false)}
-                              {/snippet}
-                            </AnimatedList>
-                          {:else}
-                            <p class="task-group-empty">
-                              No tasks in this range.
-                            </p>
-                          {/if}
+                          <AnimatedList
+                            items={group.tasks}
+                            getKey={(task) => task.id}
+                            showGradients={false}
+                            enableArrowNavigation={false}
+                            displayScrollbar={false}
+                            class="tasks-animated-list"
+                          >
+                            {#snippet children(task)}
+                              {@render taskRow(task, false)}
+                            {/snippet}
+                          </AnimatedList>
                         </section>
                       {/each}
                     {:else if tasks.length && taskLabelFilter}

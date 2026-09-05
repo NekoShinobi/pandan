@@ -2843,7 +2843,7 @@ pub async fn list_journal_nodes(
     user_id: &str,
 ) -> Result<Vec<JournalNode>, sqlx::Error> {
     sqlx::query_as::<_, JournalNode>(
-        "SELECT id, parent_id, name, content, position, created_at, updated_at \
+        "SELECT id, parent_id, name, content, emoji, position, created_at, updated_at \
          FROM journal_nodes WHERE user_id = ? \
          ORDER BY parent_id, position ASC, name COLLATE NOCASE ASC",
     )
@@ -2863,7 +2863,7 @@ pub async fn get_journal_node(
     id: &str,
 ) -> Result<Option<JournalNode>, sqlx::Error> {
     sqlx::query_as::<_, JournalNode>(
-        "SELECT id, parent_id, name, content, position, created_at, updated_at \
+        "SELECT id, parent_id, name, content, emoji, position, created_at, updated_at \
          FROM journal_nodes WHERE id = ? AND user_id = ?",
     )
     .bind(id)
@@ -2910,6 +2910,7 @@ pub async fn create_journal_node(
     parent_id: Option<&str>,
     name: &str,
     content: &str,
+    emoji: Option<&str>,
 ) -> Result<JournalNode, sqlx::Error> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -2924,14 +2925,15 @@ pub async fn create_journal_node(
     .await?;
     sqlx::query(
         "INSERT INTO journal_nodes \
-         (id, user_id, parent_id, name, content, position, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, user_id, parent_id, name, content, emoji, position, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(user_id)
     .bind(parent_id)
     .bind(name)
     .bind(content)
+    .bind(emoji)
     .bind(position)
     .bind(&now)
     .bind(&now)
@@ -2954,12 +2956,13 @@ pub async fn update_journal_node(
     parent_id: Option<&str>,
     name: &str,
     content: &str,
+    emoji: Option<&str>,
     requested_position: Option<i64>,
 ) -> Result<Option<JournalNode>, sqlx::Error> {
     let updated_at = chrono::Utc::now().to_rfc3339();
     let mut transaction = pool.begin().await?;
     let current = sqlx::query_as::<_, JournalNode>(
-        "SELECT id, parent_id, name, content, position, created_at, updated_at \
+        "SELECT id, parent_id, name, content, emoji, position, created_at, updated_at \
          FROM journal_nodes WHERE id = ? AND user_id = ?",
     )
     .bind(id)
@@ -3018,12 +3021,13 @@ pub async fn update_journal_node(
     destination_order.insert(position, id.to_owned());
 
     let result = sqlx::query(
-        "UPDATE journal_nodes SET parent_id = ?, name = ?, content = ?, position = ?, updated_at = ? \
+        "UPDATE journal_nodes SET parent_id = ?, name = ?, content = ?, emoji = ?, position = ?, updated_at = ? \
          WHERE id = ? AND user_id = ?",
     )
     .bind(parent_id)
     .bind(name)
     .bind(content)
+    .bind(emoji)
     .bind(i64::try_from(position).unwrap_or(i64::MAX))
     .bind(&updated_at)
     .bind(id)

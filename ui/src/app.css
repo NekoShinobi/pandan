@@ -7956,16 +7956,14 @@ body
 }
 
 .task-due-group-heading span,
-.task-due-group-heading strong,
-.task-group-empty {
+.task-due-group-heading strong {
   font-family: var(--font-mono);
   font-size: 9px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.task-due-group-heading span,
-.task-group-empty {
+.task-due-group-heading span {
   color: var(--muted);
 }
 
@@ -7975,11 +7973,6 @@ body
   border: 1px solid var(--border);
   color: var(--fg);
   text-align: center;
-}
-
-.task-group-empty {
-  margin: 0;
-  padding: 17px 22px 18px;
 }
 
 .task-page-row {
@@ -8412,12 +8405,18 @@ body
   gap: 5px;
 }
 
-.task-row-metadata > .task-overdue-indicator {
+.task-row-metadata > .task-due-indicator {
   padding: 2px 6px;
-  border: 1px solid color-mix(in oklch, var(--danger) 58%, var(--border));
+  border: 1px solid var(--border);
+  background: color-mix(in oklch, var(--fg) 5%, transparent);
+  color: color-mix(in oklch, var(--fg) 78%, var(--muted));
+  font-weight: 620;
+}
+
+.task-row-metadata > .task-overdue-indicator {
+  border-color: color-mix(in oklch, var(--danger) 58%, var(--border));
   background: color-mix(in oklch, var(--danger) 10%, transparent);
   color: var(--danger);
-  font-weight: 620;
 }
 
 .task-label-list {

@@ -14,10 +14,18 @@
   import Plus from "lucide-svelte/icons/plus";
   import Save from "lucide-svelte/icons/save";
   import Search from "lucide-svelte/icons/search";
+  import SmilePlus from "lucide-svelte/icons/smile-plus";
   import Trash2 from "lucide-svelte/icons/trash-2";
   import X from "lucide-svelte/icons/x";
   import { onMount, tick } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
+  import {
+    emojiCatalog,
+    emojiCatalogByCategory,
+    emojiCategories,
+    type EmojiCatalogEntry,
+    type EmojiCategoryId,
+  } from "$lib/emojiCatalog";
   import TypedHeading from "$lib/TypedHeading.svelte";
   import {
     createJournalNode,
@@ -29,12 +37,53 @@
 
   type TreeRow = { node: JournalNode; depth: number };
   type ViewMode = "raw" | "rendered";
-  type ManageMode = "move" | "delete";
+  type ManageMode = "move" | "logo" | "delete";
   type DropPlacement = "before" | "inside" | "after";
   type DragTarget = {
     nodeId: string | "root";
     placement: DropPlacement;
   };
+  type MenuPosition = { x: number; y: number };
+  type EmojiGroupId = "journal" | EmojiCategoryId;
+  type EmojiOption = Pick<EmojiCatalogEntry, "emoji" | "label" | "searchText">;
+
+  const journalEmojiRecommendations = [
+    "📓",
+    "📝",
+    "📔",
+    "📚",
+    "📖",
+    "🔖",
+    "✍️",
+    "💭",
+    "💡",
+    "📌",
+    "📅",
+    "🧠",
+  ] as const;
+  const emojiGroups: ReadonlyArray<{
+    id: EmojiGroupId;
+    label: string;
+    icon: string;
+  }> = [
+    { id: "journal", label: "Journal", icon: "📓" },
+    ...emojiCategories.map((category) => ({
+      ...category,
+      icon: {
+        people: "🙂",
+        nature: "🐼",
+        food: "🍎",
+        activities: "⚽",
+        travel: "✈️",
+        objects: "💡",
+        symbols: "🔣",
+        flags: "🏳️",
+      }[category.id],
+    })),
+  ];
+  const emojiSequencePattern =
+    /^(?:\p{Emoji}|\p{Emoji_Component}|\u200d|\ufe0f|\u20e3)+$/u;
+  const emojiPresentationPattern = /(?:\p{Emoji_Presentation}|\ufe0f|\u20e3)/u;
 
   let nodes = $state.raw<JournalNode[]>([]);
   let loading = $state(true);
@@ -49,6 +98,9 @@
   let saving = $state(false);
   let inlineNameInput = $state<HTMLInputElement>();
   let manageDialog = $state<HTMLDialogElement>();
+  let emojiSearchInput: HTMLInputElement | undefined;
+  let itemMenu: HTMLDivElement | undefined;
+  let menuTrigger: HTMLElement | undefined;
   let managingNodeId = $state<string | null>(null);
   let manageMode = $state<ManageMode>("move");
   let inlineCreateParentId = $state<string | null | undefined>(undefined);
@@ -56,9 +108,12 @@
   let inlineError = $state("");
   let creating = $state(false);
   let manageParentId = $state("");
+  let emojiSearch = $state("");
+  let activeEmojiGroup = $state<EmojiGroupId>("journal");
   let manageError = $state("");
   let managing = $state(false);
   let menuNodeId = $state<string | null>(null);
+  let menuPosition = $state<MenuPosition | null>(null);
   let renamingNodeId = $state<string | null>(null);
   let renameName = $state("");
   let renaming = $state(false);
@@ -93,6 +148,70 @@
   let currentPath = $derived.by(() =>
     selectedNode ? journalPath(selectedNode) : "Journal",
   );
+  let visibleEmojiOptions = $derived.by(() => {
+    const query = normalizeEmojiSearch(emojiSearch);
+    if (!query) {
+      return activeEmojiGroup === "journal"
+        ? journalEmojiRecommendations.map(emojiOption)
+        : emojiCatalogByCategory[activeEmojiGroup];
+    }
+    const matches: EmojiOption[] = emojiCatalog.filter(
+      (entry) =>
+        normalizeEmojiSearch(entry.searchText).includes(query) ||
+        entry.emoji === emojiSearch.trim(),
+    );
+    const pasted = emojiSearch.trim();
+    if (
+      looksLikeEmojiSequence(pasted) &&
+      !matches.some((entry) => entry.emoji === pasted)
+    ) {
+      matches.unshift({
+        emoji: pasted,
+        label: "pasted emoji",
+        searchText: pasted,
+      });
+    }
+    return matches;
+  });
+  let showDefaultLogoOption = $derived(
+    !emojiSearch.trim() && activeEmojiGroup === "journal",
+  );
+  let visibleEmojiOptionCount = $derived(
+    visibleEmojiOptions.length + (showDefaultLogoOption ? 1 : 0),
+  );
+
+  function emojiOption(emoji: string): EmojiOption {
+    return (
+      emojiCatalog.find((entry) => entry.emoji === emoji) ?? {
+        emoji,
+        label: emoji,
+        searchText: emoji,
+      }
+    );
+  }
+
+  function normalizeEmojiSearch(value: string) {
+    return value
+      .trim()
+      .toLowerCase()
+      .replaceAll("_", " ")
+      .replaceAll("-", " ")
+      .replace(/\s+/g, " ");
+  }
+
+  function selectEmojiGroup(groupId: EmojiGroupId) {
+    activeEmojiGroup = groupId;
+    emojiSearch = "";
+  }
+
+  function looksLikeEmojiSequence(value: string) {
+    return (
+      value.length > 0 &&
+      value.length <= 32 &&
+      emojiSequencePattern.test(value) &&
+      emojiPresentationPattern.test(value)
+    );
+  }
 
   onMount(() => {
     void loadJournal();
@@ -214,7 +333,7 @@
   }
 
   function closeTransientControls() {
-    menuNodeId = null;
+    closeItemMenu();
     renamingNodeId = null;
     inlineCreateParentId = undefined;
     inlineError = "";
@@ -248,6 +367,11 @@
       return;
     }
     if (event.key === "Escape") {
+      if (menuNodeId) {
+        event.preventDefault();
+        closeItemMenu(true);
+        return;
+      }
       closeTransientControls();
     }
   }
@@ -257,7 +381,7 @@
     if (target instanceof Element && target.closest(".journal-row-actions")) {
       return;
     }
-    menuNodeId = null;
+    closeItemMenu();
   }
 
   function captureInlineNameInput(node: HTMLInputElement) {
@@ -274,6 +398,20 @@
     };
   }
 
+  function captureEmojiSearchInput(node: HTMLInputElement) {
+    emojiSearchInput = node;
+    return () => {
+      emojiSearchInput = undefined;
+    };
+  }
+
+  function captureItemMenu(node: HTMLDivElement) {
+    itemMenu = node;
+    return () => {
+      itemMenu = undefined;
+    };
+  }
+
   function attachRenderedPreview(node: HTMLElement) {
     $effect(() => {
       node.innerHTML = renderedHtml;
@@ -281,7 +419,7 @@
   }
 
   async function beginCreate(parentId: string | null) {
-    menuNodeId = null;
+    closeItemMenu();
     renamingNodeId = null;
     searchQuery = "";
     inlineCreateParentId = parentId;
@@ -331,7 +469,7 @@
   }
 
   async function beginRename(node: JournalNode) {
-    menuNodeId = null;
+    closeItemMenu();
     inlineCreateParentId = undefined;
     renamingNodeId = node.id;
     renameName = node.name;
@@ -370,19 +508,147 @@
     }
   }
 
-  function toggleMenu(nodeId: string) {
-    menuNodeId = menuNodeId === nodeId ? null : nodeId;
-    renamingNodeId = null;
-    inlineCreateParentId = undefined;
+  function closeItemMenu(returnFocus = false) {
+    menuNodeId = null;
+    menuPosition = null;
+    if (returnFocus) menuTrigger?.focus();
+    menuTrigger = undefined;
   }
 
-  function openManage(node: JournalNode, mode: ManageMode) {
-    menuNodeId = null;
+  function focusFirstMenuItem() {
+    itemMenu
+      ?.querySelector<HTMLButtonElement>(
+        'button[role="menuitem"]:not(:disabled)',
+      )
+      ?.focus();
+  }
+
+  async function showItemMenu(
+    nodeId: string,
+    position: MenuPosition | null,
+    trigger?: HTMLElement,
+  ) {
+    menuNodeId = nodeId;
+    menuPosition = position;
+    menuTrigger = trigger;
+    renamingNodeId = null;
+    inlineCreateParentId = undefined;
+    await tick();
+
+    if (position && itemMenu) {
+      const bounds = itemMenu.getBoundingClientRect();
+      const gutter = 8;
+      menuPosition = {
+        x: Math.max(
+          gutter,
+          Math.min(position.x, window.innerWidth - bounds.width - gutter),
+        ),
+        y: Math.max(
+          gutter,
+          Math.min(position.y, window.innerHeight - bounds.height - gutter),
+        ),
+      };
+      await tick();
+    }
+
+    focusFirstMenuItem();
+  }
+
+  function toggleMenu(event: MouseEvent, nodeId: string) {
+    if (menuNodeId === nodeId && menuPosition === null) {
+      closeItemMenu();
+      return;
+    }
+    const trigger =
+      event.currentTarget instanceof HTMLElement
+        ? event.currentTarget
+        : undefined;
+    void showItemMenu(nodeId, null, trigger);
+  }
+
+  function openContextMenu(event: MouseEvent, node: JournalNode) {
+    event.preventDefault();
+    event.stopPropagation();
+    const row =
+      event.currentTarget instanceof HTMLElement
+        ? event.currentTarget
+        : undefined;
+    const trigger = row?.querySelector<HTMLElement>(".journal-tree-more");
+    void showItemMenu(
+      node.id,
+      { x: event.clientX, y: event.clientY },
+      trigger ?? row,
+    );
+  }
+
+  function openKeyboardContextMenu(event: KeyboardEvent, node: JournalNode) {
+    if (
+      event.key !== "ContextMenu" &&
+      !(event.shiftKey && event.key === "F10")
+    ) {
+      return;
+    }
+    event.preventDefault();
+    const trigger =
+      event.currentTarget instanceof HTMLElement
+        ? event.currentTarget
+        : undefined;
+    const bounds = trigger?.getBoundingClientRect();
+    void showItemMenu(
+      node.id,
+      {
+        x: bounds ? Math.min(bounds.right, bounds.left + 180) : 12,
+        y: bounds ? bounds.bottom : 12,
+      },
+      trigger,
+    );
+  }
+
+  function handleItemMenuKeydown(event: KeyboardEvent) {
+    if (!itemMenu) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeItemMenu(true);
+      return;
+    }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      return;
+    }
+    const items = [
+      ...itemMenu.querySelectorAll<HTMLButtonElement>(
+        'button[role="menuitem"]:not(:disabled)',
+      ),
+    ];
+    if (!items.length) return;
+    event.preventDefault();
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? items.length - 1
+          : event.key === "ArrowUp"
+            ? index <= 0
+              ? items.length - 1
+              : index - 1
+            : (index + 1) % items.length;
+    items[next]?.focus();
+  }
+
+  async function openManage(node: JournalNode, mode: ManageMode) {
+    closeItemMenu();
     managingNodeId = node.id;
     manageMode = mode;
     manageParentId = node.parent_id ?? "";
+    emojiSearch = "";
+    activeEmojiGroup = "journal";
     manageError = "";
     manageDialog?.showModal();
+    if (mode === "logo") {
+      await tick();
+      emojiSearchInput?.focus();
+    }
   }
 
   function descendantIds(nodeId: string) {
@@ -470,21 +736,31 @@
 
   function canShiftNode(node: JournalNode, direction: -1 | 1) {
     const siblings = orderedSiblings(node);
-    const position = siblings.findIndex((candidate) => candidate.id === node.id);
-    return position >= 0 && position + direction >= 0 && position + direction < siblings.length;
+    const position = siblings.findIndex(
+      (candidate) => candidate.id === node.id,
+    );
+    return (
+      position >= 0 &&
+      position + direction >= 0 &&
+      position + direction < siblings.length
+    );
   }
 
   async function shiftNode(node: JournalNode, direction: -1 | 1) {
     const siblings = orderedSiblings(node);
-    const position = siblings.findIndex((candidate) => candidate.id === node.id);
+    const position = siblings.findIndex(
+      (candidate) => candidate.id === node.id,
+    );
     if (position < 0 || !canShiftNode(node, direction)) return;
-    menuNodeId = null;
+    closeItemMenu();
     error = "";
     try {
       await moveNode(node, node.parent_id, position + direction);
     } catch (reason: unknown) {
       error =
-        reason instanceof Error ? reason.message : "Unable to reorder journal item";
+        reason instanceof Error
+          ? reason.message
+          : "Unable to reorder journal item";
     }
   }
 
@@ -505,6 +781,29 @@
     } finally {
       managing = false;
     }
+  }
+
+  async function updateManagedLogo(emoji: string | null) {
+    if (!managedNode || managing) return;
+    managing = true;
+    manageError = "";
+    try {
+      const updated = await updateJournalNode(managedNode.id, { emoji });
+      nodes = nodes.map((node) => (node.id === updated.id ? updated : node));
+      manageDialog?.close();
+      managingNodeId = null;
+    } catch (reason: unknown) {
+      manageError =
+        reason instanceof Error
+          ? reason.message
+          : "Unable to update journal logo";
+    } finally {
+      managing = false;
+    }
+  }
+
+  function chooseEmoji(emoji: string) {
+    void updateManagedLogo(emoji);
   }
 
   async function removeSelected() {
@@ -547,7 +846,7 @@
       return;
     }
     draggingNodeId = node.id;
-    menuNodeId = null;
+    closeItemMenu();
     if (event.dataTransfer) {
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("text/plain", node.id);
@@ -615,10 +914,7 @@
     const targetPosition = siblings.findIndex((node) => node.id === target.id);
     return {
       parentId,
-      position: Math.max(
-        0,
-        targetPosition + (placement === "after" ? 1 : 0),
-      ),
+      position: Math.max(0, targetPosition + (placement === "after" ? 1 : 0)),
     };
   }
 
@@ -650,7 +946,9 @@
       await moveNode(node, destination.parentId, destination.position);
     } catch (reason: unknown) {
       error =
-        reason instanceof Error ? reason.message : "Unable to move journal item";
+        reason instanceof Error
+          ? reason.message
+          : "Unable to move journal item";
     }
   }
 
@@ -661,6 +959,14 @@
 </script>
 
 <svelte:window onkeydown={handleShortcut} onclick={handleWindowClick} />
+
+{#snippet journalNodeLogo(node: JournalNode)}
+  {#if node.emoji}
+    <span class="journal-node-emoji" aria-hidden="true">{node.emoji}</span>
+  {:else}
+    <FileText size={15} strokeWidth={1.7} aria-hidden="true" />
+  {/if}
+{/snippet}
 
 {#snippet inlineCreateRow(depth: number)}
   <form
@@ -778,16 +1084,14 @@
                 movingNodeId === row.node.id && "is-moving",
               ]}
               style:--tree-depth={row.depth}
+              oncontextmenu={(event) => openContextMenu(event, row.node)}
               ondragover={(event) => allowNodeDrop(event, row.node)}
-              ondragleave={(event) =>
-                leaveDropTarget(event, row.node.id)}
+              ondragleave={(event) => leaveDropTarget(event, row.node.id)}
               ondrop={(event) => dropNode(event, row.node)}
               role="group"
               aria-label={`${row.node.name}, level ${row.depth + 1}`}
             >
-              {#if !searchQuery &&
-              (hasChildren(row.node.id) ||
-                inlineCreateParentId === row.node.id)}
+              {#if !searchQuery && (hasChildren(row.node.id) || inlineCreateParentId === row.node.id)}
                 <button
                   class="journal-tree-disclosure"
                   type="button"
@@ -809,7 +1113,7 @@
                   class="journal-inline-rename"
                   onsubmit={(event) => submitRename(event, row.node)}
                 >
-                  <FileText size={15} strokeWidth={1.7} aria-hidden="true" />
+                  {@render journalNodeLogo(row.node)}
                   <input
                     bind:value={renameName}
                     {@attach captureInlineNameInput}
@@ -825,10 +1129,12 @@
                   type="button"
                   draggable={movingNodeId === null}
                   onclick={() => selectNode(row.node)}
+                  onkeydown={(event) =>
+                    openKeyboardContextMenu(event, row.node)}
                   ondragstart={(event) => beginDrag(event, row.node)}
                   ondragend={endDrag}
                 >
-                  <FileText size={15} strokeWidth={1.7} aria-hidden="true" />
+                  {@render journalNodeLogo(row.node)}
                   <span>{row.node.name}</span>
                 </button>
               {/if}
@@ -846,8 +1152,9 @@
                   class="journal-tree-more"
                   type="button"
                   aria-label={`Open actions for ${row.node.name}`}
+                  aria-haspopup="menu"
                   aria-expanded={menuNodeId === row.node.id}
-                  onclick={() => toggleMenu(row.node.id)}
+                  onclick={(event) => toggleMenu(event, row.node.id)}
                 >
                   <MoreHorizontal
                     size={15}
@@ -857,17 +1164,31 @@
                 </button>
                 {#if menuNodeId === row.node.id}
                   <div
-                    class="journal-item-menu"
+                    class={[
+                      "journal-item-menu",
+                      menuPosition && "is-context-menu",
+                    ]}
                     role="menu"
+                    tabindex="-1"
                     aria-label={`Actions for ${row.node.name}`}
+                    {@attach captureItemMenu}
+                    onkeydown={handleItemMenuKeydown}
+                    style:--menu-x={`${menuPosition?.x ?? 0}px`}
+                    style:--menu-y={`${menuPosition?.y ?? 0}px`}
                   >
                     <button
-                      class="is-destructive"
                       type="button"
                       role="menuitem"
                       onclick={() => beginRename(row.node)}
                     >
                       <Pencil size={14} aria-hidden="true" /> Rename
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onclick={() => openManage(row.node, "logo")}
+                    >
+                      <SmilePlus size={14} aria-hidden="true" /> Change logo
                     </button>
                     <button
                       type="button"
@@ -893,6 +1214,7 @@
                       <FolderInput size={14} aria-hidden="true" /> Move
                     </button>
                     <button
+                      class="is-destructive"
                       type="button"
                       role="menuitem"
                       onclick={() => openManage(row.node, "delete")}
@@ -1026,23 +1348,30 @@
   </div>
 
   <dialog
-    class="journal-dialog"
+    class={["journal-dialog", manageMode === "logo" && "is-emoji-picker"]}
+    aria-label={manageMode === "move"
+      ? "Move file"
+      : manageMode === "logo"
+        ? "Choose emoji"
+        : "Delete file"}
     {@attach captureManageDialog}
     onclick={(event) => event.target === manageDialog && manageDialog.close()}
     data-od-id="journal-manage-dialog"
   >
-    <header>
-      <div>
-        <span>[ JOURNAL.ITEM ]</span>
-        <h2>{manageMode === "move" ? "Move file" : "Delete file"}</h2>
-      </div>
-      <button class="ui-button ui-button--ghost ui-button--icon"
-        type="button"
-        aria-label="Close item settings"
-        onclick={() => manageDialog?.close()}
-        ><X size={18} aria-hidden="true" /></button
-      >
-    </header>
+    {#if manageMode !== "logo"}
+      <header>
+        <div>
+          <h2>{manageMode === "move" ? "Move file" : "Delete file"}</h2>
+        </div>
+        <button
+          class="ui-button ui-button--ghost ui-button--icon"
+          type="button"
+          aria-label="Close item settings"
+          onclick={() => manageDialog?.close()}
+          ><X size={18} aria-hidden="true" /></button
+        >
+      </header>
+    {/if}
     {#if managedNode}
       {#if manageMode === "move"}
         <form onsubmit={submitManage}>
@@ -1065,11 +1394,101 @@
               type="button"
               onclick={() => manageDialog?.close()}>Cancel</button
             >
-            <button class="ui-button ui-button--primary journal-primary" type="submit" disabled={managing}
-              >{managing ? "Moving…" : "Move file"}</button
+            <button
+              class="ui-button ui-button--primary journal-primary"
+              type="submit"
+              disabled={managing}>{managing ? "Moving…" : "Move file"}</button
             >
           </footer>
         </form>
+      {:else if manageMode === "logo"}
+        <div class="journal-emoji-picker" aria-busy={managing}>
+          <label class="journal-emoji-search" for="journal-emoji-search">
+            <Search size={16} strokeWidth={1.8} aria-hidden="true" />
+            <span class="sr-only">Search emoji</span>
+            <input
+              id="journal-emoji-search"
+              type="search"
+              bind:value={emojiSearch}
+              {@attach captureEmojiSearchInput}
+              maxlength="64"
+              autocomplete="off"
+              placeholder="Search emoji or paste one…"
+              data-od-id="journal-emoji-search"
+            />
+          </label>
+
+          <div
+            class="journal-emoji-tabs"
+            role="group"
+            aria-label="Emoji categories"
+          >
+            {#each emojiGroups as group (group.id)}
+              <button
+                type="button"
+                title={group.label}
+                aria-label={`${group.label} emojis`}
+                class:is-active={activeEmojiGroup === group.id &&
+                  !emojiSearch.trim()}
+                aria-pressed={activeEmojiGroup === group.id &&
+                  !emojiSearch.trim()}
+                onclick={() => selectEmojiGroup(group.id)}
+              >
+                <span aria-hidden="true">{group.icon}</span>
+              </button>
+            {/each}
+          </div>
+
+          <div class="journal-emoji-results-heading">
+            <span>
+              {#if emojiSearch.trim()}
+                Search results
+              {:else}
+                {emojiGroups.find((group) => group.id === activeEmojiGroup)
+                  ?.label ?? "Journal"}
+              {/if}
+            </span>
+            <small>{visibleEmojiOptionCount} options</small>
+          </div>
+
+          <div class="journal-emoji-grid" aria-label="Available emoji">
+            {#if showDefaultLogoOption}
+              <button
+                class="is-file-logo"
+                class:is-selected={!managedNode.emoji}
+                type="button"
+                title="Use file logo"
+                aria-label="Use file logo"
+                aria-pressed={!managedNode.emoji}
+                disabled={managing}
+                onclick={() => updateManagedLogo(null)}
+              >
+                <FileText size={22} strokeWidth={1.5} aria-hidden="true" />
+              </button>
+            {/if}
+            {#each visibleEmojiOptions as option (option.emoji)}
+              <button
+                type="button"
+                title={option.label}
+                aria-label={option.label}
+                aria-pressed={managedNode.emoji === option.emoji}
+                class:is-selected={managedNode.emoji === option.emoji}
+                disabled={managing}
+                onclick={() => chooseEmoji(option.emoji)}
+              >
+                <span aria-hidden="true">{option.emoji}</span>
+              </button>
+            {:else}
+              <p class="journal-emoji-empty">
+                No emoji found. Try another name or paste an emoji.
+              </p>
+            {/each}
+          </div>
+
+          {#if manageError}
+            <p class="journal-form-error" role="alert">{manageError}</p>
+          {/if}
+        </div>
       {:else}
         <div class="journal-delete-confirmation">
           <Trash2 size={24} strokeWidth={1.5} aria-hidden="true" />
@@ -1122,7 +1541,6 @@
     border-bottom: 1px solid var(--border);
   }
   .journal-header span,
-  .journal-dialog header span,
   .journal-welcome span {
     color: var(--muted);
     font-family: var(--font-mono);
@@ -1239,7 +1657,11 @@
     flex-direction: column;
     overflow: hidden;
     border-right: 1px solid var(--border);
-    background: color-mix(in oklch, var(--page-surface, var(--surface)) 96%, var(--bg));
+    background: color-mix(
+      in oklch,
+      var(--page-surface, var(--surface)) 96%,
+      var(--bg)
+    );
     transition: opacity 150ms ease-out;
   }
   .is-collapsed .journal-explorer {
@@ -1434,6 +1856,15 @@
     flex: 0 0 auto;
     color: var(--muted);
   }
+  .journal-node-emoji {
+    width: 15px;
+    flex: 0 0 15px;
+    font-family:
+      "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+    font-size: 15px;
+    line-height: 1;
+    text-align: center;
+  }
   .tree-spacer {
     width: 28px;
   }
@@ -1466,7 +1897,7 @@
     z-index: 12;
     top: calc(100% - 2px);
     right: 2px;
-    width: 132px;
+    width: 152px;
     display: grid;
     padding: 4px;
     border: 1px solid var(--border);
@@ -1474,8 +1905,15 @@
     background: var(--page-surface, var(--surface));
     box-shadow: 0 16px 36px rgba(0, 0, 0, 0.34);
   }
+  .journal-item-menu.is-context-menu {
+    position: fixed;
+    z-index: 40;
+    inset: auto;
+    top: var(--menu-y);
+    left: var(--menu-x);
+  }
   .journal-item-menu button {
-    min-height: 36px;
+    min-height: 44px;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -1816,6 +2254,11 @@
     color: var(--fg);
     box-shadow: 0 24px 80px rgba(0, 0, 0, 0.48);
   }
+  .journal-dialog.is-emoji-picker {
+    width: min(500px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    overflow: hidden;
+  }
   .journal-dialog::backdrop {
     background: rgba(0, 0, 0, 0.7);
     backdrop-filter: blur(7px);
@@ -1829,7 +2272,7 @@
     border-bottom: 1px solid var(--border);
   }
   .journal-dialog header h2 {
-    margin-top: 5px;
+    margin: 0;
     font-family: var(--font-display);
     font-size: 24px;
     font-weight: 600;
@@ -1837,8 +2280,8 @@
     text-transform: capitalize;
   }
   .journal-dialog header > button {
-    width: 42px;
-    min-height: 42px;
+    width: 44px;
+    min-height: 44px;
     display: grid;
     place-items: center;
     border: 1px solid var(--border);
@@ -1854,6 +2297,159 @@
     font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.05em;
+  }
+  .journal-emoji-picker {
+    display: grid;
+  }
+  .journal-emoji-search {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin: 16px 18px 10px;
+    padding: 0 11px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--bg);
+    color: var(--muted);
+  }
+  .journal-emoji-search:focus-within {
+    border-color: var(--fg);
+  }
+  .journal-emoji-search input {
+    width: 100%;
+    min-width: 0;
+    min-height: 42px;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--fg);
+    font-family: var(--font-body);
+    font-size: 13px;
+  }
+  .journal-emoji-search input::placeholder {
+    color: var(--muted);
+  }
+  .journal-emoji-search input:focus-visible {
+    outline: 0;
+  }
+  .journal-emoji-tabs {
+    display: grid;
+    grid-template-columns: repeat(9, minmax(0, 1fr));
+    gap: 4px;
+    padding: 0 18px 10px;
+  }
+  .journal-emoji-tabs button {
+    min-height: 44px;
+    min-width: 0;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--muted);
+  }
+  .journal-emoji-tabs button span {
+    font-family:
+      "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+    font-size: 14px;
+    line-height: 1;
+  }
+  .journal-emoji-tabs button:hover,
+  .journal-emoji-tabs button:focus-visible {
+    border-color: var(--border);
+    color: var(--fg);
+  }
+  .journal-emoji-tabs button.is-active {
+    border-color: var(--fg);
+    background: var(--fg);
+    color: var(--surface);
+  }
+  .journal-emoji-results-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 18px 9px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+  }
+  .journal-emoji-results-heading small {
+    font-size: 9px;
+    letter-spacing: 0.02em;
+    text-transform: none;
+  }
+  .journal-emoji-grid {
+    height: clamp(124px, 48dvh, 360px);
+    display: grid;
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+    align-content: start;
+    gap: 4px;
+    padding: 0 14px 14px;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    scrollbar-color: var(--border) transparent;
+    scrollbar-width: thin;
+  }
+  .journal-emoji-grid::-webkit-scrollbar {
+    width: 6px;
+  }
+  .journal-emoji-grid::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .journal-emoji-grid::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: var(--border);
+  }
+  .journal-emoji-grid::-webkit-scrollbar-button {
+    width: 0;
+    height: 0;
+    display: none;
+  }
+  .journal-emoji-grid button {
+    min-width: 0;
+    min-height: 44px;
+    display: grid;
+    place-items: center;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+  }
+  .journal-emoji-grid button span {
+    font-family:
+      "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+    font-size: 23px;
+    line-height: 1;
+  }
+  .journal-emoji-grid button:hover,
+  .journal-emoji-grid button:focus-visible {
+    border-color: var(--border);
+    background: var(--fg-soft);
+  }
+  .journal-emoji-grid button.is-selected {
+    border-color: var(--fg);
+    background: var(--fg-soft);
+  }
+  .journal-emoji-grid button.is-file-logo {
+    color: var(--muted);
+  }
+  .journal-emoji-grid button.is-file-logo:hover,
+  .journal-emoji-grid button.is-file-logo:focus-visible,
+  .journal-emoji-grid button.is-file-logo.is-selected {
+    color: var(--fg);
+  }
+  .journal-emoji-empty {
+    grid-column: 1 / -1;
+    align-self: center;
+    padding: 42px 20px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1.6;
+    text-align: center;
+  }
+  .journal-emoji-picker > .journal-form-error {
+    margin: 0 18px 14px;
   }
   .journal-dialog select {
     width: 100%;
@@ -1984,6 +2580,9 @@
     .journal-dialog footer .journal-danger {
       flex-basis: 100%;
       margin-right: 0;
+    }
+    .journal-emoji-grid {
+      grid-template-columns: repeat(6, minmax(0, 1fr));
     }
   }
   @media (prefers-reduced-motion: reduce) {

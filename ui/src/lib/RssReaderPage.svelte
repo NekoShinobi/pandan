@@ -36,6 +36,16 @@
   type RssView = "inbox" | "current" | "read-later";
   type RedditSort = "hot" | "new" | "top" | "rising";
   type RedditTopPeriod = "hour" | "day" | "week" | "month" | "year" | "all";
+  type XmlSnippetView = "table" | "raw";
+  type XmlTableRowKind = "element" | "attribute" | "comment" | "instruction";
+  type XmlTableRow = {
+    id: string;
+    name: string;
+    path: string;
+    value: string;
+    depth: number;
+    kind: XmlTableRowKind;
+  };
 
   const BACKGROUND_SYNC_MS = 5 * 60 * 1000;
   const DEFAULT_RETENTION_DAYS = 7;
@@ -71,6 +81,9 @@
   let xmlSnippetError = $state("");
   let xmlSnippetLoading = $state(false);
   let xmlSnippetCopied = $state(false);
+  let xmlSnippetView = $state<XmlSnippetView>("table");
+  let xmlTableRows = $state.raw<XmlTableRow[]>([]);
+  let xmlTableError = $state("");
   let editingSubscriptionId = $state<string | null>(null);
   let feedSourceKind = $state<FeedSourceKind>("feed");
   let feedUrl = $state("");
@@ -549,11 +562,19 @@
     xmlSnippetError = "";
     xmlSnippetLoading = true;
     xmlSnippetCopied = false;
+    xmlSnippetView = "table";
+    xmlTableRows = [];
+    xmlTableError = "";
     await tick();
     itemXmlDialog?.showModal();
     try {
       const response = await fetchRssItemXmlSnippet(item.id);
-      if (xmlItemId === item.id) xmlSnippet = response.xml;
+      if (xmlItemId === item.id) {
+        xmlSnippet = response.xml;
+        const parsed = parseXmlSnippetTable(response.xml);
+        xmlTableRows = parsed.rows;
+        xmlTableError = parsed.error;
+      }
     } catch (reason: unknown) {
       if (xmlItemId !== item.id) return;
       xmlSnippetError =
@@ -577,6 +598,9 @@
     xmlSnippetError = "";
     xmlSnippetLoading = false;
     xmlSnippetCopied = false;
+    xmlSnippetView = "table";
+    xmlTableRows = [];
+    xmlTableError = "";
   }
 
   async function copyItemXmlSnippet() {
@@ -709,6 +733,127 @@
       )
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function parseXmlSnippetTable(source: string): {
+    rows: XmlTableRow[];
+    error: string;
+  } {
+    if (typeof DOMParser === "undefined") {
+      return {
+        rows: [],
+        error: "Table view is unavailable in this browser. Raw XML is still available.",
+      };
+    }
+
+    const prefixes: string[] = [];
+    for (const match of source.matchAll(
+      /(?:<\/?|\s)([A-Za-z_][\w.-]*):[A-Za-z_][\w.-]*/g,
+    )) {
+      const prefix = match[1];
+      if (
+        prefix &&
+        prefix !== "xml" &&
+        prefix !== "xmlns" &&
+        !prefixes.includes(prefix)
+      ) {
+        prefixes.push(prefix);
+      }
+    }
+    const namespaceDeclarations = prefixes
+      .map(
+        (prefix) =>
+          ` xmlns:${prefix}="urn:pandan:rss-prefix:${encodeURIComponent(prefix)}"`,
+      )
+      .join("");
+    const document = new DOMParser().parseFromString(
+      `<pandan-fragment${namespaceDeclarations}>${source}</pandan-fragment>`,
+      "application/xml",
+    );
+    if (document.querySelector("parsererror")) {
+      return {
+        rows: [],
+        error: "This fragment could not be parsed into fields. Raw XML is still available.",
+      };
+    }
+
+    const rows: XmlTableRow[] = [];
+    let sequence = 0;
+    const appendNode = (node: Node, ancestors: string[], depth: number) => {
+      if (node.nodeType === Node.COMMENT_NODE) {
+        const value = node.nodeValue?.trim() ?? "";
+        if (!value) return;
+        rows.push({
+          id: `xml-row-${sequence++}`,
+          name: "#comment",
+          path: [...ancestors, "#comment"].join(" > "),
+          value,
+          depth,
+          kind: "comment",
+        });
+        return;
+      }
+      if (node.nodeType === Node.PROCESSING_INSTRUCTION_NODE) {
+        rows.push({
+          id: `xml-row-${sequence++}`,
+          name: node.nodeName,
+          path: [...ancestors, node.nodeName].join(" > "),
+          value: node.nodeValue?.trim() || "Empty instruction",
+          depth,
+          kind: "instruction",
+        });
+        return;
+      }
+      if (!(node instanceof Element)) return;
+
+      const path = [...ancestors, node.tagName];
+      const childElements = Array.from(node.children);
+      const directText = Array.from(node.childNodes)
+        .filter(
+          (child) =>
+            child.nodeType === Node.TEXT_NODE ||
+            child.nodeType === Node.CDATA_SECTION_NODE,
+        )
+        .map((child) => child.textContent ?? "")
+        .join("")
+        .trim();
+      rows.push({
+        id: `xml-row-${sequence++}`,
+        name: node.tagName,
+        path: path.join(" > "),
+        value:
+          directText ||
+          (childElements.length > 0
+            ? `${childElements.length} child ${childElements.length === 1 ? "element" : "elements"}`
+            : "Empty element"),
+        depth,
+        kind: "element",
+      });
+      for (const attribute of Array.from(node.attributes)) {
+        rows.push({
+          id: `xml-row-${sequence++}`,
+          name: `@${attribute.name}`,
+          path: `${path.join(" > ")} @${attribute.name}`,
+          value: attribute.value || "Empty attribute",
+          depth: depth + 1,
+          kind: "attribute",
+        });
+      }
+      for (const child of Array.from(node.childNodes)) {
+        if (
+          child.nodeType === Node.ELEMENT_NODE ||
+          child.nodeType === Node.COMMENT_NODE ||
+          child.nodeType === Node.PROCESSING_INSTRUCTION_NODE
+        ) {
+          appendNode(child, path, depth + 1);
+        }
+      }
+    };
+
+    for (const child of Array.from(document.documentElement.childNodes)) {
+      appendNode(child, [], 0);
+    }
+    return { rows, error: "" };
   }
 
   function safeCodePoint(value: number) {
@@ -1269,7 +1414,7 @@
           data-od-id="rss-view-item-xml"
         >
           <FileCode2 size={16} strokeWidth={1.8} aria-hidden="true" />
-          View XML snippet
+          View XML Snippet
         </button>
       </div>
     {/if}
@@ -1310,19 +1455,95 @@
             <span>{xmlSnippetError}</span>
           </div>
         {:else}
-          <textarea
-            readonly
-            spellcheck="false"
-            aria-label="RSS item XML snippet"
-            value={xmlSnippet}
-          ></textarea>
-          {#if xmlSnippetError}
-            <p class="rss-xml-copy-error" role="alert">{xmlSnippetError}</p>
-          {/if}
+          <div class="rss-xml-inspector">
+            <div class="rss-xml-toolbar">
+              <div
+                class="rss-xml-view-toggle"
+                role="group"
+                aria-label="XML snippet view"
+                data-od-id="rss-xml-view-toggle"
+              >
+                <button
+                  class:active={xmlSnippetView === "table"}
+                  type="button"
+                  aria-pressed={xmlSnippetView === "table"}
+                  onclick={() => (xmlSnippetView = "table")}
+                  data-od-id="rss-xml-table-toggle"
+                >Table</button>
+                <button
+                  class:active={xmlSnippetView === "raw"}
+                  type="button"
+                  aria-pressed={xmlSnippetView === "raw"}
+                  onclick={() => (xmlSnippetView = "raw")}
+                  data-od-id="rss-xml-raw-toggle"
+                >Raw XML</button>
+              </div>
+              <span>
+                {xmlSnippetView === "table"
+                  ? `${xmlTableRows.length} parsed ${xmlTableRows.length === 1 ? "field" : "fields"}`
+                  : "Stored source"}
+              </span>
+            </div>
+            {#if xmlSnippetView === "table"}
+              {#if xmlTableError}
+                <div class="rss-xml-table-error" role="status">
+                  <FileCode2 size={24} strokeWidth={1.5} aria-hidden="true" />
+                  <strong>Table unavailable</strong>
+                  <p>{xmlTableError}</p>
+                </div>
+              {:else}
+                <div
+                  class="rss-xml-table-scroll"
+                  data-od-id="rss-xml-table-view"
+                >
+                  <table class="rss-xml-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Field</th>
+                        <th scope="col">Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {#each xmlTableRows as row (row.id)}
+                        <tr>
+                          <th scope="row">
+                            <span
+                              class="rss-xml-field"
+                              style:--xml-indent={`${Math.min(row.depth, 4) * 10}px`}
+                            >
+                              <strong>{row.name}</strong>
+                              <small>{row.kind} · {row.path}</small>
+                            </span>
+                          </th>
+                          <td><code>{row.value}</code></td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                </div>
+              {/if}
+            {:else}
+              <div class="rss-xml-raw" data-od-id="rss-xml-raw-view">
+                <textarea
+                  readonly
+                  spellcheck="false"
+                  aria-label="RSS item raw XML snippet"
+                  value={xmlSnippet}
+                ></textarea>
+              </div>
+            {/if}
+            {#if xmlSnippetError}
+              <p class="rss-xml-copy-error" role="alert">{xmlSnippetError}</p>
+            {/if}
+          </div>
         {/if}
       </div>
       <footer class="rss-xml-actions">
-        <span>Only this listing’s stored source fragment is shown.</span>
+        <span>
+          {xmlSnippetView === "table"
+            ? "Parsed locally from this listing’s stored source fragment."
+            : "Only this listing’s stored source fragment is shown."}
+        </span>
         <div>
           <button
             class="ui-button ui-button--secondary rss-secondary-button"
@@ -1336,7 +1557,7 @@
               Copied
             {:else}
               <Copy size={15} strokeWidth={1.8} aria-hidden="true" />
-              Copy snippet
+              Copy raw XML
             {/if}
           </button>
           <button
@@ -1688,7 +1909,7 @@
   .rss-context-dialog::backdrop { background: color-mix(in oklch, var(--bg) 12%, transparent); backdrop-filter: none; }
   .rss-context-dialog { position: fixed; inset: auto; top: var(--context-y); left: var(--context-x); width: min(244px, calc(100vw - 24px)); margin: 0; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 0; background: color-mix(in oklch, var(--surface) 98%, var(--bg)); color: var(--fg); box-shadow: 0 24px 64px color-mix(in oklch, var(--bg) 76%, transparent); }
   .rss-context-actions { display: grid; padding: 5px; }
-  .rss-context-actions button { min-height: 44px; display: flex; align-items: center; gap: 9px; padding: 0 11px; border: 1px solid transparent; color: var(--fg); font-family: var(--font-mono); font-size: 10px; letter-spacing: .02em; text-align: left; }
+  .rss-context-actions button { width: 100%; min-height: 44px; display: flex; align-items: center; gap: 9px; padding: 0 11px; border: 1px solid transparent; color: var(--fg); font-family: var(--font-mono); font-size: 10px; letter-spacing: .02em; text-align: left; }
   .rss-context-actions button:hover:not(:disabled) { border-color: var(--fg); background: var(--fg); color: var(--surface); }
   .rss-context-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .rss-source-list { border: 1px solid var(--border); }
@@ -1818,11 +2039,35 @@
   .rss-xml-dialog { width: min(900px, calc(100vw - 32px)); overflow: hidden; }
   .rss-xml-dialog[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
   .rss-xml-dialog header h2 { max-width: 34ch; overflow: hidden; font-size: 20px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
-  .rss-xml-stage { min-height: 300px; display: grid; overflow: auto; padding: 18px; background: var(--bg); scrollbar-gutter: stable; }
+  .rss-xml-stage { min-width: 0; min-height: 300px; display: grid; overflow: hidden; background: var(--bg); }
+  .rss-xml-inspector { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+  .rss-xml-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--page-surface, var(--surface)); }
+  .rss-xml-toolbar > span { color: var(--muted); font-family: var(--font-mono); font-size: 9px; letter-spacing: .04em; }
+  .rss-xml-view-toggle { display: grid; grid-template-columns: repeat(2, minmax(92px, 1fr)); padding: 3px; border: 1px solid var(--border); background: var(--bg); }
+  .rss-xml-view-toggle button { min-height: 44px; padding: 0 13px; border: 1px solid transparent; color: var(--muted); font-family: var(--font-mono); font-size: 10px; font-weight: 560; letter-spacing: .02em; }
+  .rss-xml-view-toggle button:hover { border-color: var(--border); color: var(--fg); }
+  .rss-xml-view-toggle button.active { border-color: var(--fg); background: var(--fg); color: var(--surface); }
+  .rss-xml-view-toggle button:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
+  .rss-xml-table-scroll, .rss-xml-raw { min-width: 0; min-height: 0; overflow: auto; scrollbar-gutter: stable; }
+  .rss-xml-table-scroll { padding: 0 18px 18px; }
+  .rss-xml-raw { padding: 14px 18px 18px; }
+  .rss-xml-table { width: 100%; margin-top: 14px; table-layout: fixed; border-collapse: collapse; border: 1px solid var(--border); background: var(--page-surface, var(--surface)); }
+  .rss-xml-table thead th { position: sticky; z-index: 1; top: 0; padding: 9px 12px; border-bottom: 0; background: var(--page-surface, var(--surface)); box-shadow: inset 0 -1px 0 var(--fg); color: var(--muted); font-family: var(--font-mono); font-size: 8px; font-weight: 560; letter-spacing: .08em; text-align: left; text-transform: uppercase; }
+  .rss-xml-table thead th:first-child { width: 38%; }
+  .rss-xml-table tbody th, .rss-xml-table tbody td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; text-align: left; }
+  .rss-xml-table tbody th { border-right: 1px solid var(--border); }
+  .rss-xml-table tbody tr:last-child th, .rss-xml-table tbody tr:last-child td { border-bottom: 0; }
+  .rss-xml-field { display: grid; gap: 3px; padding-left: var(--xml-indent); }
+  .rss-xml-field strong { overflow-wrap: anywhere; color: var(--fg); font-family: var(--font-mono); font-size: 10px; font-weight: 560; line-height: 1.4; }
+  .rss-xml-field small { overflow-wrap: anywhere; color: var(--muted); font-family: var(--font-mono); font-size: 8px; font-weight: 400; line-height: 1.45; }
+  .rss-xml-table code { display: block; overflow-wrap: anywhere; color: var(--fg); font-family: var(--font-mono); font-size: 10px; font-weight: 400; line-height: 1.6; white-space: pre-wrap; }
+  .rss-xml-table-error { min-height: 264px; display: grid; place-items: center; align-content: center; gap: 7px; padding: 24px; color: var(--muted); text-align: center; }
+  .rss-xml-table-error strong { color: var(--fg); font-family: var(--font-display); font-size: 18px; font-weight: 600; }
+  .rss-xml-table-error p { max-width: 50ch; margin: 0; font-size: 11px; line-height: 1.5; }
   .rss-xml-stage textarea { width: 100%; min-height: 264px; margin: 0; padding: 16px; resize: none; border: 1px solid var(--border); background: var(--page-surface, var(--surface)); color: var(--fg); font-family: var(--font-mono); font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; tab-size: 2; white-space: pre-wrap; }
   .rss-xml-stage textarea:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
   .rss-xml-state { min-height: 264px; display: grid; place-items: center; align-content: center; gap: 9px; color: var(--muted); font-family: var(--font-mono); font-size: 10px; text-align: center; }
-  .rss-xml-copy-error { margin: 12px 0 0; color: var(--fg); font-family: var(--font-mono); font-size: 10px; }
+  .rss-xml-copy-error { margin: 0; padding: 9px 18px; border-top: 1px solid var(--border); color: var(--fg); font-family: var(--font-mono); font-size: 10px; }
   .rss-xml-actions { justify-content: space-between; padding: 14px 18px max(14px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); }
   .rss-xml-actions > span { color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
   .rss-xml-actions > div { display: flex; align-items: center; gap: 8px; }
@@ -1856,6 +2101,17 @@
     .rss-xml-actions { align-items: stretch; flex-direction: column; }
     .rss-xml-actions > div { width: 100%; }
     .rss-xml-actions > div button { flex: 1; }
+    .rss-xml-toolbar { align-items: stretch; flex-direction: column; }
+    .rss-xml-toolbar > span { padding: 0 2px; }
+    .rss-xml-view-toggle { width: 100%; }
+    .rss-xml-table-scroll, .rss-xml-raw { padding: 12px; }
+    .rss-xml-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; clip-path: inset(50%); }
+    .rss-xml-table, .rss-xml-table tbody, .rss-xml-table tr, .rss-xml-table th, .rss-xml-table td { display: block; width: 100%; }
+    .rss-xml-table { margin-top: 0; border: 0; background: transparent; }
+    .rss-xml-table tbody { display: grid; gap: 8px; }
+    .rss-xml-table tbody tr { border: 1px solid var(--border); background: var(--page-surface, var(--surface)); }
+    .rss-xml-table tbody th, .rss-xml-table tbody td { border: 0; }
+    .rss-xml-table tbody td { border-top: 1px solid var(--border); }
     .rss-reddit-options { grid-template-columns: 1fr; }
     .rss-feed-identity-grid { grid-template-columns: 1fr; }
     .rss-setting-indicators { grid-template-columns: 1fr; }

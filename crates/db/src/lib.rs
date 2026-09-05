@@ -313,6 +313,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "079_restore_pandan_highlight",
         include_str!("../migrations/079_restore_pandan_highlight.sql"),
     ),
+    (
+        "080_journal_node_emoji",
+        include_str!("../migrations/080_journal_node_emoji.sql"),
+    ),
 ];
 
 /// Maps migration names used by earlier development builds to their canonical names.
@@ -3435,19 +3439,26 @@ mod tests {
         .expect("other writer creates");
 
         let root =
-            queries::create_journal_node(&pool, &owner.id, None, "Projects.md", "# Projects")
+            queries::create_journal_node(&pool, &owner.id, None, "Projects.md", "# Projects", None)
                 .await
                 .expect("root document creates");
-        let nested =
-            queries::create_journal_node(&pool, &owner.id, Some(&root.id), "Pandan.md", "# Pandan")
-                .await
-                .expect("nested parent document creates");
+        let nested = queries::create_journal_node(
+            &pool,
+            &owner.id,
+            Some(&root.id),
+            "Pandan.md",
+            "# Pandan",
+            Some("📁"),
+        )
+        .await
+        .expect("nested parent document creates");
         let document = queries::create_journal_node(
             &pool,
             &owner.id,
             Some(&nested.id),
             "decisions.md",
             "# Decisions",
+            None,
         )
         .await
         .expect("nested document creates");
@@ -3478,6 +3489,7 @@ mod tests {
             Some(&nested.id),
             &document.name,
             "# Decisions\n\nUse SQLite.",
+            Some("📝"),
             None,
         )
         .await
@@ -3485,6 +3497,7 @@ mod tests {
         .expect("document exists");
         assert_eq!(updated.position, document.position);
         assert!(updated.content.contains("Use SQLite"));
+        assert_eq!(updated.emoji.as_deref(), Some("📝"));
 
         let root_updated = queries::update_journal_node(
             &pool,
@@ -3493,6 +3506,7 @@ mod tests {
             None,
             &root.name,
             "# Projects\n\nThis document also contains subdocuments.",
+            root.emoji.as_deref(),
             None,
         )
         .await
@@ -3520,13 +3534,13 @@ mod tests {
             queries::create_account(&pool, "ordered@example.com", "$argon2id$ordered", "Writer")
                 .await
                 .expect("writer creates");
-        let first = queries::create_journal_node(&pool, &owner.id, None, "First", "")
+        let first = queries::create_journal_node(&pool, &owner.id, None, "First", "", None)
             .await
             .expect("first document creates");
-        let second = queries::create_journal_node(&pool, &owner.id, None, "Second", "")
+        let second = queries::create_journal_node(&pool, &owner.id, None, "Second", "", None)
             .await
             .expect("second document creates");
-        let third = queries::create_journal_node(&pool, &owner.id, None, "Third", "")
+        let third = queries::create_journal_node(&pool, &owner.id, None, "Third", "", None)
             .await
             .expect("third document creates");
 
@@ -3537,6 +3551,7 @@ mod tests {
             None,
             &third.name,
             &third.content,
+            third.emoji.as_deref(),
             Some(0),
         )
         .await
@@ -3563,6 +3578,7 @@ mod tests {
             Some(&third.id),
             &first.name,
             &first.content,
+            first.emoji.as_deref(),
             Some(0),
         )
         .await

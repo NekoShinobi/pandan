@@ -415,6 +415,7 @@ export interface JournalNode {
   parent_id: string | null;
   name: string;
   content: string;
+  emoji: string | null;
   position: number;
   created_at: string;
   updated_at: string;
@@ -872,11 +873,13 @@ export interface CreateJournalNodeInput {
   parent_id: string | null;
   name: string;
   content?: string;
+  emoji?: string;
 }
 
 export interface UpdateJournalNodeInput {
   name?: string;
   content?: string;
+  emoji?: string | null;
   parent_id?: string | null;
   position?: number;
 }

@@ -764,6 +764,7 @@ pub struct CreateJournalNodeRequest {
     pub name: String,
     #[serde(default)]
     pub content: String,
+    pub emoji: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -772,6 +773,12 @@ pub struct UpdateJournalNodeRequest {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub emoji: Option<Option<String>>,
     #[serde(
         default,
         deserialize_with = "deserialize_optional_nullable",
@@ -4236,12 +4243,14 @@ async fn create_journal_node(
         ));
     }
     let content = validate_journal_content(&payload.content)?;
+    let emoji = validate_journal_emoji(payload.emoji.as_deref())?;
     let node = db::queries::create_journal_node(
         &state.pool,
         &account.id,
         parent_id.as_deref(),
         &name,
         &content,
+        emoji.as_deref(),
     )
     .await?;
     Ok((web::Json(node), StatusCode::CREATED))
@@ -4305,6 +4314,10 @@ async fn update_journal_node(
         .map(validate_journal_content)
         .transpose()?
         .unwrap_or_else(|| node.content.clone());
+    let emoji = match &payload.emoji {
+        Some(emoji) => validate_journal_emoji(emoji.as_deref())?,
+        None => node.emoji.clone(),
+    };
     db::queries::update_journal_node(
         &state.pool,
         &account.id,
@@ -4312,6 +4325,7 @@ async fn update_journal_node(
         parent_id.as_deref(),
         &name,
         &content,
+        emoji.as_deref(),
         payload.position,
     )
     .await?
@@ -4366,6 +4380,22 @@ fn validate_journal_content(value: &str) -> Result<String, ApiError> {
         ));
     }
     Ok(value.to_owned())
+}
+
+fn validate_journal_emoji(value: Option<&str>) -> Result<Option<String>, ApiError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let emoji = value.trim();
+    if emoji.is_empty() {
+        return Ok(None);
+    }
+    if emoji.len() > 128 || emojis::get(emoji).is_none() {
+        return Err(ApiError::BadRequest(
+            "journal logo must be one standard emoji",
+        ));
+    }
+    Ok(Some(emoji.to_owned()))
 }
 
 pub fn configure_api(config: &mut web::ServiceConfig) {
@@ -4843,6 +4873,29 @@ mod tests {
             assert!(slots.len() <= MAX_DASHBOARD_WIDGETS);
         }
         assert!(dashboard_template_slots("unknown-template").is_err());
+    }
+
+    #[actix_web::test]
+    async fn journal_logos_accept_only_standard_emoji_sequences() {
+        for emoji in ["📓", "🇯🇵", "1️⃣", "👩🏿‍💻", "👨‍👩‍👧‍👦"]
+        {
+            assert_eq!(
+                validate_journal_emoji(Some(emoji)).expect("emoji is valid"),
+                Some(emoji.to_owned())
+            );
+        }
+        assert_eq!(validate_journal_emoji(None).unwrap(), None);
+        assert_eq!(validate_journal_emoji(Some("  ")).unwrap(), None);
+        assert!(validate_journal_emoji(Some("J")).is_err());
+        assert!(validate_journal_emoji(Some("📓📝")).is_err());
+
+        let omitted: UpdateJournalNodeRequest =
+            serde_json::from_value(serde_json::json!({})).expect("request deserializes");
+        assert_eq!(omitted.emoji, None);
+        let reset: UpdateJournalNodeRequest =
+            serde_json::from_value(serde_json::json!({ "emoji": null }))
+                .expect("nullable emoji deserializes");
+        assert_eq!(reset.emoji, Some(None));
     }
 
     #[actix_web::test]

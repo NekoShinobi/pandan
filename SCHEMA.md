@@ -1086,6 +1086,7 @@ that would create a cycle.
 | `parent_id`  | TEXT    | Optional self-reference with cascade delete     |
 | `name`       | TEXT    | Required, trimmed length 1–120                  |
 | `content`    | TEXT    | Extended Markdown up to 1,000,000 characters    |
+| `emoji`      | TEXT    | Optional standard Unicode emoji sequence         |
 | `position`   | INTEGER | Zero-based order among sibling files, 0–100,000 |
 | `created_at` | TEXT    | Required, RFC 3339 timestamp                    |
 | `updated_at` | TEXT    | Required, RFC 3339 timestamp                    |
