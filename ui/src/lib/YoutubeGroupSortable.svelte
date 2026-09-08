@@ -53,7 +53,7 @@
   <button
     class="youtube-group-drag-handle"
     type="button"
-    disabled={disabled}
+    {disabled}
     aria-label={`Drag ${group.name} category to reorder`}
     title={`Drag ${group.name} to reorder`}
     data-od-id={`youtube-reorder-group-${group.id}`}
@@ -64,9 +64,11 @@
   <button
     class="youtube-group-select"
     type="button"
+    {disabled}
+    aria-label={`Edit ${group.name} category`}
     aria-pressed={active}
-    onclick={() => onselect(group.id)}
-  >{group.name}</button>
+    onclick={() => onselect(group.id)}>{group.name}</button
+  >
 </div>
 
 <style>

@@ -88,6 +88,14 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
   navigation and marks dated tasks, contact birthdays, and subscribed calendar events with their
   source colors.
 - All private records and assets must be scoped to the authenticated account in both handlers and queries.
+- YouTube filters uploads by category only. Channel subscriptions, category membership, and category
+  creation, editing, and reordering belong in Edit Sources; the main feed has no channel filter or
+  category editing controls. Category management and each channel's category assignments start
+  collapsed in Edit Sources; expand only one channel's category editor at a time.
+  Thumbnail grids keep two columns on phones, clamp video titles to two
+  lines with the full title available on hover, and place Download and Watch Later in a translucent
+  three-dot control at the thumbnail's top right. Do not restore external-arrow or bottom-right play
+  badges on video listings.
 - Administrator checks are enforced by the server, never only by the interface.
 - The final administrator cannot be demoted or deleted.
 - The initial administrator setup is one-time and claimed atomically.

@@ -12,7 +12,7 @@
   import Check from "lucide-svelte/icons/check";
   import ExternalLink from "lucide-svelte/icons/external-link";
   import Image from "lucide-svelte/icons/image";
-  import Layers3 from "lucide-svelte/icons/layers-3";
+  import Ellipsis from "lucide-svelte/icons/ellipsis";
   import List from "lucide-svelte/icons/list";
   import Plus from "lucide-svelte/icons/plus";
   import RefreshCw from "lucide-svelte/icons/refresh-cw";
@@ -44,7 +44,8 @@
 
   type YoutubeView = "latest" | "watch-later";
 
-  let { ondownload = () => {} }: { ondownload?: (url: string) => void } = $props();
+  let { ondownload = () => {} }: { ondownload?: (url: string) => void } =
+    $props();
   type YoutubeDragHandlers = DragDropEventHandlers;
   type YoutubeDragStartEvent = Parameters<
     NonNullable<YoutubeDragHandlers["onDragStart"]>
@@ -84,10 +85,12 @@
   let query = $state("");
   let activeView = $state<YoutubeView>("latest");
   let activeGroupId = $state("all");
-  let activeChannelId = $state<string | null>(null);
   let busyChannelId = $state("");
   let busyVideoId = $state("");
   let pendingChannelDelete = $state("");
+
+  let sourcesDialog = $state<HTMLDialogElement>();
+  let videoMenuPosition = $state({ top: 0, left: 0 });
 
   let subscriptionDialog = $state<HTMLDialogElement>();
   let channelInput = $state<HTMLInputElement>();
@@ -124,9 +127,9 @@
   });
   let filteredVideos = $derived.by(() => {
     const needle = query.trim().toLowerCase();
-    const videos = activeView === "watch-later" ? reader.watch_later : reader.videos;
+    const videos =
+      activeView === "watch-later" ? reader.watch_later : reader.videos;
     return videos.filter((video) => {
-      if (activeChannelId && video.channel_id !== activeChannelId) return false;
       if (
         activeView === "latest" &&
         activeChannelIds &&
@@ -285,7 +288,6 @@
     try {
       await deleteYoutubeSubscription(subscription.channel_id);
       reader = await fetchYoutubeReader();
-      if (activeChannelId === subscription.channel_id) activeChannelId = null;
       pendingChannelDelete = "";
     } catch (reason: unknown) {
       pageError = message(reason, "Unable to remove this channel");
@@ -313,13 +315,53 @@
 
   function selectGroup(groupId: string) {
     activeGroupId = groupId;
-    activeChannelId = null;
   }
 
-  function toggleChannelFilter(channelIdValue: string) {
-    activeChannelId =
-      activeChannelId === channelIdValue ? null : channelIdValue;
-    if (activeChannelId) activeGroupId = "all";
+  function captureSourcesDialog(node: HTMLDialogElement) {
+    sourcesDialog = node;
+    return () => (sourcesDialog = undefined);
+  }
+
+  function openSources() {
+    pendingChannelDelete = "";
+    sourcesDialog?.querySelectorAll("details[open]").forEach((details) => {
+      details.removeAttribute("open");
+    });
+    sourcesDialog?.showModal();
+  }
+
+  async function toggleChannelCategory(
+    subscription: YoutubeSubscription,
+    group: YoutubeGroup,
+  ) {
+    if (busyChannelId || savingGroupOrder) return;
+    busyChannelId = subscription.channel_id;
+    pageError = "";
+    const channelIds = group.channel_ids.includes(subscription.channel_id)
+      ? group.channel_ids.filter((id) => id !== subscription.channel_id)
+      : [...group.channel_ids, subscription.channel_id];
+    try {
+      reader = await updateYoutubeGroup(group.id, group.name, channelIds);
+    } catch (reason: unknown) {
+      pageError = message(reason, "Unable to change this channel's categories");
+    } finally {
+      busyChannelId = "";
+    }
+  }
+
+  function positionVideoMenu(event: MouseEvent) {
+    const button = event.currentTarget as HTMLButtonElement;
+    const bounds = button.getBoundingClientRect();
+    videoMenuPosition = {
+      top: Math.max(8, Math.min(bounds.bottom + 4, window.innerHeight - 112)),
+      left: Math.max(8, Math.min(bounds.right - 220, window.innerWidth - 228)),
+    };
+  }
+
+  function closeVideoMenu() {
+    document
+      .querySelector<HTMLElement>(".youtube-video-menu:popover-open")
+      ?.hidePopover();
   }
 
   async function toggleWatchLater(video: YoutubeVideo) {
@@ -452,13 +494,12 @@
   }
 </script>
 
+<svelte:window onresize={closeVideoMenu} />
+
 <section class="youtube-page product-page" data-od-id="youtube-page">
   <header class="youtube-header page-header" data-od-id="youtube-heading">
     <div>
-      <TypedHeading
-        text={`$ youtube --${activeView}`}
-        odId="youtube-heading"
-      />
+      <TypedHeading text={`$ youtube --${activeView}`} odId="youtube-heading" />
       <p>
         {activeView === "latest"
           ? `${reader.subscriptions.length} channels · ${reader.videos.length} stored uploads · refreshes every 2 hours`
@@ -466,17 +507,21 @@
       </p>
     </div>
     <button
-      class="ui-button ui-button--primary youtube-primary-button"
+      class="ui-button ui-button--secondary youtube-secondary-button"
       type="button"
-      onclick={openSubscriptionDialog}
-      data-od-id="youtube-add-channel"
+      onclick={openSources}
+      data-od-id="youtube-edit-sources"
     >
-      <Plus size={16} strokeWidth={2} aria-hidden="true" />
-      Add channel
+      <Settings2 size={16} strokeWidth={1.8} aria-hidden="true" />
+      Edit Sources
     </button>
   </header>
 
-  <nav class="youtube-view-tabs" aria-label="YouTube reader views" data-od-id="youtube-reader-views">
+  <nav
+    class="youtube-view-tabs"
+    aria-label="YouTube reader views"
+    data-od-id="youtube-reader-views"
+  >
     <button
       class="ui-view-tab"
       type="button"
@@ -503,50 +548,23 @@
       <nav aria-label="YouTube categories">
         <button
           type="button"
-          aria-pressed={activeGroupId === "all" && activeChannelId === null}
+          aria-pressed={activeGroupId === "all"}
           onclick={() => selectGroup("all")}>All channels</button
         >
-        <DragDropProvider
-          sensors={youtubeGroupSensors}
-          onDragStart={startGroupDrag}
-          onDragOver={previewGroupOrder}
-          onDragEnd={(event) => void finishGroupDrag(event)}
-        >
-          <div class="youtube-group-list" aria-label="Reorderable categories">
-            {#each reader.groups as group, index (group.id)}
-              <YoutubeGroupSortable
-                {group}
-                {index}
-                active={activeGroupId === group.id}
-                disabled={savingGroupOrder}
-                reducedMotion={reducedMotion.current}
-                onselect={selectGroup}
-              />
-            {/each}
-          </div>
-        </DragDropProvider>
-        <button
-          class="group-add"
-          type="button"
-          onclick={openNewGroup}
-          aria-label="Create channel category"
-        >
-          <Plus size={15} strokeWidth={1.9} aria-hidden="true" /> Category
-        </button>
+        {#each reader.groups as group (group.id)}
+          <button
+            type="button"
+            aria-pressed={activeGroupId === group.id}
+            onclick={() => selectGroup(group.id)}>{group.name}</button
+          >
+        {/each}
       </nav>
     {:else}
-      <p class="youtube-watch-later-note">Saved videos stay here after you unsubscribe.</p>
+      <p class="youtube-watch-later-note">
+        Saved videos stay here after you unsubscribe.
+      </p>
     {/if}
     <div class="youtube-toolbar-right">
-      {#if activeGroup}
-        <button
-          class="group-manage"
-          type="button"
-          onclick={() => openEditGroup(activeGroup)}
-        >
-          <Settings2 size={15} strokeWidth={1.8} aria-hidden="true" /> Manage Category
-        </button>
-      {/if}
       <label class="youtube-search">
         <Search size={15} strokeWidth={1.8} aria-hidden="true" />
         <span class="sr-only">Search videos and channels</span>
@@ -583,102 +601,15 @@
   {/if}
 
   <div class="youtube-layout">
-    <aside class="youtube-directory" data-od-id="youtube-channel-directory">
-      <header>
-        <div>
-          <span>[ ALL CHANNELS ]</span><strong
-            >{reader.subscriptions.length}</strong
-          >
-        </div>
-        <Layers3 size={18} strokeWidth={1.6} aria-hidden="true" />
-      </header>
-      {#each reader.subscriptions as subscription (subscription.channel_id)}
-        <article
-          class={[
-            "youtube-channel",
-            activeChannelId === subscription.channel_id && "active",
-          ]}
-          data-od-id={`youtube-channel-${subscription.channel_id}`}
-        >
-          <button
-            class="youtube-channel-filter"
-            type="button"
-            aria-label={`Filter videos by ${subscription.title}`}
-            aria-pressed={activeChannelId === subscription.channel_id}
-            onclick={() => toggleChannelFilter(subscription.channel_id)}
-            data-od-id={`youtube-channel-filter-${subscription.channel_id}`}
-          ></button>
-          <div class="youtube-channel-identity">
-            {#if subscription.thumbnail_url}<img
-                class="youtube-channel-avatar directory-avatar"
-                src={subscription.thumbnail_url}
-                alt=""
-                loading="lazy"
-                referrerpolicy="no-referrer"
-              />{:else}<span
-                class="youtube-channel-mark directory-mark"
-                aria-hidden="true">{channelInitial(subscription.title)}</span
-              >{/if}
-            <span class="youtube-channel-name">
-              <strong>{subscription.title}</strong><small
-                >{subscription.channel_id}</small
-              >
-            </span>
-          </div>
-          <a
-            class="youtube-channel-external"
-            href={subscription.channel_url}
-            target="_blank"
-            rel="noreferrer"
-            aria-label={`Open ${subscription.title} on YouTube`}
-            data-od-id={`youtube-channel-external-${subscription.channel_id}`}
-          >
-            <ExternalLink size={16} strokeWidth={1.8} aria-hidden="true" />
-          </a>
-          <p class:error={subscription.last_error !== null}>
-            {subscription.last_error ?? dateLabel(subscription.last_fetched_at)}
-          </p>
-          <div class="youtube-channel-actions">
-            <button
-              type="button"
-              disabled={busyChannelId !== ""}
-              onclick={() => refreshChannel(subscription)}
-            >
-              <RefreshCw
-                class={busyChannelId === subscription.channel_id
-                  ? "spinning"
-                  : undefined}
-                size={14}
-                strokeWidth={1.8}
-                aria-hidden="true"
-              /> Check now
-            </button>
-            <button
-              class="ui-button ui-button--danger"
-              class:confirm={pendingChannelDelete === subscription.channel_id}
-              type="button"
-              disabled={busyChannelId !== ""}
-              onclick={() => removeChannel(subscription)}
-            >
-              <Trash2
-                size={14}
-                strokeWidth={1.8}
-                aria-hidden="true"
-              />{pendingChannelDelete === subscription.channel_id
-                ? "Confirm"
-                : "Remove"}
-            </button>
-          </div>
-        </article>
-      {:else}
-        <p class="youtube-directory-empty">No channels subscribed.</p>
-      {/each}
-    </aside>
-
     <main
       class={["youtube-feed", reader.display_mode]}
-      aria-label={activeView === "latest" ? "YouTube uploads" : "YouTube Watch Later"}
-      data-od-id={activeView === "latest" ? "youtube-video-feed" : "youtube-watch-later-feed"}
+      onscroll={closeVideoMenu}
+      aria-label={activeView === "latest"
+        ? "YouTube uploads"
+        : "YouTube Watch Later"}
+      data-od-id={activeView === "latest"
+        ? "youtube-video-feed"
+        : "youtube-watch-later-feed"}
     >
       {#if loading}
         <div class="youtube-empty" role="status">
@@ -695,73 +626,88 @@
             class="youtube-video"
             data-od-id={`youtube-video-${video.id}`}
           >
-            <a
-              class="youtube-thumbnail"
-              href={video.url}
-              target="_blank"
-              rel="noreferrer"
-              aria-label={`Watch ${video.title}`}
-            >
-              {#if video.thumbnail_url}<img
-                  src={video.thumbnail_url}
-                  alt=""
-                  loading="lazy"
-                />{:else}<CirclePlay
-                  size={28}
-                  strokeWidth={1.4}
-                  aria-hidden="true"
-                />{/if}
-              <span
-                ><CirclePlay
-                  size={18}
-                  fill="currentColor"
-                  strokeWidth={1.5}
-                  aria-hidden="true"
-                /></span
+            <div class="youtube-video-media">
+              <!-- eslint-disable svelte/no-navigation-without-resolve -- External YouTube destination. -->
+              <a
+                class="youtube-thumbnail"
+                href={video.url}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={`Watch ${video.title}`}
               >
-            </a>
+                {#if video.thumbnail_url}<img
+                    src={video.thumbnail_url}
+                    alt=""
+                    loading="lazy"
+                  />{:else}<CirclePlay
+                    size={28}
+                    strokeWidth={1.4}
+                    aria-hidden="true"
+                  />{/if}
+              </a>
+              <!-- eslint-enable svelte/no-navigation-without-resolve -->
+              <button
+                class="youtube-video-menu-trigger"
+                type="button"
+                popovertarget={`youtube-video-menu-${video.id}`}
+                aria-label={`Actions for ${video.title}`}
+                title="Video actions"
+                onclick={positionVideoMenu}
+                data-od-id={`youtube-video-actions-${video.id}`}
+                ><Ellipsis
+                  size={20}
+                  strokeWidth={2}
+                  aria-hidden="true"
+                /></button
+              >
+              <div
+                class="youtube-video-menu"
+                id={`youtube-video-menu-${video.id}`}
+                popover="auto"
+                role="group"
+                aria-label={`Actions for ${video.title}`}
+                style:top={`${videoMenuPosition.top}px`}
+                style:left={`${videoMenuPosition.left}px`}
+              >
+                <button
+                  type="button"
+                  onclick={() => {
+                    closeVideoMenu();
+                    ondownload(video.url);
+                  }}
+                  data-od-id={`youtube-download-${video.id}`}
+                  ><Download size={16} aria-hidden="true" /> Download</button
+                >
+                <button
+                  type="button"
+                  disabled={busyVideoId !== ""}
+                  onclick={() => {
+                    closeVideoMenu();
+                    void toggleWatchLater(video);
+                  }}
+                  data-od-id={`youtube-save-later-${video.id}`}
+                >
+                  <Bookmark
+                    size={16}
+                    fill={video.watch_later_at ? "currentColor" : "none"}
+                    aria-hidden="true"
+                  />
+                  {video.watch_later_at
+                    ? "Remove from Watch Later"
+                    : "Save to Watch Later"}
+                </button>
+              </div>
+            </div>
             <div class="youtube-video-copy">
               <div class="youtube-video-title">
-                <a href={video.url} target="_blank" rel="noreferrer"
-                  >{video.title}<ExternalLink
-                    size={13}
-                    strokeWidth={1.7}
-                    aria-hidden="true"
-                  /></a
+                <!-- eslint-disable svelte/no-navigation-without-resolve -- External YouTube destination. -->
+                <a
+                  href={video.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={video.title}><span>{video.title}</span></a
                 >
-                <span class="youtube-video-actions">
-                  <button
-                    class="youtube-download-button"
-                    type="button"
-                    aria-label={`Download ${video.title}`}
-                    title="Open in Downloads"
-                    onclick={() => ondownload(video.url)}
-                    data-od-id={`youtube-download-${video.id}`}
-                  >
-                    <Download size={16} strokeWidth={1.8} aria-hidden="true" />
-                  </button>
-                  <button
-                    class={[
-                      "youtube-watch-later-button",
-                      video.watch_later_at !== null && "active",
-                    ]}
-                    type="button"
-                    disabled={busyVideoId !== ""}
-                    aria-label={video.watch_later_at
-                      ? `Remove ${video.title} from Watch Later`
-                      : `Save ${video.title} to Watch Later`}
-                    title={video.watch_later_at ? "Remove from Watch Later" : "Save to Watch Later"}
-                    onclick={() => toggleWatchLater(video)}
-                    data-od-id={`youtube-save-later-${video.id}`}
-                  >
-                    <Bookmark
-                      size={16}
-                      strokeWidth={1.8}
-                      fill={video.watch_later_at ? "currentColor" : "none"}
-                      aria-hidden="true"
-                    />
-                  </button>
-                </span>
+                <!-- eslint-enable svelte/no-navigation-without-resolve -->
               </div>
               <div class="youtube-video-meta">
                 <a
@@ -802,17 +748,209 @@
             >
             <p>
               {activeView === "watch-later"
-                ? "Use the bookmark control on any upload to build a private viewing queue."
+                ? "Choose Save to Watch Later in any video’s three-dot menu to build a private viewing queue."
                 : reader.subscriptions.length
-                  ? "Try another group or clear the text filter."
+                  ? "Try another category or clear the text filter."
                   : "Add a Channel ID to start building a quieter YouTube feed."}
             </p>
           </div>
         {/each}
       {/if}
     </main>
-
   </div>
+
+  <dialog
+    class="youtube-dialog youtube-sources-dialog settings-dialog"
+    aria-labelledby="youtube-sources-title"
+    {@attach captureSourcesDialog}
+    onclick={(event) => event.target === sourcesDialog && sourcesDialog.close()}
+    data-od-id="youtube-sources-dialog"
+  >
+    <header>
+      <div>
+        <span>[ YOUTUBE.SOURCES ]</span>
+        <h2 id="youtube-sources-title">Edit Sources</h2>
+      </div>
+      <button
+        class="ui-button ui-button--ghost ui-button--icon"
+        type="button"
+        aria-label="Close Edit Sources"
+        onclick={() => sourcesDialog?.close()}
+        ><X size={18} strokeWidth={1.8} aria-hidden="true" /></button
+      >
+    </header>
+    <div class="youtube-sources-body">
+      {#if pageError}
+        <p class="youtube-form-error" role="alert">{pageError}</p>
+      {/if}
+      <div class="youtube-sources-actions">
+        <button
+          class="ui-button ui-button--primary youtube-primary-button"
+          type="button"
+          disabled={busyChannelId !== "" || savingGroupOrder}
+          onclick={openSubscriptionDialog}
+          data-od-id="youtube-add-channel"
+          ><Plus size={16} aria-hidden="true" /> Add channel</button
+        >
+      </div>
+      <details class="youtube-source-editor">
+        <summary>Edit categories <small>{reader.groups.length}</small></summary>
+        <div class="youtube-category-editor-body">
+          <button
+            class="ui-button ui-button--secondary youtube-secondary-button"
+            type="button"
+            disabled={busyChannelId !== "" || savingGroupOrder}
+            onclick={openNewGroup}
+            ><Plus size={16} aria-hidden="true" /> Create category</button
+          >
+          <h3
+            class="youtube-sources-heading"
+            id="youtube-source-category-heading"
+          >
+            Category order
+          </h3>
+          <p class="dialog-note">
+            Drag a handle to reorder, or press Space and use the arrow keys.
+            Select a category to edit it.
+          </p>
+          <DragDropProvider
+            sensors={youtubeGroupSensors}
+            onDragStart={startGroupDrag}
+            onDragOver={previewGroupOrder}
+            onDragEnd={(event) => void finishGroupDrag(event)}
+          >
+            <div class="youtube-group-list" aria-label="Reorderable categories">
+              {#each reader.groups as group, index (group.id)}
+                <YoutubeGroupSortable
+                  {group}
+                  {index}
+                  active={false}
+                  disabled={savingGroupOrder || busyChannelId !== ""}
+                  reducedMotion={reducedMotion.current}
+                  onselect={() => openEditGroup(group)}
+                />
+              {:else}
+                <p class="dialog-note">No categories yet.</p>
+              {/each}
+            </div>
+          </DragDropProvider>
+        </div>
+      </details>
+      <aside class="youtube-directory" data-od-id="youtube-channel-directory">
+        <h3 class="youtube-sources-heading">
+          Channels <span>{reader.subscriptions.length}</span>
+        </h3>
+        {#each reader.subscriptions as subscription (subscription.channel_id)}
+          <article
+            class="youtube-channel"
+            data-od-id={`youtube-channel-${subscription.channel_id}`}
+          >
+            <div class="youtube-channel-identity">
+              {#if subscription.thumbnail_url}<img
+                  class="youtube-channel-avatar directory-avatar"
+                  src={subscription.thumbnail_url}
+                  alt=""
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                />{:else}<span
+                  class="youtube-channel-mark directory-mark"
+                  aria-hidden="true">{channelInitial(subscription.title)}</span
+                >{/if}
+              <span class="youtube-channel-name">
+                <strong>{subscription.title}</strong><small
+                  >{subscription.channel_id}</small
+                >
+              </span>
+            </div>
+            <!-- eslint-disable svelte/no-navigation-without-resolve -- External YouTube destination. -->
+            <a
+              class="youtube-channel-external"
+              href={subscription.channel_url}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={`Open ${subscription.title} on YouTube`}
+              data-od-id={`youtube-channel-external-${subscription.channel_id}`}
+            >
+              <ExternalLink size={16} strokeWidth={1.8} aria-hidden="true" />
+            </a>
+            <!-- eslint-enable svelte/no-navigation-without-resolve -->
+            <p class:error={subscription.last_error !== null}>
+              {subscription.last_error ??
+                dateLabel(subscription.last_fetched_at)}
+            </p>
+            <details
+              class="youtube-source-editor"
+              name="youtube-channel-categories"
+            >
+              <summary>
+                Edit categories
+                <small
+                  >{reader.groups.filter((group) =>
+                    group.channel_ids.includes(subscription.channel_id),
+                  ).length} assigned</small
+                >
+              </summary>
+              <fieldset class="youtube-source-categories">
+                <legend>Categories</legend>
+                {#each reader.groups as group (group.id)}
+                  <button
+                    class="ui-toggle-button"
+                    type="button"
+                    aria-label={`${subscription.title}: ${group.name}`}
+                    aria-pressed={group.channel_ids.includes(
+                      subscription.channel_id,
+                    )}
+                    disabled={busyChannelId !== "" || savingGroupOrder}
+                    onclick={() => toggleChannelCategory(subscription, group)}
+                  >
+                    <span class="ui-toggle-indicator" aria-hidden="true"></span>
+                    <span>{group.name}</span>
+                  </button>
+                {:else}
+                  <p class="dialog-note">
+                    Create a category to organize this channel.
+                  </p>
+                {/each}
+              </fieldset>
+            </details>
+            <div class="youtube-channel-actions">
+              <button
+                type="button"
+                disabled={busyChannelId !== "" || savingGroupOrder}
+                onclick={() => refreshChannel(subscription)}
+              >
+                <RefreshCw
+                  class={busyChannelId === subscription.channel_id
+                    ? "spinning"
+                    : undefined}
+                  size={14}
+                  strokeWidth={1.8}
+                  aria-hidden="true"
+                /> Check now
+              </button>
+              <button
+                class="ui-button ui-button--danger"
+                class:confirm={pendingChannelDelete === subscription.channel_id}
+                type="button"
+                disabled={busyChannelId !== "" || savingGroupOrder}
+                onclick={() => removeChannel(subscription)}
+              >
+                <Trash2
+                  size={14}
+                  strokeWidth={1.8}
+                  aria-hidden="true"
+                />{pendingChannelDelete === subscription.channel_id
+                  ? "Confirm"
+                  : "Remove"}
+              </button>
+            </div>
+          </article>
+        {:else}
+          <p class="youtube-directory-empty">No channels subscribed.</p>
+        {/each}
+      </aside>
+    </div>
+  </dialog>
 
   <dialog
     class="youtube-dialog settings-dialog"
@@ -867,7 +1005,10 @@
             </span>
             <span>
               <strong>{group.name}</strong>
-              <small>{group.channel_ids.length} {group.channel_ids.length === 1 ? "channel" : "channels"}</small>
+              <small
+                >{group.channel_ids.length}
+                {group.channel_ids.length === 1 ? "channel" : "channels"}</small
+              >
             </span>
           </button>
         {:else}
@@ -925,8 +1066,14 @@
         <legend>Channels in this group</legend>
         {#each reader.subscriptions as subscription (subscription.channel_id)}
           {@const selected = groupChannelIds.includes(subscription.channel_id)}
-          <button class="ui-toggle-button youtube-channel-toggle" type="button" aria-pressed={selected} onclick={() => toggleGroupChannel(subscription.channel_id)}
-            ><span class="ui-toggle-indicator" aria-hidden="true">{#if selected}<Check size={13} />{/if}</span><span
+          <button
+            class="ui-toggle-button youtube-channel-toggle"
+            type="button"
+            aria-pressed={selected}
+            onclick={() => toggleGroupChannel(subscription.channel_id)}
+            ><span class="ui-toggle-indicator" aria-hidden="true"
+              >{#if selected}<Check size={13} />{/if}</span
+            ><span
               ><strong>{subscription.title}</strong><small
                 >{subscription.channel_id}</small
               ></span
@@ -944,7 +1091,9 @@
             type="button"
             disabled={savingGroup}
             onclick={removeGroup}
-            >{confirmingGroupDelete ? "Confirm remove" : "Remove category"}</button
+            >{confirmingGroupDelete
+              ? "Confirm remove"
+              : "Remove category"}</button
           >{/if}<button
           class="ui-button ui-button--secondary youtube-secondary-button"
           type="button"
@@ -986,8 +1135,7 @@
     border-bottom: 1px solid var(--border);
   }
   .youtube-header span,
-  .youtube-dialog header span,
-  .youtube-directory header span {
+  .youtube-dialog header span {
     color: var(--muted);
     font-family: var(--font-mono);
     font-size: 10px;
@@ -1079,10 +1227,11 @@
   }
   .youtube-group-list {
     display: flex;
-    gap: 4px;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 12px;
   }
-  .youtube-toolbar nav button,
-  .group-manage {
+  .youtube-toolbar nav button {
     flex: 0 0 auto;
     padding: 0 12px;
     border: 1px solid var(--border);
@@ -1096,8 +1245,7 @@
       background-color 120ms var(--ease-out),
       color 120ms var(--ease-out);
   }
-  .youtube-toolbar nav button:hover,
-  .group-manage:hover {
+  .youtube-toolbar nav button:hover {
     border-color: var(--fg);
     background: var(--surface);
     color: var(--fg);
@@ -1107,12 +1255,6 @@
     border-color: var(--fg);
     background: var(--fg);
     color: var(--surface);
-  }
-  .youtube-toolbar .group-add,
-  .group-manage {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
   }
   .youtube-toolbar-right {
     display: flex;
@@ -1192,7 +1334,7 @@
     min-height: 0;
     flex: 1 1 auto;
     display: grid;
-    grid-template-columns: minmax(250px, 310px) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     gap: 18px;
     align-items: stretch;
     overflow: hidden;
@@ -1208,16 +1350,94 @@
     background: transparent;
   }
   .youtube-directory {
+    border: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .youtube-sources-dialog {
+    width: min(760px, calc(100vw - 32px));
+  }
+  .youtube-sources-body {
+    display: grid;
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
+    gap: 22px;
+    padding: 20px;
+  }
+  .youtube-sources-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .youtube-sources-heading {
+    padding: 12px 0;
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .youtube-directory > .youtube-sources-heading {
+    padding: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .youtube-sources-heading span {
+    color: var(--muted);
+  }
+  .youtube-source-editor {
+    min-width: 0;
     border: 1px solid var(--border);
-    background: var(--surface);
+  }
+  .youtube-channel > .youtube-source-editor {
+    margin-top: 12px;
+  }
+  .youtube-source-editor > summary {
+    min-height: 44px;
+    padding: 10px 12px;
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 24px;
+    cursor: pointer;
+  }
+  .youtube-source-editor > summary:hover {
+    background: var(--fg-soft);
+  }
+  .youtube-source-editor > summary:focus-visible {
+    outline: 2px solid var(--fg);
+    outline-offset: -2px;
+  }
+  .youtube-source-editor > summary small {
+    margin-left: 8px;
+    color: var(--muted);
+    font-size: 10px;
+  }
+  .youtube-category-editor-body {
+    padding: 12px;
+    border-top: 1px solid var(--border);
+  }
+  .youtube-source-editor > .youtube-source-categories {
+    margin: 0 12px 12px;
+  }
+  .youtube-source-categories {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin: 12px 0 0;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+  }
+  .youtube-source-categories .ui-toggle-button {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .youtube-source-categories .ui-toggle-button > span:last-child {
+    overflow-wrap: anywhere;
   }
   .youtube-feed.thumbnails {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
     gap: 16px 14px;
     background: transparent;
   }
@@ -1234,15 +1454,24 @@
   }
   .thumbnails .youtube-video {
     display: grid;
+    grid-template-rows: auto 1fr;
     align-content: start;
+    max-height: 320px;
+  }
+  .youtube-video-media {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
   }
   .thumbnails .youtube-video-copy {
     gap: 4px;
     padding: 10px 2px 4px;
+    grid-template-rows: 44px auto;
   }
   .youtube-thumbnail {
     position: relative;
     aspect-ratio: 16 / 9;
+    max-height: 210px;
     display: grid;
     line-height: 0;
     place-items: center;
@@ -1257,18 +1486,52 @@
     object-fit: cover;
     transition: transform 180ms var(--ease-out);
   }
-  .youtube-thumbnail > span {
+  .youtube-video-menu-trigger {
     position: absolute;
-    right: 10px;
-    bottom: 10px;
+    top: 4px;
+    right: 4px;
+    width: 44px;
+    height: 44px;
     display: grid;
     place-items: center;
-    width: 36px;
-    height: 36px;
-    border: 1px solid color-mix(in oklch, var(--surface) 45%, transparent);
-    border-radius: 50%;
-    background: color-mix(in oklch, var(--fg) 78%, transparent);
-    color: var(--surface);
+    border: 1px solid color-mix(in oklch, var(--fg) 18%, transparent);
+    border-radius: 6px;
+    background: color-mix(in oklch, var(--surface) 78%, transparent);
+    color: var(--fg);
+    opacity: 0.85;
+  }
+  .youtube-video-menu-trigger:hover,
+  .youtube-video-menu-trigger:focus-visible {
+    opacity: 1;
+    background: var(--surface);
+  }
+  .youtube-video-menu {
+    position: fixed;
+    inset: auto;
+    width: min(220px, calc(100vw - 16px));
+    margin: 0;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--fg);
+  }
+  .youtube-video-menu button {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    text-align: left;
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+  .youtube-video-menu button:hover,
+  .youtube-video-menu button:focus-visible {
+    background: var(--fg-soft);
+  }
+  .youtube-video-menu button :global(svg) {
+    flex: 0 0 auto;
   }
   .youtube-thumbnail:hover img {
     transform: scale(1.025);
@@ -1279,50 +1542,16 @@
     padding: 15px;
   }
   .youtube-video-title {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: start;
-    gap: 6px;
-  }
-  .youtube-watch-later-button {
-    width: 44px;
-    min-height: 44px;
-    display: grid;
-    place-items: center;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    color: var(--muted);
-  }
-  .youtube-video-actions {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-  .youtube-download-button {
-    width: 44px;
-    min-height: 44px;
-    display: grid;
-    place-items: center;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    color: var(--muted);
-  }
-  .youtube-download-button:hover {
-    border-color: var(--fg);
-    background: var(--fg-soft);
-    color: var(--fg);
-  }
-  .youtube-watch-later-button:hover,
-  .youtube-watch-later-button.active {
-    border-color: var(--fg);
-    background: var(--fg);
-    color: var(--surface);
+    min-width: 0;
+    height: 44px;
+    overflow: hidden;
   }
   .youtube-video-title > a {
     min-height: 44px;
-    display: flex;
-    align-items: start;
-    gap: 7px;
+    display: block;
+    max-height: 44px;
+    overflow: hidden;
+    overflow-wrap: anywhere;
     color: var(--fg);
     font-family: var(--font-display);
     font-size: 16px;
@@ -1331,14 +1560,17 @@
     line-height: 1.3;
     text-decoration: none;
   }
+  .youtube-video-title > a > span {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    max-height: 2.6em;
+  }
   .youtube-video-title > a:hover {
     text-decoration: underline;
     text-underline-offset: 3px;
-  }
-  .youtube-video-title > :global(a svg) {
-    flex: 0 0 auto;
-    margin-top: 4px;
-    color: var(--muted);
   }
   .youtube-video-meta {
     display: flex;
@@ -1401,7 +1633,8 @@
   .youtube-feed.compact .youtube-video {
     display: grid;
     grid-template-columns: 152px minmax(0, 1fr);
-    min-height: 92px;
+    height: 108px;
+    max-height: 108px;
     align-items: stretch;
     border: 0;
     border-bottom: 1px solid var(--border);
@@ -1410,7 +1643,7 @@
     border-bottom: 0;
   }
   .youtube-feed.compact .youtube-video-copy {
-    grid-template-columns: minmax(0, 1fr) 220px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 220px);
     align-items: center;
     gap: 16px;
     padding: 10px 16px;
@@ -1425,37 +1658,8 @@
   .youtube-feed.compact .youtube-video-title > a {
     min-height: auto;
   }
-  .youtube-feed.compact .youtube-thumbnail > span {
-    right: 6px;
-    bottom: 6px;
-    width: 24px;
-    height: 24px;
-  }
   .youtube-feed.compact .youtube-video-meta {
     justify-content: flex-end;
-  }
-  .youtube-directory > header {
-    position: sticky;
-    top: 0;
-    z-index: 3;
-    min-height: 66px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 13px 15px;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-  }
-  .youtube-directory > header > div {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-  }
-  .youtube-directory header strong {
-    font-family: var(--font-mono);
-    font-size: 24px;
-    font-weight: 520;
   }
   .youtube-channel {
     position: relative;
@@ -1464,23 +1668,6 @@
   }
   .youtube-channel:last-child {
     border-bottom: 0;
-  }
-  .youtube-channel-filter {
-    position: absolute;
-    inset: 0;
-    z-index: 0;
-    width: 100%;
-    min-height: 44px;
-    border: 0;
-    background: transparent;
-  }
-  .youtube-channel-filter:hover,
-  .youtube-channel-filter[aria-pressed="true"] {
-    background: var(--fg-soft);
-  }
-  .youtube-channel-filter:focus-visible {
-    outline: 2px solid var(--fg);
-    outline-offset: -3px;
   }
   .youtube-channel-identity {
     position: relative;
@@ -1527,13 +1714,6 @@
   }
   .directory-mark {
     font-size: 14px;
-  }
-  .youtube-channel-filter:hover + .youtube-channel-identity strong,
-  .youtube-channel-filter[aria-pressed="true"]
-    + .youtube-channel-identity
-    strong {
-    text-decoration: underline;
-    text-underline-offset: 3px;
   }
   .youtube-channel-name strong,
   .youtube-channel-name small {
@@ -1757,9 +1937,6 @@
     margin-right: auto;
   }
   @media (max-width: 1100px) {
-    .youtube-feed.thumbnails {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
     .youtube-toolbar {
       align-items: stretch;
       flex-direction: column;
@@ -1790,19 +1967,11 @@
       align-items: start;
       overflow: visible;
     }
-    .youtube-directory,
     .youtube-feed {
       min-height: auto;
       overflow: visible;
       overscroll-behavior: auto;
       scrollbar-gutter: auto;
-    }
-    .youtube-directory {
-      position: static;
-      order: -1;
-    }
-    .youtube-directory > header {
-      position: static;
     }
   }
   @media (max-width: 760px) {
@@ -1815,7 +1984,37 @@
       width: 100%;
     }
     .youtube-feed.thumbnails {
-      grid-template-columns: 1fr;
+      gap: 12px 10px;
+    }
+    .thumbnails .youtube-video-copy {
+      padding-top: 8px;
+    }
+    .youtube-video-title > a {
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    .youtube-video-title > a > span {
+      max-height: 2.8em;
+    }
+    .youtube-video-meta {
+      flex-wrap: wrap;
+      gap: 3px;
+    }
+    .youtube-video-channel {
+      width: 100%;
+      min-height: 44px;
+      gap: 5px;
+    }
+    .youtube-video-channel strong {
+      font-size: 11px;
+    }
+    .youtube-video-channel .youtube-channel-avatar,
+    .youtube-video-channel .youtube-channel-mark {
+      width: 22px;
+      height: 22px;
+    }
+    .youtube-sources-body {
+      padding: 14px;
     }
     .youtube-feed.compact .youtube-video-copy {
       grid-template-columns: 1fr;
@@ -1824,7 +2023,8 @@
     }
     .youtube-feed.compact .youtube-video {
       grid-template-columns: 112px minmax(0, 1fr);
-      min-height: 84px;
+      height: 128px;
+      max-height: 128px;
     }
     .youtube-feed.compact .youtube-thumbnail {
       min-height: 84px;
@@ -1832,11 +2032,13 @@
     .youtube-feed.compact .youtube-video-meta {
       justify-content: space-between;
     }
-    .group-manage {
-      width: 100%;
+    .youtube-toolbar-right {
+      flex-wrap: nowrap;
     }
     .youtube-search {
-      flex-basis: calc(100% - 88px);
+      flex: 1;
+      width: auto;
+      min-width: 0;
     }
     .youtube-dialog footer {
       flex-wrap: wrap;
