@@ -11,7 +11,7 @@ use db::entities::{
 use feed_rs::model::Entry;
 use futures_util::{
     future::join_all,
-    stream::{self, StreamExt},
+    stream::{self, StreamExt, TryStreamExt},
 };
 use primp::{Client as BrowserClient, Impersonate, ImpersonateOS};
 use quick_xml::{Reader, Writer, de::from_str, events::Event};
@@ -677,7 +677,33 @@ impl WidgetIntegrationService {
         let (client, endpoint) = self.validate_invidious_url(endpoint.as_str()).await?;
         let response = client.get(endpoint).send().await.map_err(request_error)?;
         let text = response_text(response).await?;
-        parse_invidious_snapshot(base_url, channel_id, &text)
+        let snapshot = parse_invidious_snapshot(base_url, channel_id, &text)?;
+        verify_invidious_publication_dates(snapshot, chrono::Utc::now(), |video_id| async move {
+            self.fetch_invidious_publication_date(base_url, &video_id)
+                .await
+        })
+        .await
+    }
+
+    async fn fetch_invidious_publication_date(
+        &self,
+        base_url: &Url,
+        video_id: &str,
+    ) -> Result<String, String> {
+        if video_id.len() != 11
+            || !video_id.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+            })
+        {
+            return Err("Invidious returned an invalid video ID".to_owned());
+        }
+        let endpoint = base_url
+            .join(&format!("api/v1/videos/{video_id}"))
+            .map_err(|_| "Invidious video URL is invalid".to_owned())?;
+        let (client, endpoint) = self.validate_invidious_url(endpoint.as_str()).await?;
+        let response = client.get(endpoint).send().await.map_err(request_error)?;
+        let text = response_text(response).await?;
+        parse_invidious_publication_date(video_id, &text)
     }
 
     /// Validates one URL that belongs to the operator-configured `Invidious` instance.
@@ -3245,6 +3271,49 @@ struct InvidiousThumbnail {
     width: u32,
 }
 
+async fn verify_invidious_publication_dates<F, Fut>(
+    mut snapshot: YoutubeFeedSnapshot,
+    now: chrono::DateTime<chrono::Utc>,
+    fetch: F,
+) -> Result<YoutubeFeedSnapshot, String>
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    // Invidious substitutes the fetch time when a channel listing omits its date,
+    // including old promoted videos. Verify recent-looking entries against video
+    // details, allowing for a cached channel response. Never persist that guess
+    // if verification fails: the caller can use Atom or retain the existing cache.
+    let recent_since = now - chrono::Duration::hours(24);
+    snapshot.items = stream::iter(snapshot.items)
+        .map(|mut item| {
+            let fetch = &fetch;
+            async move {
+                let needs_verification = chrono::DateTime::parse_from_rfc3339(&item.published_at)
+                    .map_or(true, |date| date.timestamp() <= 0 || date >= recent_since);
+                if needs_verification {
+                    item.published_at = fetch(item.external_id.clone()).await?;
+                }
+                Ok::<_, String>(item)
+            }
+        })
+        .buffered(4)
+        .try_collect()
+        .await?;
+    Ok(snapshot)
+}
+
+fn parse_invidious_publication_date(video_id: &str, json: &str) -> Result<String, String> {
+    let video: InvidiousVideo = serde_json::from_str(json)
+        .map_err(|_| "Invidious returned an invalid video response".to_owned())?;
+    if video.video_id != video_id || video.published <= 0 {
+        return Err("Invidious video publication date was unavailable".to_owned());
+    }
+    chrono::DateTime::from_timestamp(video.published, 0)
+        .map(|date| date.to_rfc3339())
+        .ok_or_else(|| "Invidious video publication date was invalid".to_owned())
+}
+
 fn parse_invidious_snapshot(
     base_url: &Url,
     channel_id: &str,
@@ -5109,6 +5178,100 @@ mod tests {
             snapshot.items[0].url,
             "https://www.youtube.com/watch?v=abc123def45"
         );
+    }
+
+    #[tokio::test]
+    async fn invidious_fetch_time_dates_are_replaced_with_original_video_dates() {
+        let base_url = Url::parse("https://inv.example/").unwrap();
+        let now = chrono::DateTime::from_timestamp(1789095800, 0).unwrap();
+        // These three promoted uploads were returned as "0 seconds ago" by the
+        // channel endpoint, although their video details dated them months earlier.
+        let original_dates = [
+            ("kS-CGkiPetQ", 1780099200),
+            ("v0DEI4Ad7Ik", 1782432000),
+            ("7KRabLH7jcE", 1782950400),
+            ("new123def45", now.timestamp() - 3600),
+        ];
+        let mut videos = original_dates
+            .iter()
+            .enumerate()
+            .map(|(index, (id, _))| {
+                json!({
+                    "videoId": id,
+                    // Include a cached bogus date as well as a fresh response.
+                    "published": now.timestamp() - (i64::try_from(index).unwrap() * 3600)
+                })
+            })
+            .collect::<Vec<_>>();
+        videos.push(json!({"videoId": "old123def45", "published": 1780099200}));
+        let snapshot = parse_invidious_snapshot(
+            &base_url,
+            "UCabcdefghijklmnopqrstuv",
+            &json!({"latestVideos": videos}).to_string(),
+        )
+        .unwrap();
+
+        let corrected = verify_invidious_publication_dates(snapshot, now, |id| {
+            let (_, published) = original_dates
+                .iter()
+                .find(|(expected, _)| *expected == id)
+                .expect("older listing dates do not need a detail request");
+            std::future::ready(parse_invidious_publication_date(
+                &id,
+                &json!({"videoId": id, "published": published}).to_string(),
+            ))
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(corrected.items.len(), 5);
+        for (item, (id, published)) in corrected.items.iter().zip(original_dates) {
+            assert_eq!(item.external_id, id);
+            assert_eq!(
+                item.published_at,
+                chrono::DateTime::from_timestamp(published, 0)
+                    .unwrap()
+                    .to_rfc3339()
+            );
+        }
+        assert_eq!(
+            corrected.items[4].published_at,
+            corrected.items[0].published_at
+        );
+    }
+
+    #[tokio::test]
+    async fn invidious_unverified_dates_fail_so_the_caller_can_fall_back() {
+        let base_url = Url::parse("https://inv.example/").unwrap();
+        let now = chrono::DateTime::from_timestamp(1789095800, 0).unwrap();
+        for published in [0, now.timestamp()] {
+            let snapshot = parse_invidious_snapshot(
+                &base_url,
+                "UCabcdefghijklmnopqrstuv",
+                &json!({"latestVideos": [{"videoId": "abc123def45", "published": published}]})
+                    .to_string(),
+            )
+            .unwrap();
+            let error = verify_invidious_publication_dates(snapshot, now, |_| {
+                std::future::ready(Err("video metadata unavailable".to_owned()))
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(error, "video metadata unavailable");
+        }
+    }
+
+    #[test]
+    fn invidious_video_dates_require_the_requested_video_and_a_valid_timestamp() {
+        for value in [
+            json!({"videoId": "other123456", "published": 1780099200}),
+            json!({"videoId": "abc123def45"}),
+            json!({"videoId": "abc123def45", "published": 0}),
+            json!({"videoId": "abc123def45", "published": -1}),
+            json!({"videoId": "abc123def45", "published": i64::MAX}),
+        ] {
+            assert!(parse_invidious_publication_date("abc123def45", &value.to_string()).is_err());
+        }
     }
 
     #[test]

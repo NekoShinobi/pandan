@@ -92,10 +92,17 @@ This file is the source of truth for AI-assisted changes. Keep the public `READM
   creation, editing, and reordering belong in Edit Sources; the main feed has no channel filter or
   category editing controls. Category management and each channel's category assignments start
   collapsed in Edit Sources; expand only one channel's category editor at a time.
+  Edit Sources searches channel names, IDs, and assigned category names, and filters category
+  management by name. Keep search above the scrolling source list; reorder categories only with
+  the search cleared so hidden categories never receive an unintended position.
   Thumbnail grids keep two columns on phones, clamp video titles to two
   lines with the full title available on hover, and place Download and Watch Later in a translucent
   three-dot control at the thumbnail's top right. Do not restore external-arrow or bottom-right play
   badges on video listings.
+- Invidious channel listings may substitute the fetch time for an old video's missing publication
+  date. Verify dates within the last 24 hours, or missing/invalid dates, against the individual video
+  endpoint with bounded concurrency and the same network policy before caching. Failed verification
+  follows the Atom fallback and cache-preservation path; never save an unverified recent date.
 - Administrator checks are enforced by the server, never only by the interface.
 - The final administrator cannot be demoted or deleted.
 - The initial administrator setup is one-time and claimed atomically.

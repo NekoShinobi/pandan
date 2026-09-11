@@ -90,6 +90,25 @@
   let pendingChannelDelete = $state("");
 
   let sourcesDialog = $state<HTMLDialogElement>();
+  let sourceQuery = $state("");
+  let sourceNeedle = $derived(sourceQuery.trim().toLowerCase());
+  let matchingSourceGroups = $derived(
+    reader.groups.filter((group) =>
+      group.name.toLowerCase().includes(sourceNeedle),
+    ),
+  );
+  let matchingSources = $derived.by(() => {
+    if (!sourceNeedle) return reader.subscriptions;
+    const categoryChannelIds = new Set(
+      matchingSourceGroups.flatMap((group) => group.channel_ids),
+    );
+    return reader.subscriptions.filter(
+      (subscription) =>
+        subscription.title.toLowerCase().includes(sourceNeedle) ||
+        subscription.channel_id.toLowerCase().includes(sourceNeedle) ||
+        categoryChannelIds.has(subscription.channel_id),
+    );
+  });
   let videoMenuPosition = $state({ top: 0, left: 0 });
 
   let subscriptionDialog = $state<HTMLDialogElement>();
@@ -324,6 +343,7 @@
 
   function openSources() {
     pendingChannelDelete = "";
+    sourceQuery = "";
     sourcesDialog?.querySelectorAll("details[open]").forEach((details) => {
       details.removeAttribute("open");
     });
@@ -779,6 +799,20 @@
         ><X size={18} strokeWidth={1.8} aria-hidden="true" /></button
       >
     </header>
+    <div class="youtube-sources-search">
+      <label class="youtube-search">
+        <Search size={15} strokeWidth={1.8} aria-hidden="true" />
+        <span class="sr-only"
+          >Search sources by channel name, ID, or category</span
+        >
+        <input
+          type="search"
+          bind:value={sourceQuery}
+          placeholder="Search channels or categories…"
+          data-od-id="youtube-source-search"
+        />
+      </label>
+    </div>
     <div class="youtube-sources-body">
       {#if pageError}
         <p class="youtube-form-error" role="alert">{pageError}</p>
@@ -794,7 +828,12 @@
         >
       </div>
       <details class="youtube-source-editor">
-        <summary>Edit categories <small>{reader.groups.length}</small></summary>
+        <summary
+          >Edit categories <small
+            >{sourceNeedle ? `${matchingSourceGroups.length} / ` : ""}{reader
+              .groups.length}</small
+          ></summary
+        >
         <div class="youtube-category-editor-body">
           <button
             class="ui-button ui-button--secondary youtube-secondary-button"
@@ -807,11 +846,12 @@
             class="youtube-sources-heading"
             id="youtube-source-category-heading"
           >
-            Category order
+            {sourceNeedle ? "Matching categories" : "Category order"}
           </h3>
           <p class="dialog-note">
-            Drag a handle to reorder, or press Space and use the arrow keys.
-            Select a category to edit it.
+            {sourceNeedle
+              ? "Select a category to edit it. Clear the search to reorder categories."
+              : "Drag a handle to reorder, or press Space and use the arrow keys. Select a category to edit it."}
           </p>
           <DragDropProvider
             sensors={youtubeGroupSensors}
@@ -820,17 +860,31 @@
             onDragEnd={(event) => void finishGroupDrag(event)}
           >
             <div class="youtube-group-list" aria-label="Reorderable categories">
-              {#each reader.groups as group, index (group.id)}
-                <YoutubeGroupSortable
-                  {group}
-                  {index}
-                  active={false}
-                  disabled={savingGroupOrder || busyChannelId !== ""}
-                  reducedMotion={reducedMotion.current}
-                  onselect={() => openEditGroup(group)}
-                />
+              {#each matchingSourceGroups as group, index (group.id)}
+                {#if sourceNeedle}
+                  <button
+                    class="ui-button ui-button--secondary youtube-secondary-button"
+                    type="button"
+                    disabled={savingGroupOrder || busyChannelId !== ""}
+                    aria-label={`Edit ${group.name} category`}
+                    onclick={() => openEditGroup(group)}>{group.name}</button
+                  >
+                {:else}
+                  <YoutubeGroupSortable
+                    {group}
+                    {index}
+                    active={false}
+                    disabled={savingGroupOrder || busyChannelId !== ""}
+                    reducedMotion={reducedMotion.current}
+                    onselect={() => openEditGroup(group)}
+                  />
+                {/if}
               {:else}
-                <p class="dialog-note">No categories yet.</p>
+                <p class="dialog-note">
+                  {sourceNeedle
+                    ? "No categories match your search."
+                    : "No categories yet."}
+                </p>
               {/each}
             </div>
           </DragDropProvider>
@@ -838,9 +892,12 @@
       </details>
       <aside class="youtube-directory" data-od-id="youtube-channel-directory">
         <h3 class="youtube-sources-heading">
-          Channels <span>{reader.subscriptions.length}</span>
+          Channels <span
+            >{sourceNeedle ? `${matchingSources.length} / ` : ""}{reader
+              .subscriptions.length}</span
+          >
         </h3>
-        {#each reader.subscriptions as subscription (subscription.channel_id)}
+        {#each matchingSources as subscription (subscription.channel_id)}
           <article
             class="youtube-channel"
             data-od-id={`youtube-channel-${subscription.channel_id}`}
@@ -946,7 +1003,11 @@
             </div>
           </article>
         {:else}
-          <p class="youtube-directory-empty">No channels subscribed.</p>
+          <p class="youtube-directory-empty" role="status">
+            {sourceNeedle
+              ? "No channels match your search."
+              : "No channels subscribed."}
+          </p>
         {/each}
       </aside>
     </div>
@@ -1364,6 +1425,15 @@
     scrollbar-gutter: stable;
     gap: 22px;
     padding: 20px;
+  }
+  .youtube-sources-search {
+    flex: 0 0 auto;
+    min-width: 0;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .youtube-sources-search .youtube-search {
+    width: 100%;
   }
   .youtube-sources-actions {
     display: flex;
