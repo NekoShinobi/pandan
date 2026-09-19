@@ -14,6 +14,7 @@
   import Trash2 from "lucide-svelte/icons/trash-2";
   import X from "lucide-svelte/icons/x";
   import { onMount, tick } from "svelte";
+  import { SvelteMap } from "svelte/reactivity";
   import TypedHeading from "$lib/TypedHeading.svelte";
   import {
     createRssSubscription,
@@ -51,15 +52,36 @@
   const DEFAULT_RETENTION_DAYS = 7;
   const DEFAULT_CURRENT_ENTRY_LIMIT = 25;
   const MAX_CURRENT_ENTRY_LIMIT = 200;
+  const ITEM_PAGE_SIZE = 50;
+  const shortDateFormatter = new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+  });
+  const fullDateFormatter = new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const timestampFormatter = new Intl.DateTimeFormat("en", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", {
+    numeric: "auto",
+  });
 
   let reader = $state.raw<RssReaderResponse>({ subscriptions: [], items: [] });
   let loading = $state(true);
+  let refreshing = $state(false);
+  let hasLoaded = false;
+  let readerLoadGeneration = 0;
   let pageError = $state("");
   let query = $state("");
-  let activeView = $state<RssView>("inbox");
+  let activeView = $state<RssView>("current");
   let categoryFilter = $state("all");
   let sourceFilter = $state("all");
   let unreadOnly = $state(false);
+  let expandedList = $state({ key: "", limit: ITEM_PAGE_SIZE });
   let busySubscriptionId = $state("");
   let sourcesDialog = $state<HTMLDialogElement>();
   let subscriptionDialog = $state<HTMLDialogElement>();
@@ -110,15 +132,33 @@
       (left, right) => left.localeCompare(right),
     ),
   );
-  let unreadCount = $derived(
-    reader.items.filter((item) => item.read_at === null).length,
-  );
-  let readLaterCount = $derived(
-    reader.items.filter((item) => item.saved_at !== null).length,
-  );
-  let currentCount = $derived(
-    reader.items.filter((item) => item.is_current).length,
-  );
+  let itemCounts = $derived.by(() => {
+    const total = { unread: 0, saved: 0, current: 0 };
+    const sources = new SvelteMap<string, typeof total>();
+    for (const item of reader.items) {
+      let counts = sources.get(item.subscription_id);
+      if (!counts) {
+        counts = { unread: 0, saved: 0, current: 0 };
+        sources.set(item.subscription_id, counts);
+      }
+      if (item.read_at === null) {
+        counts.unread++;
+        total.unread++;
+      }
+      if (item.saved_at !== null) {
+        counts.saved++;
+        total.saved++;
+      }
+      if (item.is_current) {
+        counts.current++;
+        total.current++;
+      }
+    }
+    return { total, sources };
+  });
+  let unreadCount = $derived(itemCounts.total.unread);
+  let readLaterCount = $derived(itemCounts.total.saved);
+  let currentCount = $derived(itemCounts.total.current);
   let currentSourceCount = $derived(
     reader.subscriptions.filter((item) => item.refresh_generation > 0).length,
   );
@@ -151,6 +191,13 @@
       ].some((value) => value.toLowerCase().includes(needle));
     });
   });
+  let listKey = $derived(
+    JSON.stringify([activeView, query, categoryFilter, sourceFilter, unreadOnly]),
+  );
+  let visibleItemLimit = $derived(
+    expandedList.key === listKey ? expandedList.limit : ITEM_PAGE_SIZE,
+  );
+  let visibleItems = $derived(filteredItems.slice(0, visibleItemLimit));
   let editingSubscription = $derived(
     reader.subscriptions.find((item) => item.id === editingSubscriptionId) ??
       null,
@@ -182,10 +229,14 @@
     let active = true;
     const sync = async () => {
       if (!active || document.visibilityState !== "visible") return;
-      if (loading || savingSubscription || pruning || busySubscriptionId) return;
+      if (loading || refreshing || savingSubscription || pruning || busySubscriptionId) return;
+      const generation = readerLoadGeneration;
       try {
         const next = await fetchRssReader();
-        if (active) reader = next;
+        if (active && generation === readerLoadGeneration) {
+          reader = next;
+          hasLoaded = true;
+        }
       } catch {
         // A background sync stays silent; the next deliberate action surfaces any failure.
       }
@@ -201,14 +252,19 @@
   });
 
   async function loadReader() {
-    loading = true;
+    if (refreshing) return;
+    readerLoadGeneration++;
+    loading = !hasLoaded;
+    refreshing = true;
     pageError = "";
     try {
       reader = await fetchRssReader();
+      hasLoaded = true;
     } catch (reason: unknown) {
       pageError = reason instanceof Error ? reason.message : "Unable to load RSS feeds";
     } finally {
       loading = false;
+      refreshing = false;
     }
   }
 
@@ -657,21 +713,16 @@
   function itemDate(value: string) {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return "Date unavailable";
-    return new Intl.DateTimeFormat("en", {
-      month: "short",
-      day: "numeric",
-      year: date.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
-    }).format(date);
+    return (date.getFullYear() === new Date().getFullYear()
+      ? shortDateFormatter
+      : fullDateFormatter).format(date);
   }
 
   function itemTimestamp(value: string | null) {
     if (!value) return "Not yet";
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return "Unavailable";
-    return new Intl.DateTimeFormat("en", {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(date);
+    return timestampFormatter.format(date);
   }
 
   function relativeTime(value: string | null) {
@@ -679,7 +730,7 @@
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return "refresh time unavailable";
     const minutes = Math.round((date.getTime() - Date.now()) / 60_000);
-    const formatter = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+    const formatter = relativeTimeFormatter;
     if (Math.abs(minutes) < 60) return formatter.format(minutes, "minute");
     const hours = Math.round(minutes / 60);
     if (Math.abs(hours) < 24) return formatter.format(hours, "hour");
@@ -687,15 +738,11 @@
   }
 
   function subscriptionCurrentCount(subscriptionId: string) {
-    return reader.items.filter(
-      (item) => item.subscription_id === subscriptionId && item.is_current,
-    ).length;
+    return itemCounts.sources.get(subscriptionId)?.current ?? 0;
   }
 
   function subscriptionUnreadCount(subscriptionId: string) {
-    return reader.items.filter(
-      (item) => item.subscription_id === subscriptionId && item.read_at === null,
-    ).length;
+    return itemCounts.sources.get(subscriptionId)?.unread ?? 0;
   }
 
   function subscriptionViewCount(subscriptionId: string) {
@@ -703,9 +750,7 @@
       return subscriptionCurrentCount(subscriptionId);
     }
     if (activeView === "read-later") {
-      return reader.items.filter(
-        (item) => item.subscription_id === subscriptionId && item.saved_at !== null,
-      ).length;
+      return itemCounts.sources.get(subscriptionId)?.saved ?? 0;
     }
     return subscriptionUnreadCount(subscriptionId);
   }
@@ -916,6 +961,23 @@
     </div>
     <div class="rss-header-actions">
       <button
+        class="ui-button ui-button--secondary rss-secondary-button"
+        type="button"
+        onclick={loadReader}
+        disabled={refreshing || !!busySubscriptionId || savingSubscription || pruning}
+        aria-busy={refreshing}
+        title="Load the latest stored feed entries"
+        data-od-id="rss-refresh"
+      >
+        <RefreshCw
+          class={refreshing ? "spinning" : ""}
+          size={16}
+          strokeWidth={1.8}
+          aria-hidden="true"
+        />
+        Refresh
+      </button>
+      <button
         class="ui-button ui-button--secondary rss-secondary-button rss-sources-trigger"
         type="button"
         onclick={openSources}
@@ -1036,7 +1098,7 @@
           <strong>Loading reader…</strong>
         </div>
       {:else}
-        {#each filteredItems as item (item.id)}
+        {#each visibleItems as item (item.id)}
           <article
             class={["rss-item", item.read_at && "is-read"]}
             oncontextmenu={(event) => openItemContext(item, event)}
@@ -1134,7 +1196,7 @@
             <strong>
               {activeView === "read-later"
                 ? "Nothing saved for later"
-                : activeView === "current" && currentSourceCount === 0
+                : activeView === "current" && reader.subscriptions.length > 0 && currentSourceCount === 0
                   ? "Waiting for the first cached snapshot"
                 : reader.subscriptions.length
                   ? "No items match this view"
@@ -1143,17 +1205,31 @@
             <p>
               {activeView === "read-later"
                 ? "Use the bookmark control on any article to keep it out of pruning and return to it here."
-                : activeView === "current" && currentSourceCount === 0
+                : activeView === "current" && reader.subscriptions.length > 0 && currentSourceCount === 0
                   ? "The background worker will populate Current after each source completes a successful refresh."
                 : reader.subscriptions.length
                   ? "Change the text, source, or category filter."
                   : "Subscribe to an RSS, Atom, or Reddit source to start reading."}
             </p>
-            {#if activeView === "inbox" && reader.subscriptions.length === 0}
+            {#if activeView !== "read-later" && reader.subscriptions.length === 0}
               <button class="ui-button ui-button--secondary rss-secondary-button" type="button" onclick={openAddFeed}>Add your first feed</button>
             {/if}
           </div>
         {/each}
+        {#if visibleItems.length < filteredItems.length}
+          <button
+            class="ui-button ui-button--secondary rss-secondary-button"
+            type="button"
+            onclick={() =>
+              (expandedList = {
+                key: listKey,
+                limit: visibleItemLimit + ITEM_PAGE_SIZE,
+              })}
+            data-od-id="rss-show-more"
+          >
+            Show more · {visibleItems.length} of {filteredItems.length}
+          </button>
+        {/if}
       {/if}
   </main>
 
@@ -2080,7 +2156,7 @@
     .rss-filter-bar label:not(.rss-search) { min-width: 0; }
   }
   @media (max-width: 560px) {
-    .rss-header-actions { width: 100%; }
+    .rss-header-actions { width: 100%; flex-wrap: wrap; }
     .rss-header-actions button { flex: 1; }
     .rss-sources-trigger small { max-width: 21ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .rss-item { grid-template-columns: 1fr; }

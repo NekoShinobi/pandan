@@ -317,6 +317,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "080_journal_node_emoji",
         include_str!("../migrations/080_journal_node_emoji.sql"),
     ),
+    (
+        "081_youtube_video_metadata",
+        include_str!("../migrations/081_youtube_video_metadata.sql"),
+    ),
 ];
 
 /// Maps migration names used by earlier development builds to their canonical names.
@@ -471,6 +475,53 @@ mod tests {
             usize::try_from(count).expect("migration count fits usize"),
             MIGRATIONS.len()
         );
+    }
+
+    #[tokio::test]
+    async fn youtube_video_metadata_migration_preserves_existing_uploads() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for (_, sql) in MIGRATIONS
+            .iter()
+            .take_while(|(name, _)| *name != "081_youtube_video_metadata")
+        {
+            sqlx::raw_sql(*sql).execute(&pool).await.unwrap();
+        }
+        queries::ensure_youtube_channel(&pool, "UCabcdefghijklmnopqrstuv")
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO youtube_videos (id, external_id, channel_id, url, thumbnail_url, title, published_at, fetched_at) VALUES ('legacy', 'abc123def45', 'UCabcdefghijklmnopqrstuv', 'https://www.youtube.com/watch?v=abc123def45', '', 'Existing upload', '2026-08-14T10:00:00Z', '2026-08-14T10:00:00Z')")
+            .execute(&pool).await.unwrap();
+        sqlx::raw_sql(include_str!("../migrations/081_youtube_video_metadata.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let video: (String, Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT title, view_count, duration_seconds FROM youtube_videos WHERE id = 'legacy'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(video, ("Existing upload".to_owned(), None, None));
+        assert!(
+            sqlx::query("UPDATE youtube_videos SET view_count = -1")
+                .execute(&pool)
+                .await
+                .is_err()
+        );
+        assert!(
+            sqlx::query("UPDATE youtube_videos SET duration_seconds = 0")
+                .execute(&pool)
+                .await
+                .is_err()
+        );
+        sqlx::query("UPDATE youtube_videos SET view_count = 0, duration_seconds = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

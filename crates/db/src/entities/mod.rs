@@ -486,6 +486,8 @@ pub struct YoutubeVideo {
     pub url: String,
     pub thumbnail_url: String,
     pub title: String,
+    pub view_count: Option<i64>,
+    pub duration_seconds: Option<i64>,
     pub published_at: String,
     pub fetched_at: String,
     pub watch_later_at: Option<String>,
@@ -512,6 +514,8 @@ pub struct YoutubeVideoDraft {
     pub url: String,
     pub thumbnail_url: String,
     pub title: String,
+    pub view_count: Option<i64>,
+    pub duration_seconds: Option<i64>,
     pub published_at: String,
 }
 

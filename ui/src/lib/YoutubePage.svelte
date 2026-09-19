@@ -81,6 +81,8 @@
     display_mode: "thumbnails",
   });
   let loading = $state(true);
+  let refreshing = $state(false);
+  let hasLoaded = false;
   let pageError = $state("");
   let query = $state("");
   let activeView = $state<YoutubeView>("latest");
@@ -167,14 +169,18 @@
   });
 
   async function loadReader() {
-    loading = true;
+    if (refreshing) return;
+    loading = !hasLoaded;
+    refreshing = true;
     pageError = "";
     try {
       reader = await fetchYoutubeReader();
+      hasLoaded = true;
     } catch (reason: unknown) {
       pageError = message(reason, "Unable to load YouTube subscriptions");
     } finally {
       loading = false;
+      refreshing = false;
     }
   }
 
@@ -512,6 +518,19 @@
   function channelInitial(value: string) {
     return Array.from(value.trim())[0]?.toUpperCase() ?? "?";
   }
+
+  const viewCountFormatter = new Intl.NumberFormat("en", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  });
+
+  function durationLabel(seconds: number | null) {
+    if (seconds == null || seconds <= 0) return undefined;
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainder = String(seconds % 60).padStart(2, "0");
+    return `${hours ? `${hours}:${String(minutes).padStart(2, "0")}` : minutes}:${remainder}`;
+  }
 </script>
 
 <svelte:window onresize={closeVideoMenu} />
@@ -526,15 +545,34 @@
           : `${reader.watch_later.length} saved ${reader.watch_later.length === 1 ? "video" : "videos"}`}
       </p>
     </div>
-    <button
-      class="ui-button ui-button--secondary youtube-secondary-button"
-      type="button"
-      onclick={openSources}
-      data-od-id="youtube-edit-sources"
-    >
-      <Settings2 size={16} strokeWidth={1.8} aria-hidden="true" />
-      Edit Sources
-    </button>
+    <div class="youtube-header-actions">
+      <button
+        class="ui-button ui-button--secondary youtube-secondary-button"
+        type="button"
+        onclick={loadReader}
+        disabled={refreshing || !!busyChannelId}
+        aria-busy={refreshing}
+        title="Load the latest stored uploads"
+        data-od-id="youtube-refresh"
+      >
+        <RefreshCw
+          class={refreshing ? "spinning" : ""}
+          size={16}
+          strokeWidth={1.8}
+          aria-hidden="true"
+        />
+        Refresh
+      </button>
+      <button
+        class="ui-button ui-button--secondary youtube-secondary-button"
+        type="button"
+        onclick={openSources}
+        data-od-id="youtube-edit-sources"
+      >
+        <Settings2 size={16} strokeWidth={1.8} aria-hidden="true" />
+        Edit Sources
+      </button>
+    </div>
   </header>
 
   <nav
@@ -642,6 +680,7 @@
         </div>
       {:else}
         {#each filteredVideos as video (video.id)}
+          {@const duration = durationLabel(video.duration_seconds)}
           <article
             class="youtube-video"
             data-od-id={`youtube-video-${video.id}`}
@@ -653,7 +692,7 @@
                 href={video.url}
                 target="_blank"
                 rel="noreferrer"
-                aria-label={`Watch ${video.title}`}
+                aria-label={`Watch ${video.title}${duration ? `. Duration: ${duration}` : ""}`}
               >
                 {#if video.thumbnail_url}<img
                     src={video.thumbnail_url}
@@ -664,6 +703,11 @@
                     strokeWidth={1.4}
                     aria-hidden="true"
                   />{/if}
+                {#if duration}
+                  <span class="youtube-duration" aria-hidden="true"
+                    >{duration}</span
+                  >
+                {/if}
               </a>
               <!-- eslint-enable svelte/no-navigation-without-resolve -->
               <button
@@ -735,7 +779,6 @@
                   href={`https://www.youtube.com/channel/${video.channel_id}`}
                   target="_blank"
                   rel="noreferrer"
-                  aria-label={`Open ${video.channel_title} on YouTube`}
                 >
                   {#if channelThumbnails[video.channel_id]}<img
                       class="youtube-channel-avatar"
@@ -749,10 +792,19 @@
                       >{channelInitial(video.channel_title)}</span
                     >{/if}
                   <strong>{video.channel_title}</strong>
+                  <span class="youtube-video-stats">
+                    {#if video.view_count != null}
+                      <span
+                        title={`${video.view_count.toLocaleString("en")} views`}
+                        >{viewCountFormatter.format(video.view_count)} views</span
+                      >
+                      <span aria-hidden="true"> - </span>
+                    {/if}
+                    <time datetime={video.published_at}
+                      >{publishedLabel(video.published_at)}</time
+                    >
+                  </span>
                 </a>
-                <time datetime={video.published_at}
-                  >{publishedLabel(video.published_at)}</time
-                >
               </div>
             </div>
           </article>
@@ -1208,6 +1260,11 @@
     font-family: var(--font-mono);
     font-size: 11px;
   }
+  .youtube-header-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
   button,
   input {
     font: inherit;
@@ -1556,6 +1613,20 @@
     object-fit: cover;
     transition: transform 180ms var(--ease-out);
   }
+  .youtube-duration {
+    position: absolute;
+    right: 6px;
+    bottom: 6px;
+    padding: 3px 5px;
+    border-radius: 3px;
+    background: rgb(0 0 0 / 85%);
+    color: #fff;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.2;
+    pointer-events: none;
+  }
   .youtube-video-menu-trigger {
     position: absolute;
     top: 4px;
@@ -1643,20 +1714,20 @@
     text-underline-offset: 3px;
   }
   .youtube-video-meta {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
     min-width: 0;
     color: var(--muted);
     font-family: var(--font-mono);
     font-size: 10px;
   }
   .youtube-video-channel {
-    display: flex;
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr);
+    grid-template-rows: auto auto;
     align-items: center;
-    gap: 8px;
+    column-gap: 8px;
+    row-gap: 3px;
     min-width: 0;
+    min-height: 44px;
     color: var(--fg);
     text-decoration: none;
   }
@@ -1665,6 +1736,7 @@
     text-underline-offset: 3px;
   }
   .youtube-video-channel strong {
+    grid-column: 2;
     min-width: 0;
     overflow: hidden;
     font-size: 14px;
@@ -1696,8 +1768,20 @@
     display: block;
     object-fit: cover;
   }
+  .youtube-video-channel .youtube-channel-avatar,
+  .youtube-video-channel .youtube-channel-mark {
+    grid-row: 1 / 3;
+    width: 36px;
+    height: 36px;
+  }
+  .youtube-video-stats {
+    grid-column: 2;
+    min-width: 0;
+    color: var(--muted);
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
   .youtube-video-meta time {
-    flex: 0 0 auto;
     font-size: 10px;
   }
   .youtube-feed.compact .youtube-video {
@@ -1727,9 +1811,6 @@
   }
   .youtube-feed.compact .youtube-video-title > a {
     min-height: auto;
-  }
-  .youtube-feed.compact .youtube-video-meta {
-    justify-content: flex-end;
   }
   .youtube-channel {
     position: relative;
@@ -2050,8 +2131,11 @@
     }
   }
   @media (max-width: 600px) {
-    .youtube-header > button {
+    .youtube-header-actions {
       width: 100%;
+    }
+    .youtube-header-actions > button {
+      flex: 1;
     }
     .youtube-feed.thumbnails {
       gap: 12px 10px;
@@ -2066,22 +2150,18 @@
     .youtube-video-title > a > span {
       max-height: 2.8em;
     }
-    .youtube-video-meta {
-      flex-wrap: wrap;
-      gap: 3px;
-    }
     .youtube-video-channel {
       width: 100%;
-      min-height: 44px;
-      gap: 5px;
+      grid-template-columns: 30px minmax(0, 1fr);
+      column-gap: 5px;
     }
     .youtube-video-channel strong {
       font-size: 11px;
     }
     .youtube-video-channel .youtube-channel-avatar,
     .youtube-video-channel .youtube-channel-mark {
-      width: 22px;
-      height: 22px;
+      width: 30px;
+      height: 30px;
     }
     .youtube-sources-body {
       padding: 14px;
@@ -2098,9 +2178,6 @@
     }
     .youtube-feed.compact .youtube-thumbnail {
       min-height: 84px;
-    }
-    .youtube-feed.compact .youtube-video-meta {
-      justify-content: space-between;
     }
     .youtube-toolbar-right {
       flex-wrap: nowrap;

@@ -749,11 +749,15 @@ YouTube uploads feed as fallback. Channel portraits are stored in SQLite and ref
 
 Fetched uploads stored once for the entire installation. YouTube video IDs are globally unique,
 so repeated feeds and overlapping user subscriptions update the existing row instead of copying it.
+View count and duration come from Invidious; missing metadata on subsequent refreshes (including
+the Atom fallback) preserves the last known values. Existing rows start with both values NULL.
 
 | Column          | Type | Constraints                                              |
 | --------------- | ---- | -------------------------------------------------------- |
 | `id`            | TEXT | Primary key                                              |
 | `external_id`   | TEXT | Required, globally unique YouTube video ID               |
+| `view_count` | INTEGER | Nullable; nonnegative view count, including zero |
+| `duration_seconds` | INTEGER | Nullable; positive duration in seconds |
 | `channel_id`    | TEXT | References `youtube_channels` with cascade delete        |
 | `url`           | TEXT | Required video destination                               |
 | `thumbnail_url` | TEXT | Required; may be empty when YouTube omits media metadata |

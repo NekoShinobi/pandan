@@ -549,6 +549,8 @@ async fn refresh_channel(state: &AppState, channel_id: &str) -> Result<bool, Api
                     url: truncate(&item.url, 2048, ""),
                     thumbnail_url: truncate(&item.thumbnail_url, 2048, ""),
                     title: truncate(&item.title, 500, "Untitled video"),
+                    view_count: item.view_count,
+                    duration_seconds: item.duration_seconds,
                     published_at: item.published_at,
                 })
                 .collect::<Vec<_>>();

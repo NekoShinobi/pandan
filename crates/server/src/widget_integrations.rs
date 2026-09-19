@@ -163,6 +163,8 @@ pub struct YoutubeFeedEntry {
     pub url: String,
     pub thumbnail_url: String,
     pub title: String,
+    pub view_count: Option<i64>,
+    pub duration_seconds: Option<i64>,
     pub published_at: String,
 }
 
@@ -3210,6 +3212,8 @@ fn parse_youtube_snapshot(xml: &str) -> Result<YoutubeFeedSnapshot, String> {
             url: entry.link.href,
             thumbnail_url: entry.group.thumbnail.url,
             title: entry.title,
+            view_count: None,
+            duration_seconds: None,
             published_at: entry.published,
         })
         .collect();
@@ -3257,6 +3261,10 @@ struct InvidiousVideo {
     video_id: String,
     #[serde(default)]
     title: String,
+    #[serde(default)]
+    view_count: Option<i64>,
+    #[serde(default)]
+    length_seconds: Option<i64>,
     #[serde(default)]
     video_thumbnails: Vec<InvidiousThumbnail>,
     #[serde(default)]
@@ -3338,6 +3346,8 @@ fn parse_invidious_snapshot(
                 url: format!("https://www.youtube.com/watch?v={video_id}"),
                 thumbnail_url,
                 title: video.title,
+                view_count: video.view_count.filter(|count| *count >= 0),
+                duration_seconds: video.length_seconds.filter(|seconds| *seconds > 0),
                 published_at: published_at.to_rfc3339(),
             })
         })
@@ -5154,7 +5164,9 @@ mod tests {
             "videoThumbnails": [
               {"url": "/vi/abc123def45/mqdefault.jpg", "width": 320}
             ],
-            "published": 1786622400
+            "published": 1786622400,
+            "viewCount": 12345,
+            "lengthSeconds": 754
           }]
         }"#;
         let snapshot = parse_invidious_snapshot(&base_url, "UCabcdefghijklmnopqrstuv", json)
@@ -5170,6 +5182,8 @@ mod tests {
         );
         assert_eq!(snapshot.items.len(), 1);
         assert_eq!(snapshot.items[0].external_id, "abc123def45");
+        assert_eq!(snapshot.items[0].view_count, Some(12_345));
+        assert_eq!(snapshot.items[0].duration_seconds, Some(754));
         assert_eq!(
             snapshot.items[0].thumbnail_url,
             "https://inv.example/vi/abc123def45/mqdefault.jpg"
@@ -5178,6 +5192,57 @@ mod tests {
             snapshot.items[0].url,
             "https://www.youtube.com/watch?v=abc123def45"
         );
+    }
+
+    #[test]
+    fn youtube_video_metadata_handles_missing_and_unknown_values() {
+        let base_url = Url::parse("https://inv.example/").unwrap();
+        for (metadata, expected_views, expected_duration) in [
+            (serde_json::json!({}), None, None),
+            (
+                serde_json::json!({"viewCount": null, "lengthSeconds": null}),
+                None,
+                None,
+            ),
+            (
+                serde_json::json!({"viewCount": -1, "lengthSeconds": -1}),
+                None,
+                None,
+            ),
+            (
+                serde_json::json!({"viewCount": 0, "lengthSeconds": 0}),
+                Some(0),
+                None,
+            ),
+            (
+                serde_json::json!({"viewCount": 12345, "lengthSeconds": 3601}),
+                Some(12_345),
+                Some(3601),
+            ),
+        ] {
+            let mut video = serde_json::json!({
+                "videoId": "abc123def45",
+                "title": "Upload",
+                "published": 1786622400
+            });
+            video
+                .as_object_mut()
+                .unwrap()
+                .extend(metadata.as_object().unwrap().clone());
+            let response = serde_json::json!({"latestVideos": [video]});
+            let snapshot = parse_invidious_snapshot(
+                &base_url,
+                "UCabcdefghijklmnopqrstuv",
+                &response.to_string(),
+            )
+            .unwrap();
+            assert_eq!(snapshot.items[0].view_count, expected_views);
+            assert_eq!(snapshot.items[0].duration_seconds, expected_duration);
+        }
+
+        let snapshot = parse_youtube_snapshot(r#"<feed xmlns="http://www.w3.org/2005/Atom" xmlns:yt="http://www.youtube.com/xml/schemas/2015"><entry><yt:videoId>abc123def45</yt:videoId><title>Upload</title><published>2026-08-14T10:00:00Z</published><link href="https://www.youtube.com/watch?v=abc123def45"/></entry></feed>"#).unwrap();
+        assert_eq!(snapshot.items[0].view_count, None);
+        assert_eq!(snapshot.items[0].duration_seconds, None);
     }
 
     #[tokio::test]

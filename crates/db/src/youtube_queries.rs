@@ -144,11 +144,14 @@ pub async fn store_youtube_channel_refresh(
     for video in videos {
         sqlx::query(
             "INSERT INTO youtube_videos \
-             (id, external_id, channel_id, url, thumbnail_url, title, published_at, fetched_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+             (id, external_id, channel_id, url, thumbnail_url, title, published_at, fetched_at, \
+              view_count, duration_seconds) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(external_id) DO UPDATE SET url = excluded.url, \
              thumbnail_url = excluded.thumbnail_url, title = excluded.title, \
-             published_at = excluded.published_at, fetched_at = excluded.fetched_at",
+             published_at = excluded.published_at, fetched_at = excluded.fetched_at, \
+             view_count = COALESCE(excluded.view_count, youtube_videos.view_count), \
+             duration_seconds = COALESCE(excluded.duration_seconds, youtube_videos.duration_seconds)",
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(&video.external_id)
@@ -158,6 +161,8 @@ pub async fn store_youtube_channel_refresh(
         .bind(&video.title)
         .bind(&video.published_at)
         .bind(&now)
+        .bind(video.view_count)
+        .bind(video.duration_seconds)
         .execute(&mut *transaction)
         .await?;
     }
@@ -339,7 +344,8 @@ pub async fn list_youtube_videos(
 ) -> Result<Vec<YoutubeVideo>, sqlx::Error> {
     sqlx::query_as::<_, YoutubeVideo>(
         "SELECT v.id, v.channel_id, c.title AS channel_title, v.url, v.thumbnail_url, \
-         v.title, v.published_at, v.fetched_at, wl.saved_at AS watch_later_at \
+         v.title, v.view_count, v.duration_seconds, v.published_at, v.fetched_at, \
+         wl.saved_at AS watch_later_at \
          FROM youtube_videos v \
          JOIN youtube_channels c ON c.channel_id = v.channel_id \
          JOIN youtube_subscriptions s ON s.channel_id = v.channel_id \
@@ -363,7 +369,8 @@ pub async fn list_youtube_watch_later(
 ) -> Result<Vec<YoutubeVideo>, sqlx::Error> {
     sqlx::query_as::<_, YoutubeVideo>(
         "SELECT v.id, v.channel_id, c.title AS channel_title, v.url, v.thumbnail_url, \
-         v.title, v.published_at, v.fetched_at, wl.saved_at AS watch_later_at \
+         v.title, v.view_count, v.duration_seconds, v.published_at, v.fetched_at, \
+         wl.saved_at AS watch_later_at \
          FROM youtube_watch_later wl \
          JOIN youtube_videos v ON v.id = wl.video_id \
          JOIN youtube_channels c ON c.channel_id = v.channel_id \
@@ -751,11 +758,13 @@ mod tests {
                 .unwrap()
         );
 
-        let video = YoutubeVideoDraft {
+        let mut video = YoutubeVideoDraft {
             external_id: "video-123".to_owned(),
             url: "https://www.youtube.com/watch?v=video-123".to_owned(),
             thumbnail_url: "https://i.ytimg.com/vi/video-123/hqdefault.jpg".to_owned(),
             title: "Shared upload".to_owned(),
+            view_count: Some(12_345),
+            duration_seconds: Some(754),
             published_at: "2026-08-14T10:00:00Z".to_owned(),
         };
         store_youtube_channel_refresh(
@@ -786,6 +795,11 @@ mod tests {
             content_type: "image/jpeg".to_owned(),
             data: vec![0xff, 0xd8, 0xff],
         };
+        let initial = list_youtube_videos(&pool, &first.id).await.unwrap();
+        assert_eq!(initial[0].view_count, Some(12_345));
+        assert_eq!(initial[0].duration_seconds, Some(754));
+        video.view_count = Some(45_678);
+        video.duration_seconds = Some(3601);
         store_youtube_channel_refresh(
             &pool,
             channel_id,
@@ -796,6 +810,9 @@ mod tests {
         )
         .await
         .unwrap();
+        // An Atom fallback must retain metadata from the latest Invidious refresh.
+        video.view_count = None;
+        video.duration_seconds = None;
         store_youtube_channel_refresh(
             &pool,
             channel_id,
@@ -835,9 +852,10 @@ mod tests {
             list_youtube_videos(&pool, &second.id).await.unwrap().len(),
             1
         );
-        let video_id = list_youtube_videos(&pool, &first.id).await.unwrap()[0]
-            .id
-            .clone();
+        let videos = list_youtube_videos(&pool, &first.id).await.unwrap();
+        assert_eq!(videos[0].view_count, Some(45_678));
+        assert_eq!(videos[0].duration_seconds, Some(3601));
+        let video_id = videos[0].id.clone();
         assert!(
             set_youtube_watch_later(&pool, &first.id, &video_id, true)
                 .await
@@ -856,6 +874,9 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        let saved = list_youtube_watch_later(&pool, &first.id).await.unwrap();
+        assert_eq!(saved[0].view_count, Some(45_678));
+        assert_eq!(saved[0].duration_seconds, Some(3601));
 
         let gaming = create_youtube_group(&pool, &first.id, "Gaming")
             .await

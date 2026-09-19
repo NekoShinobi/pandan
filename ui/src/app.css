@@ -13824,8 +13824,14 @@ body
   }
 
   .dashboard-app.sidebar-is-collapsed .sidebar-custom-group-label,
-  .dashboard-app.sidebar-is-collapsed .sidebar-custom-icon {
+  .dashboard-app.sidebar-is-collapsed .sidebar-custom-marker {
     display: none;
+  }
+
+  .dashboard-app.sidebar-is-collapsed
+    .sidebar-link--custom
+    > .sidebar-custom-icon {
+    display: grid;
   }
 
   .dashboard-app.sidebar-is-collapsed .sidebar-link--custom {

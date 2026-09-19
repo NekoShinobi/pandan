@@ -10,6 +10,10 @@
   import NtfyPriority from "$lib/NtfyPriority.svelte";
   import { presentNtfyTags } from "$lib/ntfyPresentation";
   import {
+    BrowserNotifications,
+    browserNotificationPermission,
+  } from "$lib/browserNotifications";
+  import {
     fetchNtfy,
     markNtfySeen,
     openNtfyEventStream,
@@ -28,10 +32,12 @@
   const SWIPE_EXIT_MS = 170;
 
   let {
+    userId,
     onOpenAll,
     onNotification,
     onToast,
   }: {
+    userId: string;
     onOpenAll: (notificationId?: string) => void;
     onNotification: (notification: NtfyNotification, count: number) => void;
     onToast: (message: string) => void;
@@ -56,8 +62,40 @@
   let swipeAxis: "pending" | "horizontal" | "vertical" = "pending";
   let suppressClicksUntil = 0;
   let hasBaseline = false;
+  let browserNotifications: BrowserNotifications | undefined;
+  let browserPermission = $state<NotificationPermission | "unsupported">(
+    "unsupported",
+  );
+  let browserEnabled = $state(false);
+  let requestingPermission = $state(false);
+  let browserError = $state("");
+
+  function syncBrowserPermission() {
+    browserPermission = browserNotificationPermission();
+    browserEnabled = browserNotifications?.enabled() ?? false;
+  }
+
+  async function toggleBrowserNotifications() {
+    if (!browserNotifications || requestingPermission) return;
+    requestingPermission = true;
+    browserError = "";
+    try {
+      if (browserEnabled) browserNotifications.disable();
+      else await browserNotifications.enable();
+    } catch {
+      browserError =
+        "Unable to enable browser notifications. Check this site's browser permissions.";
+    } finally {
+      requestingPermission = false;
+      syncBrowserPermission();
+    }
+  }
 
   onMount(() => {
+    browserNotifications = new BrowserNotifications(userId, (id) =>
+      openAll(id),
+    );
+    syncBrowserPermission();
     let disposed = false;
     let events: EventSource | undefined;
     void load().finally(() => {
@@ -66,12 +104,10 @@
       events.onopen = () => void load();
       events.onmessage = receiveRealtimeNotification;
     });
-    const timer = window.setInterval(
-      () => void load(),
-      AUTO_SYNC_INTERVAL_MS,
-    );
+    const timer = window.setInterval(() => void load(), AUTO_SYNC_INTERVAL_MS);
     return () => {
       disposed = true;
+      browserNotifications?.dispose();
       events?.close();
       window.clearInterval(timer);
     };
@@ -99,9 +135,7 @@
       response = {
         ...next,
         notifications: next.notifications
-          .filter(
-            (notification) => !dismissedPreviewIds.has(notification.id),
-          )
+          .filter((notification) => !dismissedPreviewIds.has(notification.id))
           .slice(0, visibleLimit),
       };
       hasMore =
@@ -124,6 +158,7 @@
   }
 
   async function toggle() {
+    syncBrowserPermission();
     open = !open;
     if (!open) return;
     visibleLimit = PREVIEW_PAGE_SIZE;
@@ -198,6 +233,7 @@
     const newest = notifications[0];
     if (!newest) return;
     onNotification(newest, notifications.length);
+    void browserNotifications?.show(newest, notifications.length);
   }
 
   function dismissPreview(notification: NtfyNotification) {
@@ -207,15 +243,19 @@
 
   async function deleteNotification(notification: NtfyNotification) {
     const previousIndex =
-      response?.notifications.findIndex((item) => item.id === notification.id) ??
-      0;
+      response?.notifications.findIndex(
+        (item) => item.id === notification.id,
+      ) ?? 0;
     dismissedPreviewIds.add(notification.id);
     removePreviewNotification(notification.id);
     try {
       await deleteNtfyNotification(notification.id);
     } catch (reason: unknown) {
       dismissedPreviewIds.delete(notification.id);
-      if (response && !response.notifications.some((item) => item.id === notification.id)) {
+      if (
+        response &&
+        !response.notifications.some((item) => item.id === notification.id)
+      ) {
         const notifications = [...response.notifications];
         notifications.splice(
           Math.min(Math.max(previousIndex, 0), notifications.length),
@@ -307,7 +347,8 @@
     }
     if (swipeAxis !== "horizontal") return;
     event.preventDefault();
-    swipeOffset = Math.sign(deltaX) * Math.min(Math.abs(deltaX), SWIPE_MAX_OFFSET_PX);
+    swipeOffset =
+      Math.sign(deltaX) * Math.min(Math.abs(deltaX), SWIPE_MAX_OFFSET_PX);
   }
 
   function finishSwipe(event: PointerEvent, notification: NtfyNotification) {
@@ -322,7 +363,10 @@
     }
     if (swipeAxis === "horizontal")
       suppressClicksUntil = performance.now() + 450;
-    if (swipeAxis !== "horizontal" || Math.abs(swipeOffset) < SWIPE_THRESHOLD_PX) {
+    if (
+      swipeAxis !== "horizontal" ||
+      Math.abs(swipeOffset) < SWIPE_THRESHOLD_PX
+    ) {
       resetSwipe();
       return;
     }
@@ -389,7 +433,8 @@
     const direction = event.key === "ArrowLeft" ? "left" : "right";
     const shell = event.currentTarget as HTMLDivElement;
     swipingId = notification.id;
-    swipeOffset = direction === "left" ? -SWIPE_THRESHOLD_PX : SWIPE_THRESHOLD_PX;
+    swipeOffset =
+      direction === "left" ? -SWIPE_THRESHOLD_PX : SWIPE_THRESHOLD_PX;
     void commitSwipe(notification, direction, shell.clientWidth);
   }
 
@@ -482,6 +527,33 @@
       >
     </header>
 
+    <div class="browser-notification-settings">
+      <button
+        class="ui-toggle-button"
+        type="button"
+        aria-pressed={browserEnabled}
+        disabled={requestingPermission ||
+          browserPermission === "unsupported" ||
+          browserPermission === "denied"}
+        onclick={toggleBrowserNotifications}
+      >
+        <span class="ui-toggle-indicator" aria-hidden="true"></span>
+        <span>Enable browser notifications</span>
+      </button>
+      <p role="status">
+        {#if browserError}
+          {browserError}
+        {:else if browserPermission === "unsupported"}
+          Browser notifications are unavailable here. Use HTTPS and a supported
+          browser or installed app.
+        {:else if browserPermission === "denied"}
+          Notifications are blocked. Allow them in your browser's site settings.
+        {:else}
+          Show alerts on this device while Pandan is running.
+        {/if}
+      </p>
+    </div>
+
     {#if loading && !response}
       <div class="ntfy-popover-status">Checking subscribed topics…</div>
     {:else if error && !response}
@@ -537,8 +609,12 @@
             onkeydown={(event) => handleCardKeydown(event, notification)}
           >
             <div class="ntfy-popover-swipe-actions" aria-hidden="true">
-              <span class="delete"><Trash2 size={15} strokeWidth={1.8} />Delete</span>
-              <span class="dismiss"><X size={15} strokeWidth={1.8} />Dismiss</span>
+              <span class="delete"
+                ><Trash2 size={15} strokeWidth={1.8} />Delete</span
+              >
+              <span class="dismiss"
+                ><X size={15} strokeWidth={1.8} />Dismiss</span
+              >
             </div>
             <article
               style:--swipe-offset={`${isSwiping ? swipeOffset : 0}px`}
@@ -619,6 +695,11 @@
   </section>
 </div>
 
+<svelte:window
+  onfocus={syncBrowserPermission}
+  onstorage={syncBrowserPermission}
+/>
+
 <svelte:document
   onpointerdown={(event) => {
     if (open && popover && !popover.contains(event.target as Node))
@@ -627,6 +708,19 @@
 />
 
 <style>
+  .browser-notification-settings {
+    display: grid;
+    gap: 6px;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .browser-notification-settings p {
+    margin: 0;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+  }
   .ntfy-popover-anchor {
     position: relative;
   }
@@ -697,7 +791,16 @@
     font-weight: 550;
   }
   .ntfy-popover-list {
-    max-height: min(460px, 60vh);
+    max-height: min(
+      460px,
+      max(
+        100px,
+        calc(
+          100dvh - 300px - env(safe-area-inset-top) -
+            env(safe-area-inset-bottom)
+        )
+      )
+    );
     overflow-y: auto;
   }
   .ntfy-popover-page-status {

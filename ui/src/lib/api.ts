@@ -388,6 +388,8 @@ export interface YoutubeVideo {
   url: string;
   thumbnail_url: string;
   title: string;
+  view_count: number | null;
+  duration_seconds: number | null;
   published_at: string;
   fetched_at: string;
   watch_later_at: string | null;

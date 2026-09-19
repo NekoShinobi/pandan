@@ -41,6 +41,44 @@ worker.addEventListener("message", (event) => {
   if (event.data?.type === "SKIP_WAITING") void worker.skipWaiting();
 });
 
+worker.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const data = event.notification.data;
+  if (
+    data?.type !== "PANDAN_OPEN_NOTIFICATION" ||
+    typeof data.userId !== "string" ||
+    typeof data.notificationId !== "string"
+  )
+    return;
+
+  event.waitUntil(
+    (async () => {
+      const clients = await worker.clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
+      const appUrl = new URL(`${base}/`, worker.location.origin);
+      const candidates = clients.filter((client) => {
+        const url = new URL(client.url);
+        return url.origin === appUrl.origin && url.pathname === appUrl.pathname;
+      });
+      const client =
+        candidates.find((candidate) => candidate.focused) ?? candidates[0];
+      if (client) {
+        // The authenticated shell checks the account before opening the record.
+        client.postMessage(data);
+        await client.focus();
+        return;
+      }
+      appUrl.hash = new URLSearchParams({
+        notification: data.notificationId,
+        "notification-user": data.userId,
+      }).toString();
+      await worker.clients.openWindow(appUrl.href);
+    })(),
+  );
+});
+
 worker.addEventListener("fetch", (event) => {
   const { request } = event;
   if (request.method !== "GET") return;

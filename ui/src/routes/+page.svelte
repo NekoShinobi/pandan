@@ -933,6 +933,9 @@
   let welcomeLeaving = $state(false);
   let welcomeAnimationReady = $state(false);
   let dashboard = $derived(data.dashboard);
+  let dashboardTimezone = $derived(
+    normalizeTimezone(dashboard?.settings.timezone || "UTC"),
+  );
   let highlightColor = $derived(
     (dashboard?.appearance.highlight_color ??
       defaultHighlightColor) as HexColor,
@@ -1134,11 +1137,7 @@
     tasks.filter(
       (task) =>
         task.due_date !== null &&
-        taskDayDistance(
-          task.due_date,
-          currentTime,
-          dashboard?.settings.timezone || "UTC",
-        ) === 0,
+        taskDayDistance(task.due_date, currentTime, dashboardTimezone) === 0,
     ),
   );
   let todayCompletedCount = $derived(
@@ -1175,7 +1174,7 @@
     groupTasksByDueDate(
       filteredActiveTasks,
       currentTime,
-      dashboard?.settings.timezone || "UTC",
+      dashboardTimezone,
       dashboard?.settings.calendar_week_start ?? "sunday",
     ),
   );
@@ -1401,9 +1400,6 @@
       timezone,
       ...clockDisplay(currentTime, timezone),
     })),
-  );
-  let dashboardTimezone = $derived(
-    normalizeTimezone(dashboard?.settings.timezone || "UTC"),
   );
   let dashboardCalendarDate = $derived(
     dateInTimezone(currentTime, dashboardTimezone),
@@ -4201,11 +4197,7 @@
   }
 
   function taskCompletionDateLabel(value: string) {
-    const daysAway = taskDayDistance(
-      value,
-      currentTime,
-      dashboard?.settings.timezone || "UTC",
-    );
+    const daysAway = taskDayDistance(value, currentTime, dashboardTimezone);
     if (daysAway === 0) return "Today";
     if (daysAway === -1) return "Yesterday";
     return formatTaskDate(value);
@@ -4216,7 +4208,7 @@
     const distance = taskDueDistance(
       task.due_date,
       currentTime,
-      dashboard?.settings.timezone || "UTC",
+      dashboardTimezone,
     );
     if (distance.days === 0) return "Due today";
     const unit = `${distance.unit}${distance.value === 1 ? "" : "s"}`;
@@ -4965,6 +4957,7 @@
           </button>
           {#key ntfyRevision}
             <NtfyPopover
+              userId={dashboard.user.id}
               onOpenAll={openNotificationCenter}
               onNotification={showNotificationToast}
               onToast={(message) => showToast(message, "bottom-right", 4200)}
@@ -5306,7 +5299,7 @@
                                     taskDayDistance(
                                       task.due_date,
                                       currentTime,
-                                      dashboard?.settings.timezone || "UTC",
+                                      dashboardTimezone,
                                     ) < 0 && "task-overdue-indicator",
                                   ]}
                                 >

@@ -44,8 +44,6 @@
   /** Invalidates an in-flight run when the title changes again mid-animation. */
   let run = 0;
 
-  if (browser && owner === newestOwner) visibleText = initialText;
-
   $effect(() => {
     // Only the incoming title is a dependency. `retype` reads and writes `displayed`,
     // and tracking that would restart the animation on its own first character.
@@ -82,36 +80,6 @@
     frame = undefined;
   }
 
-  function animateSteps(
-    token: number,
-    duration: number,
-    steps: number,
-    update: (completed: number) => void,
-    done: () => void,
-  ) {
-    const startedAt = performance.now();
-
-    const tick = (now: number) => {
-      if (token !== run || owner !== newestOwner) return;
-      const completed = Math.min(
-        steps,
-        Math.floor(((now - startedAt) / duration) * steps),
-      );
-      update(completed);
-
-      if (completed >= steps) {
-        frame = undefined;
-        done();
-        return;
-      }
-
-      frame = requestAnimationFrame(tick);
-    };
-
-    update(0);
-    frame = requestAnimationFrame(tick);
-  }
-
   function retype(target: string, shouldReduceMotion: boolean) {
     run += 1;
     const token = run;
@@ -131,35 +99,37 @@
     const shared = commonPrefix(from, target);
     const eraseSteps = from.length - shared;
     const typeSteps = target.length - shared;
+    const eraseDuration = eraseSteps > 0 ? ERASE_MS : 0;
+    const typeDuration = typeSteps > 0 ? TYPE_MS : 0;
+    const startedAt = performance.now();
     typing = true;
 
-    const typeTarget = () => {
-      if (typeSteps === 0) {
+    // Both phases share a clock. If page rendering delays a frame, carry that
+    // elapsed time into typing instead of starting another full budget afterward.
+    const tick = (now: number) => {
+      if (token !== run || owner !== newestOwner) return;
+      const elapsed = Math.max(0, now - startedAt);
+
+      if (elapsed >= eraseDuration + typeDuration) {
+        frame = undefined;
         settle(target);
         return;
       }
 
-      animateSteps(
-        token,
-        TYPE_MS,
-        typeSteps,
-        (completed) => show(target.slice(0, shared + completed)),
-        () => settle(target),
-      );
+      if (elapsed < eraseDuration) {
+        const completed = Math.floor((elapsed / eraseDuration) * eraseSteps);
+        show(from.slice(0, from.length - completed));
+      } else {
+        const completed = Math.floor(
+          ((elapsed - eraseDuration) / typeDuration) * typeSteps,
+        );
+        show(target.slice(0, shared + completed));
+      }
+
+      frame = requestAnimationFrame(tick);
     };
 
-    if (eraseSteps === 0) {
-      typeTarget();
-      return;
-    }
-
-    animateSteps(
-      token,
-      ERASE_MS,
-      eraseSteps,
-      (completed) => show(from.slice(0, from.length - completed)),
-      typeTarget,
-    );
+    frame = requestAnimationFrame(tick);
   }
 </script>
 

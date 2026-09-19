@@ -147,7 +147,13 @@ The deployed instance must use HTTPS for browsers to offer installation; `localh
 
 Pandan precaches only its versioned interface assets and the offline connection screen. It deliberately does not cache `/api` responses, account records, uploads, avatars, notification data, or podcast audio. Existing content remains visible if the connection drops while the app is open, but a fresh offline launch shows the connection screen until the server is reachable.
 
-When a new deployment is ready, the running app shows an **Update ready** notice. Reloading from that notice activates the new worker without silently replacing the code underneath an active session. The existing ntfy inbox continues to store deliveries on the Pandan server while the app is closed; installing the PWA does not by itself turn those deliveries into operating-system push notifications.
+Use **Refresh** in YouTube or RSS to load the server's latest stored entries without reloading the app or interrupting playback. To fetch a particular feed or channel from its source immediately, use its refresh action in **Edit Sources**.
+
+YouTube cards show shortened view counts beneath the channel name and a duration badge on the thumbnail when Invidious supplies them. These details populate on channel refresh; the public YouTube feed fallback retains any previously fetched values.
+
+When a new deployment is ready, the running app shows an **Update ready** notice. Reloading from that notice activates the new worker without silently replacing the code underneath an active session.
+
+Open the header Bell and turn on **Enable browser notifications** to allow desktop or device alerts for new ntfy deliveries. This preference applies to the current account in this browser. Clicking an alert opens its notification in Pandan. Alerts require browser permission and HTTPS (or localhost), and work while Pandan is running, including in a background tab. They do not provide Web Push delivery after the app is fully closed; the server continues storing those messages in the inbox.
 
 ## Configuration
 
