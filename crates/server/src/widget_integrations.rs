@@ -3832,7 +3832,8 @@ async fn fetch_release(
 /// Parses the Glance-style release repository syntax used by widgets and Coding subscriptions.
 pub fn parse_release_repository(value: &str) -> Result<ReleaseRepository, String> {
     let value = value.trim();
-    if let Ok(url) = Url::parse(value) {
+    if value.contains("://") {
+        let url = Url::parse(value).map_err(|_| "release repository URL is invalid".to_owned())?;
         if url.scheme() != "https"
             || !url.username().is_empty()
             || url.password().is_some()
@@ -6059,6 +6060,14 @@ END:VCARD</card:address-data></d:prop></d:propstat></d:response>
 
         assert!(parse_release_repository("gitlab:not-a-project").is_err());
         assert!(parse_release_repository("gitea@-invalid.example:team/service").is_err());
+        for url in [
+            "http://github.com/glanceapp/glance",
+            "https://user:password@github.com/glanceapp/glance",
+            "https://github.com/glanceapp/glance?token=secret",
+            "https://github.com/glanceapp/glance#fragment",
+        ] {
+            assert!(parse_release_repository(url).is_err());
+        }
     }
 
     #[test]

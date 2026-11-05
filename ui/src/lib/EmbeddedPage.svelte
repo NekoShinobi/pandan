@@ -1,10 +1,13 @@
 <script lang="ts">
   import type { EmbeddedPage } from "$lib/api";
 
-  let { page, reloadToken } = $props<{
+  let {
+    page,
+    reloadToken,
+  }: {
     page: EmbeddedPage;
     reloadToken: number;
-  }>();
+  } = $props();
   let sandboxPermissions = $derived.by(() => {
     const permissions = ["allow-forms", "allow-popups"];
     if (page.allow_scripts) permissions.push("allow-scripts");

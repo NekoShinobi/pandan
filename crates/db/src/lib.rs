@@ -3703,21 +3703,25 @@ mod tests {
             .await
             .expect("document migration applies");
 
-        let nodes = queries::list_journal_nodes(&pool, &user.id)
-            .await
-            .expect("migrated journal loads");
-        assert_eq!(nodes.len(), 2);
-        let former_folder = nodes
-            .iter()
-            .find(|node| node.id == "folder")
-            .expect("former folder remains");
-        let child = nodes
-            .iter()
-            .find(|node| node.id == "file")
-            .expect("child file remains");
-        assert!(former_folder.content.is_empty());
-        assert_eq!(child.parent_id.as_deref(), Some("folder"));
-        assert_eq!(child.content, "# Preserved");
+        // Inspect this migration's schema without requiring columns added later.
+        let nodes = sqlx::query_as::<_, (String, Option<String>, String)>(
+            "SELECT id, parent_id, content FROM journal_nodes WHERE user_id = ? ORDER BY id",
+        )
+        .bind(&user.id)
+        .fetch_all(&pool)
+        .await
+        .expect("migrated journal loads");
+        assert_eq!(
+            nodes,
+            vec![
+                (
+                    "file".to_owned(),
+                    Some("folder".to_owned()),
+                    "# Preserved".to_owned(),
+                ),
+                ("folder".to_owned(), None, String::new()),
+            ]
+        );
         let kind_columns: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pragma_table_info('journal_nodes') WHERE name = 'kind'",
         )
